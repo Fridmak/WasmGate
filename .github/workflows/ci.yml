@@ -47,7 +47,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.64.8 # .golangci.yml uses the v1 schema
+          version: v2.15.0 # v2 schema config (see .golangci.yml)
 
   test:
     name: Test (${{ matrix.os }})

@@ -29,7 +29,8 @@ type Admin struct {
 // NewAdmin binds addr and returns an Admin ready to Serve. metrics must not be
 // nil; upstreams may be nil when per-backend gauges are not wanted.
 func NewAdmin(addr string, metrics *Metrics, upstreams func() []UpstreamStat, log *slog.Logger) (*Admin, error) {
-	ln, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("observe: admin listen %s: %w", addr, err)
 	}

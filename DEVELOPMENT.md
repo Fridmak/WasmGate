@@ -63,7 +63,7 @@ SNI/TLS-peek, health-checks апстримов, CLI, нагрузочные бе
   - mingw-w64 / MSYS2, либо запускать race-тесты в WSL/Linux;
   - либо пропускать `-race` локально (в CI гоняем на Linux).
 - (опционально) **golangci-lint** для линта:
-  `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`
 - (опционально) **benchstat** для сравнения бенчмарков:
   `go install golang.org/x/perf/cmd/benchstat@latest`
 - (опционально) **wrk2 / k6 / iperf3** для нагрузочных тестов (см. `benchmarks/`).
@@ -248,12 +248,11 @@ go vet ./...        # встроенный анализатор
 golangci-lint run   # конфиг в .golangci.yml
 ```
 
-> golangci-lint v1.64 (как и конфиг) не читает export data тулчейнов новее 1.24,
-> поэтому с локальным Go 1.27 запускай его под пином тулчейна — та же версия
-> линтера и тот же тулчейн, что в CI:
+> Линтер — golangci-lint **v2** (конфиг в схеме v2). Локально ставится без
+> install одной командой и работает с любым Go (включая 1.27):
 >
 > ```powershell
-> $env:GOTOOLCHAIN="go1.23.12"; go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run ./...
+> go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 > ```
 
 ### 4.5. Зависимости

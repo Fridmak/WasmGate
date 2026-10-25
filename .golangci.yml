@@ -1,26 +1,41 @@
-# golangci-lint configuration.
-# NOTE: schema targets golangci-lint v1.x. If you install v2.x, run
-# `golangci-lint migrate` or adjust `version`/`linters.settings`.
-run:
-  timeout: 5m
-
+# golangci-lint configuration (v2 schema, golangci-lint >= 2.0).
+#
+# The v2 standard set (errcheck, govet, staticcheck, ineffassign, unused) is
+# enabled by default, so `enable` lists only the extras on top of it. Test
+# files are exempt from the paranoid checks (gosec, errcheck, noctx): plain
+# net.Listen/net.Dial in loopback fixtures is idiomatic, contexts buy nothing
+# there. Local run (no install needed, works with the host Go):
+#   go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+version: "2"
 linters:
   enable:
-    - errcheck     # unhandled errors
-    - govet
-    - staticcheck
-    - revive       # style
-    - ineffassign
-    - unused
-    - gosec        # security
-    - bodyclose    # unclosed HTTP bodies
-    - noctx        # requests without context
-    - prealloc     # preallocate slices in hot code
-    - exhaustive   # exhaustive switch over enums
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+    - bodyclose
+    - exhaustive
+    - gosec
+    - noctx
+    - prealloc
+    - revive
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+          - noctx
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
