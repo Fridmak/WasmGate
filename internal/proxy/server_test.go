@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,6 +443,131 @@ func TestActiveHealthCheckExcludesDeadAndRecovers(t *testing.T) {
 	}
 	defer recovered.Close()
 	waitMetric(t, 2*time.Second, func() bool { return deadUp.Healthy() })
+}
+
+// TestReloadUnderLoadZeroDroppedConnections is the chaos/load test for
+// Hypothesis H2: while concurrent clients continuously open connections and
+// stream payloads through the proxy, 12 configuration reloads swap pools,
+// rate-limit thresholds and WASM plugins underneath them. Zero connections may
+// be dropped or corrupted.
+func TestReloadUnderLoadZeroDroppedConnections(t *testing.T) {
+	echo1 := startEcho(t)
+	echo2 := startEcho(t)
+	listenAddr := freeAddr(t)
+
+	// Minimal allow-all WASM plugin: on_accept(i64, i64, i32) -> i32 { return 0 }.
+	wasmAllow := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x08, 0x01, 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x01, 0x7f,
+		0x03, 0x02, 0x01, 0x00,
+		0x07, 0x0d, 0x01, 0x09, 'o', 'n', '_', 'a', 'c', 'c', 'e', 'p', 't', 0x00, 0x00,
+		0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b,
+	}
+
+	cfgFor := func(step int) *config.Config {
+		servers := []string{echo1, echo2}
+		balance := "round_robin"
+		if step%2 == 1 {
+			balance = "least_conn"
+		}
+		var pl config.PluginConfig
+		if step%3 == 0 {
+			pl = config.PluginConfig{Wasm: wasmAllow}
+		}
+		return &config.Config{
+			Version: 1,
+			Listeners: []config.ListenerConfig{{
+				Name:         "edge",
+				Addr:         listenAddr,
+				UpstreamPool: "web",
+				MaxConns:     1000,
+				DialTimeout:  2 * time.Second,
+				RateLimit:    config.RateLimit{Max: 100000, Window: time.Second},
+				Plugin:       pl,
+			}},
+			Pools: map[string]config.PoolConfig{
+				"web": {Balance: balance, Servers: servers},
+			},
+		}
+	}
+
+	srv := NewServer(testLogger(), NewRuntime(validated(t, cfgFor(0))), nil)
+	addr := startServer(t, srv)
+
+	// Keep 4 long-lived connections open across all 12 reloads AND hammer with
+	// short-lived connections in parallel.
+	longConns := make([]net.Conn, 4)
+	for i := range longConns {
+		longConns[i] = dial(t, addr)
+		defer longConns[i].Close()
+	}
+
+	stop := make(chan struct{})
+	errCh := make(chan error, 16)
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			msg := []byte("chaos-reload-payload")
+			buf := make([]byte, len(msg))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+				if err != nil {
+					errCh <- fmt.Errorf("dial: %w", err)
+					return
+				}
+				_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+				if _, err := c.Write(msg); err != nil {
+					_ = c.Close()
+					errCh <- fmt.Errorf("write: %w", err)
+					return
+				}
+				if _, err := io.ReadFull(c, buf); err != nil {
+					_ = c.Close()
+					errCh <- fmt.Errorf("read: %w", err)
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+	}
+
+	for step := 1; step <= 12; step++ {
+		if _, err := srv.Reload(context.Background(), cfgFor(step)); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("reload %d failed: %v", step, err)
+		}
+		// Verify every long-lived connection still relays bytes across the reload.
+		for _, lc := range longConns {
+			_ = lc.SetDeadline(time.Now().Add(2 * time.Second))
+			if _, err := lc.Write([]byte("ping")); err != nil {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("long-lived write at reload %d: %v", step, err)
+			}
+			var pong [4]byte
+			if _, err := io.ReadFull(lc, pong[:]); err != nil {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("long-lived read at reload %d: %v", step, err)
+			}
+		}
+	}
+
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatalf("dropped connection during reload under load: %v", err)
+	default:
+	}
 }
 
 // TestNoGoroutineLeakPerConnection relays a batch of connections through the

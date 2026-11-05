@@ -99,7 +99,7 @@ type Options struct {
 // backoff ban. Limits and allow-lists can be updated in place (Update) without
 // resetting the windows; the window length is fixed at construction.
 type Limiter struct {
-	max       atomic.Int64
+	limit     atomic.Int64
 	subnetMax atomic.Int64
 	banNano   atomic.Int64
 	allow     atomic.Pointer[[]Prefix]
@@ -127,11 +127,11 @@ type slot struct {
 	n     int64 // connections counted in this slot
 }
 
-// New returns a limiter with the given window and per-IP max. Kept as a concise
+// New returns a limiter with the given window and per-IP limit. Kept as a concise
 // constructor for callers that only need the per-IP limit; use NewWithOptions
 // for allow-lists, /24 aggregation and backoff bans.
-func New(max int, window time.Duration) *Limiter {
-	return NewWithOptions(Options{Max: max, Window: window})
+func New(limit int, window time.Duration) *Limiter {
+	return NewWithOptions(Options{Max: limit, Window: window})
 }
 
 // NewWithOptions returns a limiter configured by opts.
@@ -151,7 +151,7 @@ func NewWithOptions(opts Options) *Limiter {
 // Update changes the limits, ban duration and allow-list in place without
 // resetting the sliding windows.
 func (l *Limiter) Update(opts Options) {
-	l.max.Store(int64(opts.Max))
+	l.limit.Store(int64(opts.Max))
 	l.subnetMax.Store(int64(opts.SubnetMax))
 	l.banNano.Store(int64(opts.BanDuration))
 	if len(opts.Allow) == 0 {
@@ -164,10 +164,10 @@ func (l *Limiter) Update(opts Options) {
 }
 
 // SetMax changes the per-IP limit at runtime without resetting the window.
-func (l *Limiter) SetMax(max int) { l.max.Store(int64(max)) }
+func (l *Limiter) SetMax(limit int) { l.limit.Store(int64(limit)) }
 
 // Max returns the current per-IP limit (<= 0 means disabled).
-func (l *Limiter) Max() int { return int(l.max.Load()) }
+func (l *Limiter) Max() int { return int(l.limit.Load()) }
 
 // SubnetMax returns the current per-subnet limit (<= 0 means disabled).
 func (l *Limiter) SubnetMax() int { return int(l.subnetMax.Load()) }
@@ -185,9 +185,9 @@ func (l *Limiter) Window() time.Duration { return l.window }
 //
 // Steady state allocates nothing.
 func (l *Limiter) Allow(ip net.IP, now time.Time) bool {
-	max := l.max.Load()
-	subMax := l.subnetMax.Load()
-	if max <= 0 && subMax <= 0 {
+	lim := l.limit.Load()
+	subLim := l.subnetMax.Load()
+	if lim <= 0 && subLim <= 0 {
 		return true
 	}
 
@@ -199,16 +199,16 @@ func (l *Limiter) Allow(ip net.IP, now time.Time) bool {
 	nowNano := now.UnixNano()
 	ban := l.banNano.Load()
 
-	if max > 0 && !l.allowKey(key, max, nowNano, ban) {
+	if lim > 0 && !l.allowKey(key, lim, nowNano, ban) {
 		return false
 	}
-	if subMax > 0 && !l.allowKey(subnetKeyOf(key), subMax, nowNano, ban) {
+	if subLim > 0 && !l.allowKey(subnetKeyOf(key), subLim, nowNano, ban) {
 		return false
 	}
 	return true
 }
 
-func (l *Limiter) allowKey(key [16]byte, max, nowNano, banNano int64) bool {
+func (l *Limiter) allowKey(key [16]byte, limit, nowNano, banNano int64) bool {
 	e := nowNano / l.bucket
 	windowNano := l.bucket * slotCount
 
@@ -248,7 +248,7 @@ func (l *Limiter) allowKey(key [16]byte, max, nowNano, banNano int64) bool {
 		}
 	}
 
-	allowed := total <= max
+	allowed := total <= limit
 	if !allowed && banNano > 0 {
 		w.strikes++
 		shift := w.strikes - 1
@@ -289,10 +289,10 @@ func subnetKeyOf(k [16]byte) [16]byte {
 	return k
 }
 
-func shardOf(k [16]byte) int {
+func shardOf(k [16]byte) uint64 {
 	hi := binary.BigEndian.Uint64(k[:8])
 	lo := binary.BigEndian.Uint64(k[8:])
 	h := (hi * 0x9e3779b97f4a7c15) ^ lo
 	h *= 0x9e3779b97f4a7c15
-	return int(h >> 58) // top 6 bits: 64 shards
+	return h >> 58 // top 6 bits: 0..63
 }

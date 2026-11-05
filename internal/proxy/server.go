@@ -85,7 +85,6 @@ func (s *Server) Start() error {
 	if s.started {
 		return errors.New("proxy: Server already started")
 	}
-	s.started = true
 
 	snap := s.rt.Load()
 	if err := s.rt.ValidatePlugins(snap.Config); err != nil {
@@ -103,8 +102,11 @@ func (s *Server) Start() error {
 			return fmt.Errorf("listen %q on %s: %w", l.Name, l.Addr, err)
 		}
 		ln[l.Name] = boundListener{cfgAddr: l.Addr, ln: sock}
-		s.startAccept(l.Name, sock, snap)
 	}
+	for _, l := range snap.Config.Listeners {
+		s.startAccept(l.Name, ln[l.Name].ln, snap)
+	}
+	s.started = true
 	s.ln = ln
 	s.restartProbes(snap)
 	s.metrics.SetVersion(snap.Version)

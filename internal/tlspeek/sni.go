@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 )
 
 const (
@@ -255,16 +254,11 @@ func MatchRoute[V any](routes map[string]V, sni string) (V, bool) {
 	if v, ok := routes[sni]; ok {
 		return v, true
 	}
-	// Check wildcard "*.example.com" by replacing the leading label with "*".
 	dot := strings.IndexByte(sni, '.')
 	if dot > 0 && dot+1 < len(sni) {
-		var buf [256]byte
-		rest := sni[dot:] // ".example.com"
-		if 1+len(rest) <= len(buf) {
-			buf[0] = '*'
-			copy(buf[1:], rest)
-			key := unsafe.String(&buf[0], 1+len(rest))
-			if v, ok := routes[key]; ok {
+		suffix := sni[dot:] // ".example.com" — zero-alloc slice of sni
+		for k, v := range routes {
+			if len(k) == 1+len(suffix) && k[0] == '*' && k[1:] == suffix {
 				return v, true
 			}
 		}

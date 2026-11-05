@@ -85,7 +85,7 @@ type instance struct {
 
 // LoadFile reads a .wasm binary from path and compiles it into a sandboxed Plugin.
 func LoadFile(ctx context.Context, path string, opts Options) (*Plugin, error) {
-	wasmBytes, err := os.ReadFile(path)
+	wasmBytes, err := os.ReadFile(path) // #nosec G304 -- path comes from the validated server config
 	if err != nil {
 		return nil, fmt.Errorf("plugin: read %s: %w", path, err)
 	}
@@ -220,7 +220,7 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 	hi, lo := encodeIP(ip)
 	inst.stack[0] = hi
 	inst.stack[1] = lo
-	inst.stack[2] = uint64(uint32(port))
+	inst.stack[2] = uint64(port) & 0xffffffff // #nosec G115 -- TCP port is 0..65535
 
 	if err := inst.onAccept.CallWithStack(ctx, inst.stack[:3]); err != nil {
 		// A trapped or timed-out instance may be left in an inconsistent state:
@@ -228,7 +228,7 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, err
 	}
-	v := Verdict(int32(inst.stack[0]))
+	v := Verdict(inst.stack[0] & 0x7fffffff) // #nosec G115 -- non-zero means VerdictDeny
 	p.pool.Put(inst)
 	if v != VerdictAllow {
 		return VerdictDeny, nil
@@ -256,8 +256,8 @@ func (p *Plugin) OnClose(ctx context.Context, ip net.IP, rxBytes, txBytes int64)
 	hi, lo := encodeIP(ip)
 	inst.stack[0] = hi
 	inst.stack[1] = lo
-	inst.stack[2] = uint64(rxBytes)
-	inst.stack[3] = uint64(txBytes)
+	inst.stack[2] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
+	inst.stack[3] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
 
 	if err := inst.onClose.CallWithStack(ctx, inst.stack[:4]); err != nil {
 		_ = inst.mod.Close(context.Background())
