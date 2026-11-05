@@ -329,6 +329,46 @@ func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
 	}
 }
 
+// TestProxyExampleIPGuardWasmBlocks127_0_0_99 loads the real
+// plugins/examples/ipguard/ipguard.wasm binary into a live proxy listener and
+// dials from two real loopback source IPs:
+//   - 127.0.0.1 -> allowed by ipguard.wasm, payload echoed;
+//   - 127.0.0.99 -> denied by ipguard.wasm (last octet == 99), connection closed
+//     before dialing the upstream and counted in ConnectionsPluginRejected.
+func TestProxyExampleIPGuardWasmBlocks127_0_0_99(t *testing.T) {
+	echoAddr := startEcho(t)
+	m := observe.NewMetrics()
+	cfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Path: "../../plugins/examples/ipguard/ipguard.wasm",
+		}
+	}))
+	srv := NewServer(testLogger(), NewRuntime(cfg), m)
+	addr := startServer(t, srv)
+
+	// 1. Source IP 127.0.0.1 must pass through ipguard.wasm and echo bytes.
+	c1 := roundTrip(t, addr)
+	_ = c1.Close()
+
+	// 2. Source IP 127.0.0.99 must be rejected by ipguard.wasm's on_accept hook.
+	d99 := net.Dialer{
+		Timeout:   2 * time.Second,
+		LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 99), Port: 0},
+	}
+	c99, err := d99.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial from 127.0.0.99: %v", err)
+	}
+	defer c99.Close()
+	_ = c99.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c99.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection from 127.0.0.99 was not rejected by ipguard.wasm")
+	}
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsPluginRejected >= 1
+	})
+}
+
 // BenchmarkConnHotPath measures everything Handle does per connection before it
 // touches a socket: load the snapshot, resolve the listener, take a connection
 // slot, pick an upstream, then release both. This is the CPU overhead the proxy

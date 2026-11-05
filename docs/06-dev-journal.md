@@ -230,6 +230,44 @@ $ go test -race -count=1 -v ./internal/proxy -run TestRealProxiesComparison
 PASS
 ok  	wasmgate/internal/proxy	1.161s
 
+$ go test -race -count=1 -v ./internal/plugin
+=== RUN   TestPluginAllowAndDenyByIP
+--- PASS: TestPluginAllowAndDenyByIP (0.00s)
+=== RUN   TestPluginMemoryLimitRejectsOversizedModule
+--- PASS: TestPluginMemoryLimitRejectsOversizedModule (0.00s)
+=== RUN   TestPluginTimeoutStopsInfiniteLoop
+--- PASS: TestPluginTimeoutStopsInfiniteLoop (0.02s)
+=== RUN   TestPluginRejectsBadSignature
+--- PASS: TestPluginRejectsBadSignature (0.00s)
+=== RUN   TestLoadExampleIPGuardPlugin
+--- PASS: TestLoadExampleIPGuardPlugin (0.00s)
+=== RUN   TestPluginOnDataInspectsPacketBytes
+--- PASS: TestPluginOnDataInspectsPacketBytes (0.00s)
+PASS
+ok  	wasmgate/internal/plugin	1.066s
+
+$ go test -race -count=1 -v ./internal/proxy -run TestProxy
+=== RUN   TestProxyForwardsBytes
+--- PASS: TestProxyForwardsBytes (0.00s)
+=== RUN   TestProxyClosesConnectionWhenUpstreamIsDown
+--- PASS: TestProxyClosesConnectionWhenUpstreamIsDown (0.00s)
+=== RUN   TestProxyMetricsCountRejections
+--- PASS: TestProxyMetricsCountRejections (0.00s)
+=== RUN   TestProxyMetricsCountDialFailures
+--- PASS: TestProxyMetricsCountDialFailures (0.00s)
+=== RUN   TestProxyRateLimitsConnections
+--- PASS: TestProxyRateLimitsConnections (0.01s)
+=== RUN   TestProxyWasmPluginRejectsAndAllows
+--- PASS: TestProxyWasmPluginRejectsAndAllows (0.01s)
+=== RUN   TestProxySNIRoutesToMatchingPoolAndReplaysClientHello
+--- PASS: TestProxySNIRoutesToMatchingPoolAndReplaysClientHello (0.01s)
+=== RUN   TestProxyWasmOnDataInspectsL7OnceAndStream
+--- PASS: TestProxyWasmOnDataInspectsL7OnceAndStream (0.01s)
+=== RUN   TestProxyExampleIPGuardWasmBlocks127_0_0_99
+--- PASS: TestProxyExampleIPGuardWasmBlocks127_0_0_99 (0.01s)
+PASS
+ok  	wasmgate/internal/proxy	1.085s
+
 $ go test -run "^$" -bench BenchmarkProxyComparison -benchmem ./internal/proxy
 goos: linux
 goarch: amd64
