@@ -266,3 +266,5 @@ Build-теги становятся правильным выбором, есл�
 - `nginx stream` перекачивает байты через user-space буферы `epoll` без `splice(2)` (и попадает ровно в те же **230–272 MB/s**, что и наш буферизованный путь `idle_watchdog` — **248–286 MB/s**);
 - `HAProxy` по умолчанию также копирует в user-space (без явного `option splice-auto`);
 - в `wasmgate` стандартный `io.Copy` на Linux вызывает `TCPConn.ReadFrom` → ядерный `splice(2)`, а проверки F2 (`rate_limit`) и WASM (`on_accept`) выполняются ровно один раз при открытии соединения за ~100 нс и **0 дополнительных аллокаций** (`65 allocs/op` у `wasmgate_full` против `65 allocs/op` у голого `through_proxy`).
+
+Полный дословный консольный вывод прогона Ubuntu 24.04 (формат `benchstat`) сохранён в [`benchmarks/linux-ubuntu-results.txt`](linux-ubuntu-results.txt) и в [`docs/06-dev-journal.md`](../docs/06-dev-journal.md) (§5.1).

@@ -193,6 +193,107 @@
   - `Throughput/1MiB`: `wasmgate_l4` **688.3 MB/s** / `wasmgate_full` **794.9 MB/s** против `nginx_stream` **230.9 MB/s** и `haproxy_tcp` **248.3 MB/s** (эффект ядерного `splice(2)` против user-space буферов);
   - `ConnectionSetup`: `wasmgate_l4` **917.7 µs** быстрее `nginx_stream` (**1 076.9 µs**) и `haproxy_tcp` (**1 163.8 µs**).
 
+### 5.1. Дословный вывод консоли Ubuntu 24.04 (для вставки в Приложение ВКР)
+
+Сырой лог также сохранён в [`benchmarks/linux-ubuntu-results.txt`](../benchmarks/linux-ubuntu-results.txt):
+
+```text
+$ uname -a
+Linux FridTop 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+$ go version
+go version go1.27.2 linux/amd64
+$ nginx -v
+nginx version: nginx/1.24.0 (Ubuntu)
+$ haproxy -v
+HAProxy version 2.8.30-0ubuntu0.24.04.2 2026/10/27 - https://haproxy.org/
+
+$ go test -race -count=1 ./...
+?   	wasmgate/cmd/wasmgate	[no test files]
+ok  	wasmgate/internal/config	1.109s
+ok  	wasmgate/internal/observe	1.050s
+ok  	wasmgate/internal/plugin	1.069s
+ok  	wasmgate/internal/proxy	2.939s
+ok  	wasmgate/internal/ratelimit	3.387s
+ok  	wasmgate/internal/tlspeek	1.033s
+
+$ go test -race -count=1 -v ./internal/proxy -run TestRealProxiesComparison
+=== RUN   TestRealProxiesComparison
+=== RUN   TestRealProxiesComparison/wasmgate_l4
+=== RUN   TestRealProxiesComparison/wasmgate_full
+=== RUN   TestRealProxiesComparison/nginx_stream
+=== RUN   TestRealProxiesComparison/haproxy_tcp
+--- PASS: TestRealProxiesComparison (0.13s)
+    --- PASS: TestRealProxiesComparison/wasmgate_l4 (0.00s)
+    --- PASS: TestRealProxiesComparison/wasmgate_full (0.01s)
+    --- PASS: TestRealProxiesComparison/nginx_stream (0.02s)
+    --- PASS: TestRealProxiesComparison/haproxy_tcp (0.10s)
+PASS
+ok  	wasmgate/internal/proxy	1.161s
+
+$ go test -run "^$" -bench BenchmarkProxyComparison -benchmem ./internal/proxy
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/proxy
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkProxyComparison/Throughput/64KiB/direct-4         	   12596	    101664 ns/op	 644.64 MB/s	       2 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_l4-4    	   10000	    111306 ns/op	 588.79 MB/s	      10 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_full-4  	   12163	     89272 ns/op	 734.12 MB/s	      11 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/nginx_stream-4   	    4760	    240516 ns/op	 272.48 MB/s	      13 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/haproxy_tcp-4    	    5503	    243710 ns/op	 268.91 MB/s	      23 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/direct-4          	    1063	   1211439 ns/op	 865.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_l4-4     	     936	   1523550 ns/op	 688.25 MB/s	      43 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_full-4   	     879	   1319181 ns/op	 794.87 MB/s	      40 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/nginx_stream-4    	     386	   4541468 ns/op	 230.89 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/haproxy_tcp-4     	     325	   4223477 ns/op	 248.27 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/direct-4             	   41700	     29223 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_l4-4        	   18120	     61983 ns/op	       2 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_full-4      	   19306	     61120 ns/op	       3 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/nginx_stream-4       	    3142	    393999 ns/op	      20 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/haproxy_tcp-4        	    2796	    439174 ns/op	      23 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/proxy	25.633s
+
+$ go test -run "^$" -bench BenchmarkConnectionSetup -benchmem ./internal/proxy
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/proxy
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkConnectionSetup/direct-4         	    3027	    402884 ns/op	   33792 B/op	      23 allocs/op
+BenchmarkConnectionSetup/through_proxy-4  	    1380	    917683 ns/op	   36078 B/op	      65 allocs/op
+BenchmarkConnectionSetup/wasmgate_full-4  	    1219	   1420898 ns/op	   36180 B/op	      65 allocs/op
+BenchmarkConnectionSetup/nginx_stream-4   	    1290	   1076898 ns/op	   33805 B/op	      23 allocs/op
+BenchmarkConnectionSetup/haproxy_tcp-4    	    1390	   1163823 ns/op	   33804 B/op	      23 allocs/op
+PASS
+ok  	wasmgate/internal/proxy	11.164s
+
+$ go test -run "^$" -bench . -benchmem ./internal/ratelimit ./internal/plugin ./internal/tlspeek
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/ratelimit
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkAllow-4           	19714239	        65.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowParallel-4   	65511637	        20.39 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/ratelimit	2.726s
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/plugin
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkOnData-4             	13660726	        76.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOnAccept-4           	13226593	        81.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOnAcceptParallel-4   	48213128	        24.72 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/plugin	3.565s
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/tlspeek
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkParseClientHelloSNI-4   	42375142	        26.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchRouteWildcard-4    	13836912	        93.29 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/tlspeek	2.530s
+```
+
 ---
 
 ## 6. Открытые проблемы (найдены при ревью, на 05.11)
