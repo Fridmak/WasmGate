@@ -119,6 +119,10 @@ func TestListenerValidateRejects(t *testing.T) {
 	negIdle.IdleTimeout = -time.Second
 	negConns := valid
 	negConns.MaxConns = -1
+	negRate := valid
+	negRate.RateLimit.Max = -1
+	shortWindow := valid
+	shortWindow.RateLimit = config.RateLimit{Max: 10, Window: time.Millisecond}
 
 	cases := map[string]config.ListenerConfig{
 		"missing name":     noName,
@@ -128,6 +132,8 @@ func TestListenerValidateRejects(t *testing.T) {
 		"negative dial":    negDial,
 		"negative idle":    negIdle,
 		"negative maxconn": negConns,
+		"negative rate":    negRate,
+		"short window":     shortWindow,
 	}
 	for name, l := range cases {
 		if err := l.Validate(); err == nil {
@@ -160,5 +166,20 @@ func TestListenerValidateRejectsBadAddr(t *testing.T) {
 		if err := l.Validate(); err == nil {
 			t.Errorf("%s (%q): expected error, got nil", name, addr)
 		}
+	}
+}
+
+func TestListenerValidateDefaultsRateWindow(t *testing.T) {
+	l := config.ListenerConfig{
+		Name:         "edge",
+		Addr:         "127.0.0.1:0",
+		UpstreamPool: "web",
+		RateLimit:    config.RateLimit{Max: 50},
+	}
+	if err := l.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if l.RateLimit.Window != time.Second {
+		t.Fatalf("rate_limit.window = %s, want 1s", l.RateLimit.Window)
 	}
 }

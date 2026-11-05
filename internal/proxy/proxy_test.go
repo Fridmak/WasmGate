@@ -113,6 +113,33 @@ func TestProxyMetricsCountDialFailures(t *testing.T) {
 	})
 }
 
+// TestProxyRateLimitsConnections covers the per-IP sliding-window limiter on
+// the accept path: connections within the window's max pass, the next one is
+// closed before dialing the upstream and counted under rate rejections.
+func TestProxyRateLimitsConnections(t *testing.T) {
+	m := observe.NewMetrics()
+	cfg := validated(t, edgeConfig([]string{startEcho(t)}, func(lc *config.ListenerConfig) {
+		lc.RateLimit = config.RateLimit{Max: 2, Window: time.Minute}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), m))
+
+	for i := 0; i < 2; i++ {
+		c := roundTrip(t, addr)
+		_ = c.Close()
+	}
+
+	over := dial(t, addr)
+	defer over.Close()
+	_ = over.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := over.Read(make([]byte, 1)); err == nil {
+		t.Fatal("third connection was not rejected by rate_limit")
+	}
+
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsRateRejected >= 1
+	})
+}
+
 // BenchmarkConnHotPath measures everything Handle does per connection before it
 // touches a socket: load the snapshot, resolve the listener, take a connection
 // slot, pick an upstream, then release both. This is the CPU overhead the proxy

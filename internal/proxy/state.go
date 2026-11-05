@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"wasmgate/internal/config"
+	"wasmgate/internal/ratelimit"
 )
 
 // This file holds runtime state that must OUTLIVE a configuration snapshot.
@@ -24,16 +25,34 @@ import (
 // up across reloads. The data path only ever touches the atomics inside these
 // objects — never the registry map — so the hot path stays lock-free.
 type registry struct {
-	mu        sync.Mutex
-	limiters  map[string]*connLimiter
-	upstreams map[string]*upstream
+	mu         sync.Mutex
+	limiters   map[string]*connLimiter
+	rateLimits map[string]*ratelimit.Limiter
+	upstreams  map[string]*upstream
 }
 
 func newRegistry() *registry {
 	return &registry{
-		limiters:  make(map[string]*connLimiter),
-		upstreams: make(map[string]*upstream),
+		limiters:   make(map[string]*connLimiter),
+		rateLimits: make(map[string]*ratelimit.Limiter),
+		upstreams:  make(map[string]*upstream),
 	}
+}
+
+// rateLimiter returns the per-IP connection limiter for a listener. The window
+// length is part of the limiter's bucket layout, so a changed window replaces
+// the limiter (its counts restart); a changed max is applied in place.
+func (g *registry) rateLimiter(name string, rl config.RateLimit) *ratelimit.Limiter {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	l := g.rateLimits[name]
+	if l == nil || l.Window() != rl.Window {
+		l = ratelimit.New(rl.Max, rl.Window)
+		g.rateLimits[name] = l
+		return l
+	}
+	l.SetMax(rl.Max)
+	return l
 }
 
 // limiter returns the connection limiter for a listener name, creating it on
@@ -89,6 +108,11 @@ func (g *registry) prune(cfg *config.Config) {
 	for name, l := range g.limiters {
 		if !liveListeners[name] && l.cur.Load() == 0 {
 			delete(g.limiters, name)
+		}
+	}
+	for name := range g.rateLimits {
+		if !liveListeners[name] {
+			delete(g.rateLimits, name)
 		}
 	}
 	for addr, u := range g.upstreams {

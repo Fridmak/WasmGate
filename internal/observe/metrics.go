@@ -35,6 +35,7 @@ type Metrics struct {
 	closed        atomic.Int64 // total connection handlers finished
 	active        atomic.Int64 // connections currently being proxied
 	rejectedLimit atomic.Int64 // connections refused by max_conns
+	rejectedRate  atomic.Int64 // connections refused by per-IP rate_limit
 	dialFailed    atomic.Int64 // upstream dials that failed
 	bytes         atomic.Int64 // bytes relayed, both directions combined
 
@@ -72,6 +73,14 @@ func (m *Metrics) RejectLimit() {
 		return
 	}
 	m.rejectedLimit.Add(1)
+}
+
+// RejectRate records a connection refused by the per-IP rate limiter.
+func (m *Metrics) RejectRate() {
+	if m == nil {
+		return
+	}
+	m.rejectedRate.Add(1)
 }
 
 // DialFail records a failed dial to an upstream.
@@ -118,6 +127,7 @@ type MetricsSnapshot struct {
 	ConnectionsClosed        int64
 	ConnectionsActive        int64
 	ConnectionsLimitRejected int64
+	ConnectionsRateRejected  int64
 	UpstreamDialFailures     int64
 	RelayedBytes             int64
 	Reloads                  uint64
@@ -135,6 +145,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ConnectionsClosed:        m.closed.Load(),
 		ConnectionsActive:        m.active.Load(),
 		ConnectionsLimitRejected: m.rejectedLimit.Load(),
+		ConnectionsRateRejected:  m.rejectedRate.Load(),
 		UpstreamDialFailures:     m.dialFailed.Load(),
 		RelayedBytes:             m.bytes.Load(),
 		Reloads:                  m.reloads.Load(),
@@ -163,6 +174,7 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	counter("wasmgate_connections_closed_total", "Connection handlers finished.", s.ConnectionsClosed)
 	gauge("wasmgate_connections_active", "Connections currently being proxied.", s.ConnectionsActive)
 	counter("wasmgate_connections_limit_rejected_total", "Connections refused because max_conns was reached.", s.ConnectionsLimitRejected)
+	counter("wasmgate_connections_rate_rejected_total", "Connections refused by the per-IP rate limiter.", s.ConnectionsRateRejected)
 	counter("wasmgate_upstream_dial_failures_total", "Upstream dials that failed.", s.UpstreamDialFailures)
 	counter("wasmgate_relayed_bytes_total", "Bytes relayed in both directions.", s.RelayedBytes)
 	counter("wasmgate_reloads_total", "Successful configuration reloads.", s.Reloads)

@@ -76,7 +76,20 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		defer rl.limiter.release()
 	}
 
-	// --- FUTURE: connection-flood rate limit (sliding window) goes HERE. ---
+	if rl.rateLimiter != nil {
+		if !rl.rateLimiter.Allow(clientIP(client), time.Now()) {
+			p.metrics.RejectRate()
+			if ok, dropped := p.sampler.Allow("rate:" + listenerName); ok {
+				p.log.Warn("per-IP connection rate exceeded",
+					"listener", listenerName,
+					"max", rl.rateLimiter.Max(),
+					"window", rl.rateLimiter.Window(),
+					"suppressed", dropped,
+				)
+			}
+			return
+		}
+	}
 
 	up := rl.pool.Next()
 	defer rl.pool.Release(up)
@@ -104,4 +117,16 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout)
 	p.metrics.AddBytes(rx + tx)
+}
+
+// clientIP returns the peer IP without allocating on the TCP path.
+func clientIP(c net.Conn) net.IP {
+	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		return ta.IP
+	}
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(host)
 }

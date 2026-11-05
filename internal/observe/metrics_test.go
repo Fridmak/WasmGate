@@ -47,6 +47,7 @@ func TestMetricsNilSafe(t *testing.T) {
 	m.Accept()
 	m.Close()
 	m.RejectLimit()
+	m.RejectRate()
 	m.DialFail()
 	m.AddBytes(1)
 	m.SetVersion(2)

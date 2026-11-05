@@ -7,6 +7,7 @@ import (
 
 	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
+	"wasmgate/internal/ratelimit"
 )
 
 // resolvedListener is a listener pre-bound to its pool, so the data path
@@ -19,6 +20,8 @@ type resolvedListener struct {
 	// The limiter itself survives reloads (see state.go), so the count does not
 	// reset when the configuration is re-published.
 	limiter *connLimiter
+	// rateLimiter enforces cfg.RateLimit per client IP; nil means disabled.
+	rateLimiter *ratelimit.Limiter
 }
 
 // Snapshot is an immutable, ready-to-use view of the configuration together
@@ -112,6 +115,9 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 		lim := r.registry.limiter(lc.Name, int64(lc.MaxConns))
 		if lc.MaxConns > 0 {
 			rl.limiter = lim
+		}
+		if lc.RateLimit.Max > 0 {
+			rl.rateLimiter = r.registry.rateLimiter(lc.Name, lc.RateLimit)
 		}
 		listeners[lc.Name] = rl
 	}
