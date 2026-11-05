@@ -31,6 +31,7 @@ func run() error {
 		configPath    = flag.String("config", "configs/wasmgate.yaml", "path to the configuration file")
 		logLevel      = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		shutdownGrace = flag.Duration("shutdown-grace", 15*time.Second, "graceful shutdown timeout")
+		validateOnly  = flag.Bool("validate", false, "validate the configuration (and any WASM plugins) and exit")
 	)
 	flag.Parse()
 
@@ -47,6 +48,14 @@ func run() error {
 
 	metrics := observe.NewMetrics()
 	rt := proxy.NewRuntime(cfg)
+	if err := rt.ValidatePlugins(cfg); err != nil {
+		return err
+	}
+	if *validateOnly {
+		log.Info("configuration is valid", "path", *configPath)
+		return nil
+	}
+
 	srv := proxy.NewServer(log, rt, metrics)
 
 	if err := srv.Start(); err != nil {
@@ -54,16 +63,31 @@ func run() error {
 	}
 	log.Info("wasmgate started", "config_version", rt.Load().Version)
 
-	// The admin endpoint (metrics, healthz, pprof) is optional: it runs on its
-	// own listener only when admin_addr is configured, so the data-plane accept
-	// path never handles an HTTP request. Binding happens here, before Serve, so
-	// a busy port fails startup instead of surfacing later from a goroutine.
+	reloadFromDisk := func(ctx context.Context) (uint64, error) {
+		newCfg, err := config.Load(*configPath)
+		if err != nil {
+			return 0, err
+		}
+		v, err := srv.Reload(ctx, newCfg)
+		if err != nil {
+			return 0, err
+		}
+		log.Info("configuration reloaded", "config_version", v)
+		return v, nil
+	}
+
+	// The admin endpoint (metrics, healthz, reload, pprof) is optional: it runs
+	// on its own listener only when admin_addr is configured, so the data-plane
+	// accept path never handles an HTTP request. Binding happens here, before
+	// Serve, so a busy port fails startup instead of surfacing later from a
+	// goroutine.
 	var admin *observe.Admin
 	if cfg.AdminAddr != "" {
 		admin, err = observe.NewAdmin(cfg.AdminAddr, metrics, rt.UpstreamStats, log)
 		if err != nil {
 			return err
 		}
+		admin.SetReload(reloadFromDisk)
 		go func() {
 			if err := admin.Serve(); err != nil {
 				log.Error("admin endpoint stopped", "err", err)
@@ -71,7 +95,7 @@ func run() error {
 		}()
 		log.Info("admin endpoint listening",
 			"addr", admin.Addr().String(),
-			"endpoints", "/metrics /healthz /debug/pprof/",
+			"endpoints", "/metrics /healthz /reload /debug/pprof/",
 		)
 	}
 
@@ -87,17 +111,9 @@ func run() error {
 
 	for s := range sigCh {
 		if reload != nil && s == reload {
-			newCfg, err := config.Load(*configPath)
-			if err != nil {
+			if _, err := reloadFromDisk(context.Background()); err != nil {
 				log.Error("reload failed, keeping previous config", "err", err)
-				continue
 			}
-			v, err := srv.Reload(context.Background(), newCfg)
-			if err != nil {
-				log.Error("reload failed, keeping previous config", "err", err)
-				continue
-			}
-			log.Info("configuration reloaded", "config_version", v)
 			continue
 		}
 

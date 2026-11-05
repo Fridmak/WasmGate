@@ -69,6 +69,34 @@ func TestAdminEndpoints(t *testing.T) {
 			t.Errorf("/debug/pprof/ did not list profiles:\n%s", body)
 		}
 	})
+
+	t.Run("reload", func(t *testing.T) {
+		admin.SetReload(func(context.Context) (uint64, error) { return 7, nil })
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/reload", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /reload: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /reload: status %d", resp.StatusCode)
+		}
+		var out struct {
+			Status        string `json:"status"`
+			ConfigVersion uint64 `json:"config_version"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode reload: %v", err)
+		}
+		if out.Status != "reloaded" || out.ConfigVersion != 7 {
+			t.Fatalf("reload response = %+v", out)
+		}
+	})
 }
 
 // getBody fetches url with a timeout and returns the response body, closing it.

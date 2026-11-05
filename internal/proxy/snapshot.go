@@ -98,10 +98,10 @@ func (r *Runtime) Reload(cfg *config.Config) uint64 {
 	return next.Version
 }
 
-// preloadPlugins compiles and caches every listener's WASM plugin before a
-// server starts or reloads, so a missing file or invalid module fails fast
-// before any socket is bound or any snapshot is swapped.
-func (r *Runtime) preloadPlugins(cfg *config.Config) error {
+// ValidatePlugins compiles and caches every listener's WASM plugin before a
+// server starts, reloads or runs in -validate mode, so a missing file or
+// invalid module fails fast before any socket is bound or any snapshot is swapped.
+func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 	for _, lc := range cfg.Listeners {
 		if !lc.Plugin.Enabled() {
 			continue

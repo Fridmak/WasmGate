@@ -22,8 +22,16 @@ import (
 // clear error instead of surfacing later from a goroutine), Serve blocks in its
 // own goroutine until Shutdown.
 type Admin struct {
-	ln  net.Listener
-	srv *http.Server
+	ln     net.Listener
+	srv    *http.Server
+	reload func(context.Context) (uint64, error)
+}
+
+// SetReload registers the callback invoked by POST /reload (used on platforms
+// without SIGHUP such as Windows, and by local CLI/automation). Call before
+// Serve.
+func (a *Admin) SetReload(fn func(context.Context) (uint64, error)) {
+	a.reload = fn
 }
 
 // NewAdmin binds addr and returns an Admin ready to Serve. metrics must not be
@@ -90,6 +98,31 @@ func (a *Admin) handler(m *Metrics, upstreams func() []UpstreamStat, log *slog.L
 			ConnectionsLive: s.ConnectionsActive,
 			UptimeSeconds:   s.Uptime.Seconds(),
 		})
+	})
+
+	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if a.reload == nil {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		v, err := a.reload(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(struct {
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			}{Status: "error", Error: err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Status        string `json:"status"`
+			ConfigVersion uint64 `json:"config_version"`
+		}{Status: "reloaded", ConfigVersion: v})
 	})
 
 	mux.HandleFunc("/debug/pprof/", pprof.Index)

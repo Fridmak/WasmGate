@@ -88,7 +88,7 @@ func (s *Server) Start() error {
 	s.started = true
 
 	snap := s.rt.Load()
-	if err := s.rt.preloadPlugins(snap.Config); err != nil {
+	if err := s.rt.ValidatePlugins(snap.Config); err != nil {
 		return err
 	}
 	var lc net.ListenConfig
@@ -129,7 +129,7 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 	if err := cfg.Validate(); err != nil {
 		return 0, err
 	}
-	if err := s.rt.preloadPlugins(cfg); err != nil {
+	if err := s.rt.ValidatePlugins(cfg); err != nil {
 		return 0, err
 	}
 
