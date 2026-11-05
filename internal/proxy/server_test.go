@@ -314,6 +314,71 @@ func TestReloadReconcilesListeners(t *testing.T) {
 	}
 }
 
+// TestReloadRenameKeepsAddress covers a listener renamed without moving its
+// address: the old socket is still held under the old name, so the reload has
+// to release it before binding the new name.
+func TestReloadRenameKeepsAddress(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfgFor := func(name, addr string) *config.Config {
+		return &config.Config{
+			Version:   1,
+			Listeners: []config.ListenerConfig{toppedListener(name, addr)},
+			Pools:     map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
+		}
+	}
+	addr := freeAddr(t)
+
+	srv := NewServer(testLogger(), NewRuntime(cfgFor("a", addr)), nil)
+	startServer(t, srv)
+
+	if _, err := srv.Reload(context.Background(), cfgFor("b", addr)); err != nil {
+		t.Fatalf("rename on the same address: %v", err)
+	}
+	if got := len(srv.Addrs()); got != 1 {
+		t.Fatalf("after rename: %d listeners, want 1", got)
+	}
+	c := roundTrip(t, addr)
+	_ = c.Close()
+}
+
+// TestReloadRenameRollbackRestoresListener: the renamed listener is released
+// and then the reload fails on another address. The old listener must be
+// re-bound and keep serving.
+func TestReloadRenameRollbackRestoresListener(t *testing.T) {
+	echoAddr := startEcho(t)
+	addr := freeAddr(t)
+	cfg := &config.Config{
+		Version:   1,
+		Listeners: []config.ListenerConfig{toppedListener("a", addr)},
+		Pools:     map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
+	}
+	srv := NewServer(testLogger(), NewRuntime(cfg), nil)
+	startServer(t, srv)
+
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen taken: %v", err)
+	}
+	defer taken.Close()
+
+	bad := &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{
+			toppedListener("b", addr),
+			toppedListener("taken", taken.Addr().String()),
+		},
+		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
+	}
+	if _, err := srv.Reload(context.Background(), bad); err == nil {
+		t.Fatal("Reload succeeded on an address already in use")
+	}
+	if got := len(srv.Addrs()); got != 1 {
+		t.Fatalf("after failed rename: %d listeners, want 1", got)
+	}
+	c := roundTrip(t, addr)
+	_ = c.Close()
+}
+
 // TestNoGoroutineLeakPerConnection relays a batch of connections through the
 // real server and checks that the goroutine count comes back to its baseline.
 //
