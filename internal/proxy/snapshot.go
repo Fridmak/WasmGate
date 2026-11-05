@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -95,6 +96,21 @@ func (r *Runtime) Reload(cfg *config.Config) uint64 {
 	next := r.build(r.cur.Load().Version+1, cfg)
 	r.cur.Store(next)
 	return next.Version
+}
+
+// preloadPlugins compiles and caches every listener's WASM plugin before a
+// server starts or reloads, so a missing file or invalid module fails fast
+// before any socket is bound or any snapshot is swapped.
+func (r *Runtime) preloadPlugins(cfg *config.Config) error {
+	for _, lc := range cfg.Listeners {
+		if !lc.Plugin.Enabled() {
+			continue
+		}
+		if _, err := r.registry.plugin(lc.Name, lc.Plugin); err != nil {
+			return fmt.Errorf("listener %q: %w", lc.Name, err)
+		}
+	}
+	return nil
 }
 
 // build compiles cfg into a ready-to-use Snapshot: it turns every configured

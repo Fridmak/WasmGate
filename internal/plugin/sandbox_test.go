@@ -136,6 +136,25 @@ func TestPluginRejectsBadSignature(t *testing.T) {
 	}
 }
 
+func TestLoadExampleIPGuardPlugin(t *testing.T) {
+	ctx := context.Background()
+	p, err := LoadFile(ctx, "../../plugins/examples/ipguard/ipguard.wasm", Options{})
+	if err != nil {
+		t.Fatalf("LoadFile ipguard.wasm: %v", err)
+	}
+	defer p.Close(ctx)
+
+	if v, err := p.OnAccept(ctx, net.ParseIP("127.0.0.1"), 8080); err != nil || v != VerdictAllow {
+		t.Fatalf("127.0.0.1: got (%v, %v), want VerdictAllow", v, err)
+	}
+	if v, err := p.OnAccept(ctx, net.ParseIP("192.0.2.99"), 8080); err != nil || v != VerdictDeny {
+		t.Fatalf("192.0.2.99: got (%v, %v), want VerdictDeny", v, err)
+	}
+	if err := p.OnClose(ctx, net.ParseIP("127.0.0.1"), 512, 1024); err != nil {
+		t.Fatalf("OnClose: %v", err)
+	}
+}
+
 // BenchmarkOnAccept measures the steady-state cost of calling a sandboxed WASM
 // on_accept hook from a single goroutine. Goal: 0 allocs/op.
 func BenchmarkOnAccept(b *testing.B) {

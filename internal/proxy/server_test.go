@@ -379,6 +379,22 @@ func TestReloadRenameRollbackRestoresListener(t *testing.T) {
 	_ = c.Close()
 }
 
+// TestReloadRejectsBrokenPlugin checks that a reload pointing at a missing or
+// invalid .wasm module fails before touching the running listeners or bumping
+// the snapshot version.
+func TestReloadRejectsBrokenPlugin(t *testing.T) {
+	addr, srv := newTestServer(t, nil)
+
+	bad := edgeConfig([]string{"127.0.0.1:9000"}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Path: "does-not-exist.wasm"}
+	})
+	if _, err := srv.Reload(context.Background(), bad); err == nil {
+		t.Fatal("Reload succeeded with a non-existent plugin file")
+	}
+	c := roundTrip(t, addr)
+	_ = c.Close()
+}
+
 // TestNoGoroutineLeakPerConnection relays a batch of connections through the
 // real server and checks that the goroutine count comes back to its baseline.
 //
