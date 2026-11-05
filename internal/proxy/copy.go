@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"wasmgate/internal/tlspeek"
 )
 
 // idleBufferSize is the size of the pooled copy buffers. 32 KiB matches
@@ -111,12 +113,23 @@ func copyConn(dst, src net.Conn, idle time.Duration) (int64, error) {
 // What remains is two interface wrappers per connection, ~64 B: the whole
 // price of the pool.
 func copyPlain(dst, src net.Conn) (int64, error) {
+	var prefix int64
+	if pc, ok := src.(*tlspeek.Conn); ok {
+		raw, n, err := pc.DrainTo(dst)
+		prefix = n
+		if err != nil {
+			return prefix, err
+		}
+		src = raw
+	}
 	if runtime.GOOS == "linux" {
-		return io.Copy(dst, src)
+		n, err := io.Copy(dst, src)
+		return prefix + n, err
 	}
 	bufp := bufferPool.Get().(*[]byte)
 	defer bufferPool.Put(bufp)
-	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *bufp)
+	n, err := io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *bufp)
+	return prefix + n, err
 }
 
 // copyWatched copies src -> dst through a pooled buffer while refreshing the

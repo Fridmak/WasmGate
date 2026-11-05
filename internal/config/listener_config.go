@@ -25,14 +25,15 @@ const (
 
 // ListenerConfig describes a single front-facing TCP listener.
 type ListenerConfig struct {
-	Name         string        `yaml:"name"`          // unique name (used for logs and lookup)
-	Addr         string        `yaml:"addr"`          // listen address, e.g. "127.0.0.1:8080"
-	UpstreamPool string        `yaml:"upstream_pool"` // name of the target pool in Config.Pools
-	MaxConns     int           `yaml:"max_conns"`     // max concurrent connections; 0 = unlimited
-	DialTimeout  time.Duration `yaml:"dial_timeout"`  // upstream dial timeout (default 5s)
-	IdleTimeout  time.Duration `yaml:"idle_timeout"`  // connection idle timeout; 0 disables (default 0)
-	RateLimit    RateLimit     `yaml:"rate_limit"`    // per-IP connection rate; max 0 disables
-	Plugin       PluginConfig  `yaml:"plugin"`        // optional WASM plugin sandbox for this listener
+	Name         string            `yaml:"name"`          // unique name (used for logs and lookup)
+	Addr         string            `yaml:"addr"`          // listen address, e.g. "127.0.0.1:8080"
+	UpstreamPool string            `yaml:"upstream_pool"` // name of the target pool in Config.Pools
+	MaxConns     int               `yaml:"max_conns"`     // max concurrent connections; 0 = unlimited
+	DialTimeout  time.Duration     `yaml:"dial_timeout"`  // upstream dial timeout (default 5s)
+	IdleTimeout  time.Duration     `yaml:"idle_timeout"`  // connection idle timeout; 0 disables (default 0)
+	RateLimit    RateLimit         `yaml:"rate_limit"`    // per-IP connection rate; max 0 disables
+	Plugin       PluginConfig      `yaml:"plugin"`        // optional WASM plugin sandbox for this listener
+	SNIRoutes    map[string]string `yaml:"sni_routes"`    // optional TLS SNI host (exact or "*.domain") -> pool name
 }
 
 // PluginConfig configures an optional WebAssembly plugin attached to a listener.

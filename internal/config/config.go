@@ -102,6 +102,14 @@ func (c *Config) validateListeners() error {
 		if _, ok := c.Pools[l.UpstreamPool]; !ok {
 			return fmt.Errorf("%s: unknown upstream_pool %q", label, l.UpstreamPool)
 		}
+		for host, poolName := range l.SNIRoutes {
+			if host == "" {
+				return fmt.Errorf("%s: sni_routes contains an empty host pattern", label)
+			}
+			if _, ok := c.Pools[poolName]; !ok {
+				return fmt.Errorf("%s: sni_routes[%q] references unknown pool %q", label, host, poolName)
+			}
+		}
 	}
 	return nil
 }

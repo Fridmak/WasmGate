@@ -3,6 +3,7 @@ package proxy
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -26,6 +27,9 @@ type resolvedListener struct {
 	rateLimiter *ratelimit.Limiter
 	// plugin is the compiled WASM sandbox for this listener; nil means disabled.
 	plugin *plugin.Plugin
+	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
+	// SNI routing is not configured on this listener.
+	sniRoutes map[string]*pool
 }
 
 // Snapshot is an immutable, ready-to-use view of the configuration together
@@ -142,6 +146,12 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 			pl, err := r.registry.plugin(lc.Name, lc.Plugin)
 			if err == nil {
 				rl.plugin = pl
+			}
+		}
+		if len(lc.SNIRoutes) > 0 {
+			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))
+			for host, poolName := range lc.SNIRoutes {
+				rl.sniRoutes[strings.ToLower(host)] = pools[poolName]
 			}
 		}
 		listeners[lc.Name] = rl

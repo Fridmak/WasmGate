@@ -28,10 +28,13 @@
 | 05.11 | `df081ba`, `6f2f05f`, `f073f1d` | Исправление экранирования меток Prometheus (B2), переименование листенера при reload (B1), журнал разработки | Метрики и reconcile исправлены |
 | 05.11 | `6ed2994` | Актуализация всей документации и удаление устаревших меток `FUTURE` | Документация синхронизирована с кодом |
 | 05.11 | `7298e76` | **F2 (полный набор)**: `allow_cidrs` (16-байтные префиксы без аллокаций), агрегация `/24` (`subnet_max`), экспоненциальный backoff-бан (`ban_duration`, 1x..16x) | `BenchmarkAllow` ~68 ns/op, `BenchmarkAllowParallel` ~13 ns/op, 0 allocs/op |
-| 05.11 | текущий | **M5 WASM Sandbox (`internal/plugin`)**: `wazero` без CGO, Reactor-пул инстансов, `CallWithStack` без аллокаций, жёсткий лимит страниц памяти и таймаут | `BenchmarkOnAccept` ~91 ns/op, `BenchmarkOnAcceptParallel` ~15 ns/op, **0 B/op, 0 allocs/op** |
+| 05.11 | `c98056e`, `ac8fdd3` | **M5 WASM Sandbox (`internal/plugin`)** + эталонный плагин `ipguard`: `wazero` без CGO, Reactor-пул инстансов, `CallWithStack` без аллокаций, fail-fast при старте/reload | `BenchmarkOnAccept` ~91 ns/op, `BenchmarkOnAcceptParallel` ~15 ns/op, **0 B/op, 0 allocs/op** |
+| 05.11 | `fb9a00f` | **Health-checks апстримов**: `pools.*.health_check`, пассивное исключение при ошибке `dial` + активный TCP-пробинг, failover в `round_robin`/`least_conn` | Мёртвые бэкенды исключаются и возвращаются при выздоровлении |
+| 05.11 | `465f7dc` | **`-validate` и `POST /reload` на `admin_addr`**: проверка конфига/WASM из CLI и HTTP-триггер hot reload для Windows (без `SIGHUP`) | Hot reload доступен на Windows и в скриптах |
+| 05.11 | текущий | **TLS SNI-peek passthrough (`internal/tlspeek`)**: парсер `ClientHello` (~27 ns/op, 0 allocs/op), `sni_routes` (exact + wildcard `*.domain`), `DrainTo` с сохранением `splice(2)` на Linux | Весь функциональный scope MVP + F2 + M5 закрыт |
 
-**Текущий статус (на 05.11):** M0 ✅, M1 ✅, M2 ✅, **M4 (F2 полный) ✅**, **M5 (WASM sandbox) ✅**, M3 🟡 (метрики/pprof готовы, внешние замеры S0–S5 впереди).
-Тесты (`go vet`, `go test ./...`) проходят на Windows, проект собирается.
+**Текущий статус (на 05.11):** M0 ✅, M1 ✅, M2 ✅, **M3 (код полностью готов) ✅**, **M4 (F2 полный) ✅**, **M5 (WASM sandbox + пример) ✅**.
+Все 6 пакетов (`config`, `observe`, `plugin`, `proxy`, `ratelimit`, `tlspeek`) проходят `go vet` и `go test ./...`.
 
 ---
 
@@ -148,6 +151,12 @@
   2. **`CallWithStack` по преаллоцированному буферу `[4]uint64` внутри инстанса:** канонический 16-байтный IP (IPv4-mapped IPv6 или IPv6) передаётся как два `uint64` (`ip_hi`, `ip_lo`) плюс порт в регистрах стека вызова — **0 B/op, 0 allocs/op**.
   3. **Изоляция и лимиты:** гостю не выдаются WASI-права (нет ФС, сокетов, env, системных часов); память жёстко ограничена `WithMemoryLimitPages` (по умолчанию 16 страниц = 1 MiB); при заданном `timeout` включается `WithCloseOnContextDone(true)`, а упавший по trap/таймауту инстанс закрывается и не возвращается в пул.
 - **Замер:** `BenchmarkOnAccept` = **91.5 ns/op, 0 B/op, 0 allocs/op**; `BenchmarkOnAcceptParallel` = **15.3 ns/op, 0 B/op, 0 allocs/op**.
+
+### P13. Как сделать TLS SNI-peek, не сломав zero-copy `splice(2)` на Linux
+- **Проблема:** чтобы прочитать `ServerName` из TLS `ClientHello`, нужно вычитать первые ~300 байт из клиентского сокета до выбора апстрима. Если обернуть сокет в обычный `bufio.Reader` или `io.MultiReader`, он перестанет быть `*net.TCPConn`, и `io.Copy` на Linux навсегда потеряет `splice(2)` для всего остального TLS-соединения.
+- **Решение (`internal/tlspeek/sni.go` + `internal/proxy/copy.go`):**
+  1. `tlspeek.Peek` читает первую TLS-запись в буфер из `sync.Pool`, разбирает `ClientHello` без аллокаций (`ParseClientHelloSNI`: **26.8 ns/op, 0 B/op, 0 allocs/op**) и возвращает `*tlspeek.Conn`.
+  2. В `copyPlain` перед запуском `io.Copy` вызывается `pc.DrainTo(dst)`: вычитанный префикс `ClientHello` сбрасывается в апстрим, буфер сразу возвращается в `sync.Pool`, а наружу отдаётся исходный `*net.TCPConn` — дальше на Linux снова работает ядерный `splice(2)`.
 
 ---
 

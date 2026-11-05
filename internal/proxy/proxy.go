@@ -9,6 +9,7 @@ import (
 
 	"wasmgate/internal/observe"
 	"wasmgate/internal/plugin"
+	"wasmgate/internal/tlspeek"
 )
 
 // logWindow and logBurst bound how often per-connection "expected under load"
@@ -42,7 +43,7 @@ func New(log *slog.Logger, rt *Runtime, metrics *observe.Metrics) *Proxy {
 // snapshot is captured once and used for the lifetime of the connection, so a
 // configuration reload mid-connection cannot affect it.
 func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn) {
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	snap := p.rt.Load()
 
@@ -108,8 +109,22 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
-	up := rl.pool.Next()
-	defer rl.pool.Release(up)
+	targetPool := rl.pool
+	if len(rl.sniRoutes) > 0 {
+		sni, wrapped, err := tlspeek.Peek(client, rl.cfg.DialTimeout)
+		if err != nil {
+			return
+		}
+		client = wrapped
+		if sni != "" {
+			if matched, ok := tlspeek.MatchRoute(rl.sniRoutes, sni); ok && matched != nil {
+				targetPool = matched
+			}
+		}
+	}
+
+	up := targetPool.Next()
+	defer targetPool.Release(up)
 
 	dialCtx, cancel := context.WithTimeout(ctx, rl.cfg.DialTimeout)
 	defer cancel()
@@ -132,7 +147,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	up.MarkHealthy()
 	defer server.Close()
 
-	p.log.Debug("proxying", "listener", listenerName, "pool", rl.pool.Name(), "upstream", up.addr)
+	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
 	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout)
 	p.metrics.AddBytes(rx + tx)

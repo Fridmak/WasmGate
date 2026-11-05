@@ -31,12 +31,12 @@
 | 2 | Проксирование на upstream-пул (bidirectional copy, `splice` на Linux) | ✅ M1 |
 | 3 | Балансировка: round-robin / least-conn | ✅ M1 |
 | 4 | Таймауты: connect, **idle** (общий для соединения); лимит **`max_conns`** | ✅ M2 |
-| 5 | **TLS passthrough** через SNI-peek (без терминации); опц. терминация | ⏳ план |
-| 6 | Health-checks (активный TCP-connect + пассивный по ошибкам) | ⏳ план |
-| 7 | Конфиг из YAML + **hot reload** (SIGHUP — прообраз RCU), reconcile слушателей | ✅ M2 |
+| 5 | **TLS passthrough** через SNI-peek (`internal/tlspeek`, без терминации) | ✅ M3 |
+| 6 | Health-checks (активный TCP-connect + пассивный по ошибкам `dial`) | ✅ M3 |
+| 7 | Конфиг из YAML + **hot reload** (SIGHUP + `POST /reload` на `admin_addr`), reconcile слушателей | ✅ M2/M3 |
 | 8 | Наблюдаемость: структурные логи (`log/slog`), метрики (`/metrics`), `/healthz`, `pprof` | ✅ M3 |
 | 9 | Graceful shutdown & **drain** (перестаём принимать, доигрываем активные) | ✅ M2 |
-| 10 | CLI `wasmgate-ctl` (валидация/применение конфига) | ⏳ план |
+| 10 | Валидация конфига (`-validate`) и применение (`POST /reload` / `SIGHUP`) | ✅ M3 |
 
 ### 2.2. Не входит (OUT — в следующей волне)
 
@@ -150,7 +150,7 @@ upstream_pools:
 ## 7. Definition of Done (MVP)
 
 - [x] Проксирует TCP end-to-end, корректно закрывает соединения (half-close).
-- [ ] Балансировка и health-checks работают, мёртвые upstream исключаются (балансировка — ✅, health-checks — в плане).
+- [x] Балансировка и health-checks работают, мёртвые upstream исключаются.
 - [x] Reload под нагрузкой **не рвёт** соединения (механика и юнит-тесты — ✅; внешний chaos-прогон — M3).
 - [x] `go test -race ./...` зелёный; нет утечек горутин/буферов.
 - [x] Есть метрики, логи, `pprof`-эндпоинт.

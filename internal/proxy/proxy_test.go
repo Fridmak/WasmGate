@@ -185,6 +185,89 @@ func TestProxyWasmPluginRejectsAndAllows(t *testing.T) {
 	_ = c.Close()
 }
 
+// TestProxySNIRoutesToMatchingPoolAndReplaysClientHello verifies end-to-end
+// TLS SNI passthrough: the proxy peeks the ClientHello without terminating TLS,
+// routes api.example.com and *.wild.example to their respective backend pools,
+// and forwards the full ClientHello bytes intact to the chosen backend.
+func TestProxySNIRoutesToMatchingPoolAndReplaysClientHello(t *testing.T) {
+	apiEcho := startEcho(t)
+	wildEcho := startEcho(t)
+	defaultEcho := startEcho(t)
+
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "default",
+			DialTimeout:  time.Second,
+			SNIRoutes: map[string]string{
+				"api.example.com": "api",
+				"*.wild.example":  "wild",
+			},
+		}},
+		Pools: map[string]config.PoolConfig{
+			"api":     {Servers: []string{apiEcho}},
+			"wild":    {Servers: []string{wildEcho}},
+			"default": {Servers: []string{defaultEcho}},
+		},
+	})
+
+	rt := NewRuntime(cfg)
+	srv := NewServer(testLogger(), rt, nil)
+	addr := startServer(t, srv)
+
+	// Minimal TLS ClientHello builder for a given SNI.
+	makeHello := func(sni string) []byte {
+		h := []byte(sni)
+		ext := make([]byte, 9+len(h))
+		listLen := 3 + len(h)
+		ext[2], ext[3] = byte((2+listLen)>>8), byte(2+listLen)
+		ext[4], ext[5] = byte(listLen>>8), byte(listLen)
+		ext[7], ext[8] = byte(len(h)>>8), byte(len(h))
+		copy(ext[9:], h)
+
+		ch := make([]byte, 0, 64+len(ext))
+		ch = append(ch, 0x03, 0x03)
+		ch = append(ch, make([]byte, 32)...)
+		ch = append(ch, 0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00)
+		ch = append(ch, byte(len(ext)>>8), byte(len(ext)))
+		ch = append(ch, ext...)
+
+		hs := make([]byte, 4+len(ch))
+		hs[0] = 0x01
+		hs[1], hs[2], hs[3] = byte(len(ch)>>16), byte(len(ch)>>8), byte(len(ch))
+		copy(hs[4:], ch)
+
+		rec := make([]byte, 5+len(hs))
+		rec[0], rec[1], rec[2] = 0x16, 0x03, 0x01
+		rec[3], rec[4] = byte(len(hs)>>8), byte(len(hs))
+		copy(rec[5:], hs)
+		return rec
+	}
+
+	sendHello := func(sni string) {
+		c := dial(t, addr)
+		defer c.Close()
+		hello := makeHello(sni)
+		if _, err := c.Write(hello); err != nil {
+			t.Fatalf("write %s: %v", sni, err)
+		}
+		got := make([]byte, len(hello))
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := io.ReadFull(c, got); err != nil {
+			t.Fatalf("read echoed ClientHello for %s: %v", sni, err)
+		}
+		if string(got) != string(hello) {
+			t.Fatalf("echoed ClientHello for %s was corrupted", sni)
+		}
+	}
+
+	sendHello("api.example.com")
+	sendHello("sub.wild.example")
+	sendHello("unmatched.example.org")
+}
+
 // BenchmarkConnHotPath measures everything Handle does per connection before it
 // touches a socket: load the snapshot, resolve the listener, take a connection
 // slot, pick an upstream, then release both. This is the CPU overhead the proxy
