@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"wasmgate/internal/config"
 )
@@ -59,18 +60,27 @@ pools:
 
 func TestPoolValidateRejects(t *testing.T) {
 	cases := map[string]config.PoolConfig{
-		"no servers":       {},
-		"unknown balance":  {Balance: "random", Servers: []string{"127.0.0.1:9000"}},
-		"malformed server": {Servers: []string{"garbage"}},
-		"duplicate server": {Servers: []string{"127.0.0.1:9000", "127.0.0.1:9000"}},
+		"no servers":          {},
+		"unknown balance":     {Balance: "random", Servers: []string{"127.0.0.1:9000"}},
+		"malformed server":    {Servers: []string{"garbage"}},
+		"duplicate server":    {Servers: []string{"127.0.0.1:9000", "127.0.0.1:9000"}},
+		"negative hc period":  {Servers: []string{"127.0.0.1:9000"}, HealthCheck: config.HealthCheckConfig{Interval: -time.Second}},
+		"negative hc timeout": {Servers: []string{"127.0.0.1:9000"}, HealthCheck: config.HealthCheckConfig{Timeout: -time.Second}},
 	}
 	for name, p := range cases {
 		if err := p.Validate(); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
 	}
-	if err := (config.PoolConfig{Servers: []string{"127.0.0.1:9000"}}).Validate(); err != nil {
+	valid := config.PoolConfig{
+		Servers:     []string{"127.0.0.1:9000"},
+		HealthCheck: config.HealthCheckConfig{Interval: 2 * time.Second},
+	}
+	if err := valid.Validate(); err != nil {
 		t.Errorf("valid pool: unexpected error %v", err)
+	}
+	if valid.HealthCheck.Timeout != config.DefaultHealthCheckTimeout {
+		t.Errorf("health_check.timeout = %s, want %s", valid.HealthCheck.Timeout, config.DefaultHealthCheckTimeout)
 	}
 }
 
@@ -87,7 +97,8 @@ func TestPoolValidateRejectsBadServerAddr(t *testing.T) {
 		"not host:port":     "garbage",
 	}
 	for name, addr := range cases {
-		if err := (config.PoolConfig{Servers: []string{addr}}).Validate(); err == nil {
+		p := config.PoolConfig{Servers: []string{addr}}
+		if err := p.Validate(); err == nil {
 			t.Errorf("%s (%q): expected error, got nil", name, addr)
 		}
 	}

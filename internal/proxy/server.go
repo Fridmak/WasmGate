@@ -45,9 +45,11 @@ type Server struct {
 
 	acceptWG sync.WaitGroup // accept loops
 	connWG   sync.WaitGroup // in-flight connection handlers
+	probeWG  sync.WaitGroup // active health-check loops
 
-	connCtx    context.Context // parents every connection; cancelled = hard stop
-	connCancel context.CancelFunc
+	connCtx     context.Context // parents every connection; cancelled = hard stop
+	connCancel  context.CancelFunc
+	probeCancel context.CancelFunc
 }
 
 // boundListener pairs a bound socket with the address string it was created
@@ -104,6 +106,7 @@ func (s *Server) Start() error {
 		s.startAccept(l.Name, sock, snap)
 	}
 	s.ln = ln
+	s.restartProbes(snap)
 	s.metrics.SetVersion(snap.Version)
 	return nil
 }
@@ -201,6 +204,7 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 		s.startAccept(name, next[name].ln, snap)
 	}
 	s.ln = next
+	s.restartProbes(snap)
 	return v, nil
 }
 
@@ -305,11 +309,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.ln = make(map[string]boundListener)
 	s.mu.Unlock()
 
-	// Stop accepting. Wait for the accept loops to finish before touching
-	// connWG: after they return, no new handlers can be registered.
+	// Stop accepting and stop active health probes. Wait for the accept loops
+	// to finish before touching connWG: after they return, no new handlers can
+	// be registered.
 	for _, b := range toClose {
 		_ = b.ln.Close()
 	}
+	s.stopProbes()
 	s.acceptWG.Wait()
 
 	done := make(chan struct{})
@@ -326,4 +332,68 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		<-done
 		return ctx.Err()
 	}
+}
+
+// restartProbes stops any running health-check loops and starts new ones for
+// pools in snap that configure health_check.interval > 0. Caller must hold s.mu.
+func (s *Server) restartProbes(snap *Snapshot) {
+	if s.probeCancel != nil {
+		s.probeCancel()
+		s.probeWG.Wait()
+		s.probeCancel = nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.probeCancel = cancel
+	for name, pc := range snap.Config.Pools {
+		if pc.HealthCheck.Interval <= 0 {
+			continue
+		}
+		ups := make([]*upstream, 0, len(pc.Servers))
+		for _, addr := range pc.Servers {
+			ups = append(ups, s.rt.registry.upstream(addr))
+		}
+		s.probeWG.Add(1)
+		go s.probeLoop(ctx, name, ups, pc.HealthCheck)
+	}
+}
+
+func (s *Server) stopProbes() {
+	s.mu.Lock()
+	cancel := s.probeCancel
+	s.probeCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		s.probeWG.Wait()
+	}
+}
+
+func (s *Server) probeLoop(ctx context.Context, poolName string, ups []*upstream, hc config.HealthCheckConfig) {
+	defer s.probeWG.Done()
+	t := time.NewTicker(hc.Interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, u := range ups {
+				probeOne(ctx, u, hc.Timeout)
+			}
+			_ = poolName
+		}
+	}
+}
+
+func probeOne(ctx context.Context, u *upstream, timeout time.Duration) {
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var d net.Dialer
+	c, err := d.DialContext(pctx, "tcp", u.addr)
+	if err != nil {
+		u.MarkUnhealthy()
+		return
+	}
+	_ = c.Close()
+	u.MarkHealthy()
 }

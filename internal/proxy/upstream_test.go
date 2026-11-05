@@ -57,6 +57,29 @@ func TestNewBalancerUnknownFallsBackToRoundRobin(t *testing.T) {
 	}
 }
 
+// TestBalancersSkipUnhealthyAndFailOpen checks that both round_robin and
+// least_conn skip an upstream marked unhealthy while a healthy peer exists, and
+// fall back if every upstream is unhealthy.
+func TestBalancersSkipUnhealthyAndFailOpen(t *testing.T) {
+	for _, kind := range []string{"round_robin", "least_conn"} {
+		a := &upstream{addr: "a"}
+		b := &upstream{addr: "b"}
+		a.MarkUnhealthy()
+		bal := newBalancer(kind)
+		for i := 0; i < 4; i++ {
+			if got := bal.Next([]*upstream{a, b}); got != b {
+				t.Fatalf("%s picked unhealthy %s instead of healthy b", kind, got.addr)
+			}
+		}
+		// When all upstreams are marked unhealthy, Next must still return a
+		// non-nil endpoint (fail-open).
+		b.MarkUnhealthy()
+		if got := bal.Next([]*upstream{a, b}); got == nil {
+			t.Fatalf("%s returned nil when all upstreams were unhealthy", kind)
+		}
+	}
+}
+
 // benchEndpoints builds n upstreams with staggered active counts, so least_conn
 // has a real choice to make.
 func benchEndpoints(n int) []*upstream {

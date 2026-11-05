@@ -113,6 +113,7 @@ func (c *Config) validatePools() error {
 		if err := p.Validate(); err != nil {
 			return fmt.Errorf("pool %q: %w", name, err)
 		}
+		c.Pools[name] = p
 	}
 	return nil
 }

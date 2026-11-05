@@ -395,6 +395,54 @@ func TestReloadRejectsBrokenPlugin(t *testing.T) {
 	_ = c.Close()
 }
 
+// TestActiveHealthCheckExcludesDeadAndRecovers checks that an active TCP
+// health check marks a dead backend unhealthy so traffic routes to the live
+// backend, and marks it healthy again once it starts listening.
+func TestActiveHealthCheckExcludesDeadAndRecovers(t *testing.T) {
+	live := startEcho(t)
+	deadAddr := freeAddr(t)
+
+	cfg := &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "web",
+			DialTimeout:  500 * time.Millisecond,
+		}},
+		Pools: map[string]config.PoolConfig{
+			"web": {
+				Balance: "round_robin",
+				Servers: []string{deadAddr, live},
+				HealthCheck: config.HealthCheckConfig{
+					Interval: 30 * time.Millisecond,
+					Timeout:  100 * time.Millisecond,
+				},
+			},
+		},
+	}
+	rt := NewRuntime(cfg)
+	srv := NewServer(testLogger(), rt, nil)
+	proxyAddr := startServer(t, srv)
+
+	deadUp := rt.registry.upstream(deadAddr)
+	waitMetric(t, 2*time.Second, func() bool { return !deadUp.Healthy() })
+
+	// Every connection now lands on the healthy backend instead of failing 50% of the time.
+	for i := 0; i < 4; i++ {
+		c := roundTrip(t, proxyAddr)
+		_ = c.Close()
+	}
+
+	// Bring a listener up on deadAddr: the active probe must mark it healthy again.
+	recovered, err := net.Listen("tcp", deadAddr)
+	if err != nil {
+		t.Fatalf("listen recovered: %v", err)
+	}
+	defer recovered.Close()
+	waitMetric(t, 2*time.Second, func() bool { return deadUp.Healthy() })
+}
+
 // TestNoGoroutineLeakPerConnection relays a batch of connections through the
 // real server and checks that the goroutine count comes back to its baseline.
 //

@@ -15,9 +15,20 @@ import "sync/atomic"
 // cache line only by luck right now; if profiling shows false sharing between
 // hot counters, we will pad `active` to a full line. Deferred on purpose.
 type upstream struct {
-	addr   string
-	active atomic.Int64
+	addr      string
+	active    atomic.Int64
+	unhealthy atomic.Bool // false (zero value) = healthy
 }
+
+// Healthy reports whether the upstream is currently considered reachable.
+func (u *upstream) Healthy() bool { return !u.unhealthy.Load() }
+
+// MarkHealthy marks the upstream reachable.
+func (u *upstream) MarkHealthy() { u.unhealthy.Store(false) }
+
+// MarkUnhealthy marks the upstream unreachable so balancers skip it while
+// healthy peers exist in the pool.
+func (u *upstream) MarkUnhealthy() { u.unhealthy.Store(true) }
 
 // Balancer selects the next upstream for a new connection.
 //
@@ -52,11 +63,23 @@ type roundRobin struct {
 // Name identifies the strategy (see Balancer).
 func (b *roundRobin) Name() string { return "round_robin" }
 
-// Next advances the cursor and returns servers[cursor % len]. The modulo keeps
-// it correct even across a reload that changes the server count.
+// Next advances the cursor and returns the next healthy upstream in
+// servers[cursor % len]. If every upstream in the pool is currently marked
+// unhealthy, it fails open and returns the cursor's pick so traffic can still
+// probe recovery.
 func (b *roundRobin) Next(servers []*upstream) *upstream {
+	n := uint64(len(servers))
 	i := b.next.Add(1) - 1
-	return servers[i%uint64(len(servers))]
+	first := servers[i%n]
+	if first.Healthy() {
+		return first
+	}
+	for step := uint64(1); step < n; step++ {
+		if u := servers[(i+step)%n]; u.Healthy() {
+			return u
+		}
+	}
+	return first
 }
 
 // leastConn picks the upstream with the fewest active connections.
@@ -65,11 +88,25 @@ type leastConn struct{}
 // Name identifies the strategy (see Balancer).
 func (b *leastConn) Name() string { return "least_conn" }
 
-// Next returns the upstream with the smallest active count; ties go to the
-// first in config order. O(n) per pick, which is fine for the pool sizes here.
+// Next returns the healthy upstream with the smallest active count; ties go to
+// the first in config order. Fails open across all servers if none are healthy.
 func (b *leastConn) Next(servers []*upstream) *upstream {
-	best := servers[0]
-	bestActive := best.active.Load()
+	var best *upstream
+	var bestActive int64
+	for _, s := range servers {
+		if !s.Healthy() {
+			continue
+		}
+		a := s.active.Load()
+		if best == nil || a < bestActive {
+			best, bestActive = s, a
+		}
+	}
+	if best != nil {
+		return best
+	}
+	best = servers[0]
+	bestActive = best.active.Load()
 	for _, s := range servers[1:] {
 		if a := s.active.Load(); a < bestActive {
 			best, bestActive = s, a

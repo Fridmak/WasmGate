@@ -117,6 +117,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	var d net.Dialer
 	server, err := d.DialContext(dialCtx, "tcp", up.addr)
 	if err != nil {
+		up.MarkUnhealthy()
 		p.metrics.DialFail()
 		if ok, dropped := p.sampler.Allow("dial:" + listenerName + ":" + up.addr); ok {
 			p.log.Warn("dial upstream failed",
@@ -128,6 +129,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 		return
 	}
+	up.MarkHealthy()
 	defer server.Close()
 
 	p.log.Debug("proxying", "listener", listenerName, "pool", rl.pool.Name(), "upstream", up.addr)
