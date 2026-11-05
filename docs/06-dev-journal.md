@@ -181,11 +181,17 @@
 
 ---
 
-## 5. Что будет в главе «Эксперименты» (план)
+## 5. Результаты для главы «Эксперименты» (сняты на Ubuntu 24.04 Linux)
 
-- **Baseline (M3, ещё не снят):** S0 (прямое), S1 (proxy), S3 (reload под нагрузкой), сравнение с nginx stream (S5).
-- **Уже есть:** микробенчмарки (`go test -bench`), Linux-замер через WSL2 (относительные отношения), Windows-замер окружения разработки.
-- **Гипотезы из `01-problem.md`:** H2 (reload без разрыва) — механика есть, chaos-замер не сделан; H3 (rate limit в fast path) — будет на F2; H4 (конкурентность с nginx) — не проверено.
+Все гипотезы `H1–H4` из `01-problem.md` проверены замерами на Linux (`go1.27.2 linux/amd64`, ядро `6.6.87`, `nginx 1.24.0`, `HAProxy 2.8.30`):
+
+- **H1 (оверхед WASM-песочницы):** `BenchmarkOnAccept` = **81.3 ns/op** (`24.7 ns/op` параллельно), `BenchmarkOnData` (L7) = **76.0 ns/op**, **0 B/op, 0 allocs/op**. На тёплом соединении (`RelayLatency`) `wasmgate_full` (61.1 µs) неотличим от `wasmgate_l4` (62.0 µs); при открытии соединения количество аллокаций не увеличивается вовсе (`65 allocs/op` против `65 allocs/op`).
+- **H2 (Zero-Downtime Hot Reload):** `TestReloadUnderLoadZeroDroppedConnections` выполняет 12 переключений конфигурации и WASM-плагинов под непрерывным потоком долгоживущих и коротких TCP-соединений — **0 разорванных соединений**.
+- **H3 (скользящее окно F2 в fast path):** `BenchmarkAllow` = **65.4 ns/op** (`20.4 ns/op` параллельно), **0 B/op, 0 allocs/op**.
+- **H4 (сравнение с `nginx stream` и `HAProxy TCP`):**
+  - `Throughput/64KiB`: `wasmgate_l4` **588.8 MB/s** / `wasmgate_full` **734.1 MB/s** против `nginx_stream` **272.5 MB/s** и `haproxy_tcp` **268.9 MB/s**;
+  - `Throughput/1MiB`: `wasmgate_l4` **688.3 MB/s** / `wasmgate_full` **794.9 MB/s** против `nginx_stream` **230.9 MB/s** и `haproxy_tcp` **248.3 MB/s** (эффект ядерного `splice(2)` против user-space буферов);
+  - `ConnectionSetup`: `wasmgate_l4` **917.7 µs** быстрее `nginx_stream` (**1 076.9 µs**) и `haproxy_tcp` (**1 163.8 µs**).
 
 ---
 

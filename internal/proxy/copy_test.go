@@ -119,6 +119,42 @@ func TestHalfCloseWriteClosesPlainConn(t *testing.T) {
 	}
 }
 
+// TestRealProxiesComparison verifies that WasmGate (both bare L4 and with full
+// max_conns + F2 rate_limit + WASM ipguard plugin), nginx stream and HAProxy
+// TCP all relay the exact same payload against the same backend on Linux.
+func TestRealProxiesComparison(t *testing.T) {
+	backend := startEcho(t)
+	targets := []struct {
+		name  string
+		start func(testing.TB, string) string
+	}{
+		{"wasmgate_l4", func(tb testing.TB, be string) string { return startProxy(tb, be, 0) }},
+		{"wasmgate_full", startWasmGateFull},
+		{"nginx_stream", startNginxStream},
+		{"haproxy_tcp", startHAProxyTCP},
+	}
+
+	const payload = "wasmgate-vs-nginx-vs-haproxy-l4-check"
+	for _, tc := range targets {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := tc.start(t, backend)
+			c := dial(t, addr)
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+			if _, err := c.Write([]byte(payload)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got := make([]byte, len(payload))
+			if _, err := io.ReadFull(c, got); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(got) != payload {
+				t.Fatalf("got %q, want %q", got, payload)
+			}
+		})
+	}
+}
+
 // The benchmarks below take a real proxy over loopback TCP in front of an echo
 // backend, so they exercise the production path:
 //
@@ -340,5 +376,75 @@ func benchRoundTrip(b *testing.B, addr string) {
 		if _, err := io.ReadFull(conn, back[:]); err != nil {
 			b.Fatalf("read: %v", err)
 		}
+	}
+}
+
+// BenchmarkProxyComparison runs head-to-head S0/S1/S5 benchmarks (Throughput
+// at 64 KiB and 1 MiB, plus warm RelayLatency) across direct, WasmGate L4
+// zero-copy, WasmGate with F2 rate_limit + WASM plugin, nginx stream and
+// HAProxy TCP on the same echo backend.
+func BenchmarkProxyComparison(b *testing.B) {
+	targets := []struct {
+		name  string
+		start func(testing.TB, string) string
+	}{
+		{"direct", func(_ testing.TB, be string) string { return be }},
+		{"wasmgate_l4", func(tb testing.TB, be string) string { return startProxy(tb, be, 0) }},
+		{"wasmgate_full", startWasmGateFull},
+		{"nginx_stream", startNginxStream},
+		{"haproxy_tcp", startHAProxyTCP},
+	}
+
+	for _, size := range []int{64 << 10, 1 << 20} {
+		for _, tc := range targets {
+			b.Run("Throughput/"+sizeLabel(size)+"/"+tc.name, func(b *testing.B) {
+				backend := startEcho(b)
+				target := tc.start(b, backend)
+				benchThroughputAddr(b, target, size)
+			})
+		}
+	}
+
+	for _, tc := range targets {
+		b.Run("RelayLatency/"+tc.name, func(b *testing.B) {
+			backend := startEcho(b)
+			target := tc.start(b, backend)
+			benchRoundTrip(b, target)
+		})
+	}
+}
+
+func benchThroughputAddr(b *testing.B, target string, size int) {
+	conn := dial(b, target)
+	defer conn.Close()
+
+	want := int64(b.N) * int64(size)
+	echoed := make(chan int64, 1)
+	go func() {
+		var got int64
+		buf := make([]byte, 64<<10)
+		for got < want {
+			n, err := conn.Read(buf)
+			got += int64(n)
+			if err != nil {
+				break
+			}
+		}
+		echoed <- got
+	}()
+
+	chunk := make([]byte, size)
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := conn.Write(chunk); err != nil {
+			b.Fatalf("write: %v", err)
+		}
+	}
+	got := <-echoed
+	b.StopTimer()
+	if got < want {
+		b.Fatalf("echoed %d of %d bytes", got, want)
 	}
 }

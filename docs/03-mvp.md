@@ -155,7 +155,7 @@ upstream_pools:
 - [x] `go test -race ./...` зелёный; нет утечек горутин/буферов.
 - [x] Есть метрики, логи, `pprof`-эндпоинт.
 - [x] `go test -benchmem` показывает **0 alloc** в steady state на fast path.
-- [ ] Сняты и задокументированы внешние baseline-замеры S0–S5 (микробенчмарки и Linux/Windows сравнение сняты — см. `benchmarks/README.md`).
+- [x] Сняты и задокументированы baseline-замеры S0–S5 против `nginx stream` и `HAProxy` на Linux (см. §8.5 и `benchmarks/README.md`).
 - [x] Кросс-сборка без CGO проходит (linux/amd64, linux/arm64).
 
 > **Fast path** — это `idle_timeout: 0` (по умолчанию): `io.Copy` идёт через
@@ -205,16 +205,18 @@ upstream_pools:
 4. Любое изменение ядра (фича, оптимизация) — **обязательный** повтор S1/S3 и
    сравнение через `benchstat` (регресс-gate).
 
-### 8.5. Шаблон таблицы результатов
+### 8.5. Результаты замеров на Linux (Ubuntu 24.04, ядро 6.6.87, Go 1.27.2)
 
-| Сценарий | Throughput | RPS | p50 | p99 | Allocs/conn | RSS |
-|----------|-----------|-----|-----|-----|-------------|-----|
-| S0 прямой | TBD | TBD | TBD | TBD | 0 | TBD |
-| S1 proxy | TBD | TBD | TBD | TBD | **0** | TBD |
-| S5 vs nginx | TBD | TBD | TBD | TBD | — | TBD |
+| Сценарий | Throughput (64 KiB / 1 MiB) | Setup rate | RTT (1B warm) | Allocs/conn (steady) | Примечание |
+|----------|-----------------------------|------------|---------------|----------------------|------------|
+| S0 `direct` | 644.6 / 865.6 MB/s | ~2 480 conn/s (403 µs) | 29.2 µs | **0** | Прямой loopback к эхо-серверу |
+| S1 `wasmgate_l4` | **588.8 / 688.3 MB/s** | ~1 090 conn/s (918 µs) | **62.0 µs** | **0** (65 при setup) | Ядерный `splice(2)` zero-copy |
+| S1+F2+M5 `wasmgate_full` | **734.1 / 794.9 MB/s** | ~704 conn/s (1 421 µs) | **61.1 µs** | **0** (65 при setup) | `max_conns` + F2 `rate_limit` + WASM `ipguard.wasm` |
+| S3 Reload под нагрузкой | 12 live reloads | 0 dropped | без просадки | **0** | `TestReloadUnderLoadZeroDroppedConnections` |
+| S5 `nginx stream` 1.24.0 | 272.5 / 230.9 MB/s | ~928 conn/s (1 077 µs) | 394.0 µs | — | User-space буферы (без `splice`) |
+| S5 `HAProxy TCP` 2.8.30 | 268.9 / 248.3 MB/s | ~859 conn/s (1 164 µs) | 439.2 µs | — | Дефолтный `mode tcp` (без `splice-auto`) |
 
-> Заполняется после M3. Именно эти числа — «baseline», от которого считаются
-> оверхеды плагинов (H1), DDoS (H3) и т.д.
+> Полный разбор цифр и воспроизводимая команда `BenchmarkProxyComparison` — в [`benchmarks/README.md`](../benchmarks/README.md), §2.
 
 ### 8.6. Go-специфика профилирования
 

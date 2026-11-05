@@ -650,9 +650,13 @@ func settledGoroutines(t *testing.T) int {
 func BenchmarkConnectionSetup(b *testing.B) {
 	backend := startEcho(b)
 	addr := startProxy(b, backend, 0)
+	fullAddr := startWasmGateFull(b, backend)
 
 	b.Run("direct", func(b *testing.B) { benchSetup(b, backend) })
 	b.Run("through_proxy", func(b *testing.B) { benchSetup(b, addr) })
+	b.Run("wasmgate_full", func(b *testing.B) { benchSetup(b, fullAddr) })
+	b.Run("nginx_stream", func(b *testing.B) { benchSetup(b, startNginxStream(b, backend)) })
+	b.Run("haproxy_tcp", func(b *testing.B) { benchSetup(b, startHAProxyTCP(b, backend)) })
 }
 
 func benchSetup(b *testing.B, addr string) {
