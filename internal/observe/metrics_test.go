@@ -93,6 +93,15 @@ func TestWritePrometheus(t *testing.T) {
 	}
 }
 
+func TestWritePrometheusEscapesLabel(t *testing.T) {
+	var buf bytes.Buffer
+	NewMetrics().WritePrometheus(&buf, []UpstreamStat{{Server: "a\"b\\c\nd:1", Active: 1}})
+	want := `wasmgate_upstream_active{server="a\"b\\c\nd:1"} 1`
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("label not escaped once: want %s in\n%s", want, buf.String())
+	}
+}
+
 // BenchmarkMetricsConnection measures exactly what the data path adds per
 // connection: accept bookkeeping, one bytes add per finished relay direction
 // (two here), and close bookkeeping. Everything else in Metrics is cold path.

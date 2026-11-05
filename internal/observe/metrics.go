@@ -172,7 +172,7 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	if len(upstreams) > 0 {
 		fmt.Fprintf(w, "# HELP wasmgate_upstream_active %s\n# TYPE wasmgate_upstream_active gauge\n", "In-flight connections per upstream server.")
 		for _, u := range upstreams {
-			fmt.Fprintf(w, "wasmgate_upstream_active{server=%q} %d\n", escapeLabel(u.Server), u.Active)
+			fmt.Fprintf(w, "wasmgate_upstream_active{server=\"%s\"} %d\n", escapeLabel(u.Server), u.Active)
 		}
 	}
 
