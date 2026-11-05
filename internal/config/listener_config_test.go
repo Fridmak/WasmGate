@@ -121,6 +121,12 @@ func TestListenerValidateRejects(t *testing.T) {
 	negConns.MaxConns = -1
 	negRate := valid
 	negRate.RateLimit.Max = -1
+	negSubnet := valid
+	negSubnet.RateLimit.SubnetMax = -1
+	negBan := valid
+	negBan.RateLimit.BanDuration = -time.Second
+	badCIDR := valid
+	badCIDR.RateLimit.AllowCIDRs = []string{"not-a-cidr"}
 	shortWindow := valid
 	shortWindow.RateLimit = config.RateLimit{Max: 10, Window: time.Millisecond}
 
@@ -133,6 +139,9 @@ func TestListenerValidateRejects(t *testing.T) {
 		"negative idle":    negIdle,
 		"negative maxconn": negConns,
 		"negative rate":    negRate,
+		"negative subnet":  negSubnet,
+		"negative ban":     negBan,
+		"bad allow cidr":   badCIDR,
 		"short window":     shortWindow,
 	}
 	for name, l := range cases {

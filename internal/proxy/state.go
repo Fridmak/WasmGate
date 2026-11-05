@@ -39,19 +39,28 @@ func newRegistry() *registry {
 	}
 }
 
-// rateLimiter returns the per-IP connection limiter for a listener. The window
-// length is part of the limiter's bucket layout, so a changed window replaces
-// the limiter (its counts restart); a changed max is applied in place.
+// rateLimiter returns the per-IP/subnet connection limiter for a listener. The
+// window length is part of the limiter's bucket layout, so a changed window
+// replaces the limiter (its counts restart); changes to max, subnet_max,
+// ban_duration or allow_cidrs are applied in place.
 func (g *registry) rateLimiter(name string, rl config.RateLimit) *ratelimit.Limiter {
+	allow, _ := ratelimit.ParseCIDRs(rl.AllowCIDRs) // already validated by config.Validate
+	opts := ratelimit.Options{
+		Max:         rl.Max,
+		SubnetMax:   rl.SubnetMax,
+		Window:      rl.Window,
+		BanDuration: rl.BanDuration,
+		Allow:       allow,
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.rateLimits[name]
 	if l == nil || l.Window() != rl.Window {
-		l = ratelimit.New(rl.Max, rl.Window)
+		l = ratelimit.NewWithOptions(opts)
 		g.rateLimits[name] = l
 		return l
 	}
-	l.SetMax(rl.Max)
+	l.Update(opts)
 	return l
 }
 

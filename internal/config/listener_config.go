@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -33,11 +34,16 @@ type ListenerConfig struct {
 	RateLimit    RateLimit     `yaml:"rate_limit"`    // per-IP connection rate; max 0 disables
 }
 
-// RateLimit caps how many new connections one client IP may open within a
-// sliding window. Max 0 disables the check; Window defaults to 1s when Max is set.
+// RateLimit caps how many new connections a client IP (and optionally its /24
+// or /64 subnet) may open within a sliding window, with an optional CIDR
+// allow-list and exponential-backoff ban. Setting both Max and SubnetMax to 0
+// disables the limiter; Window defaults to 1s when enabled.
 type RateLimit struct {
-	Max    int           `yaml:"max"`    // connections per IP per window; 0 = disabled
-	Window time.Duration `yaml:"window"` // sliding window length (default 1s)
+	Max         int           `yaml:"max"`          // connections per IP per window; 0 = disabled
+	SubnetMax   int           `yaml:"subnet_max"`   // connections per /24 (IPv4) or /64 (IPv6) per window; 0 = disabled
+	Window      time.Duration `yaml:"window"`       // sliding window length (default 1s)
+	BanDuration time.Duration `yaml:"ban_duration"` // base ban TTL on violation (exponentially backed off up to 16x); 0 = no ban
+	AllowCIDRs  []string      `yaml:"allow_cidrs"`  // CIDRs bypassed before counting
 }
 
 // MinRateWindow is the shortest accepted rate-limit window. The limiter splits
@@ -76,7 +82,18 @@ func (l *ListenerConfig) Validate() error {
 	if l.RateLimit.Max < 0 {
 		return errors.New("rate_limit.max cannot be negative")
 	}
-	if l.RateLimit.Max > 0 {
+	if l.RateLimit.SubnetMax < 0 {
+		return errors.New("rate_limit.subnet_max cannot be negative")
+	}
+	if l.RateLimit.BanDuration < 0 {
+		return errors.New("rate_limit.ban_duration cannot be negative")
+	}
+	for _, cidr := range l.RateLimit.AllowCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("rate_limit.allow_cidrs: invalid CIDR %q: %w", cidr, err)
+		}
+	}
+	if l.RateLimit.Enabled() {
 		if l.RateLimit.Window == 0 {
 			l.RateLimit.Window = time.Second
 		}
@@ -85,4 +102,9 @@ func (l *ListenerConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Enabled reports whether either the per-IP or the per-subnet limit is active.
+func (r RateLimit) Enabled() bool {
+	return r.Max > 0 || r.SubnetMax > 0
 }

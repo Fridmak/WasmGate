@@ -116,7 +116,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 		if lc.MaxConns > 0 {
 			rl.limiter = lim
 		}
-		if lc.RateLimit.Max > 0 {
+		if lc.RateLimit.Enabled() {
 			rl.rateLimiter = r.registry.rateLimiter(lc.Name, lc.RateLimit)
 		}
 		listeners[lc.Name] = rl

@@ -19,9 +19,13 @@ listeners:
                               # splice). When enabled, the deadline is refreshed by activity
                               # in EITHER direction, so a slow one-way download is not cut;
                               # set e.g. 60s in production to reap silent conns.
-    rate_limit:               # optional per-IP sliding-window connection rate limit (F2)
+    rate_limit:               # optional per-IP/subnet sliding-window rate limit (F2)
       max: 200                # max new connections per IP per window (0 = disabled)
+      subnet_max: 1000        # max new connections per /24 (IPv4) or /64 (IPv6) per window (0 = disabled)
       window: 1s              # sliding window length (default 1s, min 10ms)
+      ban_duration: 5s        # base ban TTL on violation, exponentially backed off up to 16x (0 = no ban)
+      allow_cidrs:            # CIDRs bypassed before counting
+        - "127.0.0.1/32"
 
   - name: db
     addr: "127.0.0.1:5433"
