@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"runtime"
@@ -9,8 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"wasmgate/internal/observe"
+	"wasmgate/internal/plugin"
 	"wasmgate/internal/tlspeek"
 )
+
+var errPluginDenied = errors.New("proxy: payload rejected by wasm on_data hook")
 
 // idleBufferSize is the size of the pooled copy buffers. 32 KiB matches
 // io.Copy's own default and keeps syscalls amortised.
@@ -53,7 +58,7 @@ var bufferPool = sync.Pool{
 // join returns the number of bytes relayed in each direction (a<-b, b<-a). The
 // totals come from io.Copy's own return value, so counting them costs nothing
 // per chunk — one atomic add per finished direction is the whole price.
-func join(ctx context.Context, a, b net.Conn, idle time.Duration) (int64, int64) {
+func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *plugin.Plugin, metrics *observe.Metrics) (int64, int64) {
 	// When ctx is cancelled (e.g. server shutdown), close both sides so the copy
 	// goroutines unblock and wg.Wait returns.
 	stop := context.AfterFunc(ctx, func() {
@@ -65,8 +70,8 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration) (int64, int64)
 	var fwd, rev atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(&wg, a, b, idle, &fwd) // a <- b
-	go pipe(&wg, b, a, idle, &rev) // b <- a
+	go pipe(ctx, &wg, a, b, idle, nil, nil, &fwd)              // a <- b (client <- server)
+	go pipe(ctx, &wg, b, a, idle, streamPlugin, metrics, &rev) // b <- a (server <- client)
 	wg.Wait()
 	return fwd.Load(), rev.Load()
 }
@@ -74,19 +79,67 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration) (int64, int64)
 // pipe copies src -> dst until EOF or error, then reports completion via wg.
 // A clean EOF half-closes dst's write side; any other outcome tears down both
 // connections so the peer direction cannot stay blocked.
-func pipe(wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, total *atomic.Int64) {
+func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, metrics *observe.Metrics, total *atomic.Int64) {
 	defer wg.Done()
 
-	n, err := copyConn(dst, src, idle)
+	var (
+		n   int64
+		err error
+	)
+	if pl != nil {
+		n, err = copyInspected(ctx, dst, src, idle, pl, metrics)
+	} else {
+		n, err = copyConn(dst, src, idle)
+	}
 	total.Add(n)
 	if err != nil {
-		// Hard error or idle timeout: close both sides. Close is safe to call
-		// from either pipe (the other one will simply observe a closed conn).
+		// Hard error, plugin denial or idle timeout: close both sides. Close is
+		// safe to call from either pipe (the other one will simply observe a
+		// closed conn).
 		_ = dst.Close()
 		_ = src.Close()
 		return
 	}
 	halfCloseWrite(dst)
+}
+
+// copyInspected relays src -> dst through a pooled buffer while invoking the
+// WASM on_data hook on every chunk before forwarding it.
+func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, metrics *observe.Metrics) (int64, error) {
+	bufp := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufp)
+	buf := *bufp
+
+	var r io.Reader = src
+	if idle > 0 {
+		r = &activityReader{conn: src, peer: dst, idle: idle}
+	}
+
+	var total int64
+	for {
+		nr, rerr := r.Read(buf)
+		if nr > 0 {
+			verdict, perr := pl.OnData(ctx, buf[:nr])
+			if perr != nil || verdict != plugin.VerdictAllow {
+				metrics.RejectPlugin()
+				return total, errPluginDenied
+			}
+			nw, werr := dst.Write(buf[:nr])
+			total += int64(nw)
+			if werr != nil {
+				return total, werr
+			}
+			if nw != nr {
+				return total, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return total, nil
+			}
+			return total, rerr
+		}
+	}
 }
 
 // copyConn copies src -> dst, choosing the zero-copy path when idle is disabled

@@ -81,6 +81,7 @@ func samePluginConfig(a, b config.PluginConfig) bool {
 	return a.Path == b.Path &&
 		a.MaxMemoryPages == b.MaxMemoryPages &&
 		a.Timeout == b.Timeout &&
+		a.DataMode == b.DataMode &&
 		bytes.Equal(a.Wasm, b.Wasm)
 }
 

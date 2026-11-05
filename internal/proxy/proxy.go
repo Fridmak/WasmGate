@@ -123,6 +123,35 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
+	// L7 first-packet inspection ("once" mode, the default when on_data is
+	// exported): inspect the initial client request in the WASM sandbox BEFORE
+	// dialing the upstream, then DrainTo replays the packet and hands the raw
+	// socket back to splice(2) for the rest of the connection.
+	var streamPlugin *plugin.Plugin
+	if rl.plugin != nil && rl.plugin.HasData() {
+		if rl.cfg.Plugin.DataMode == "stream" {
+			streamPlugin = rl.plugin
+		} else {
+			chunk, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
+			if err != nil {
+				return
+			}
+			client = wrapped
+			verdict, err := rl.plugin.OnData(ctx, chunk)
+			if err != nil || verdict != plugin.VerdictAllow {
+				p.metrics.RejectPlugin()
+				if ok, dropped := p.sampler.Allow("plugin_data:" + listenerName); ok {
+					p.log.Warn("payload rejected by wasm on_data hook",
+						"listener", listenerName,
+						"err", err,
+						"suppressed", dropped,
+					)
+				}
+				return
+			}
+		}
+	}
+
 	up := targetPool.Next()
 	defer targetPool.Release(up)
 
@@ -149,7 +178,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
-	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout)
+	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics)
 	p.metrics.AddBytes(rx + tx)
 	if rl.plugin != nil {
 		_ = rl.plugin.OnClose(ctx, peerIP, rx, tx)

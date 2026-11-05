@@ -268,6 +268,67 @@ func TestProxySNIRoutesToMatchingPoolAndReplaysClientHello(t *testing.T) {
 	sendHello("unmatched.example.org")
 }
 
+// TestProxyWasmOnDataInspectsL7OnceAndStream verifies L7 payload inspection in
+// both modes:
+//   - "once" (default): the first packet is inspected in WASM before dialing
+//     the upstream; allowed packets are replayed intact via DrainTo.
+//   - "stream": every chunk is inspected in WASM, so a bad packet sent later on
+//     an already established connection tears it down immediately.
+func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
+	// WASM module exporting memory + on_data(ptr, len) -> 1 if payload[0] == 'X', else 0.
+	wasmDenyX := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+		0x03, 0x02, 0x01, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x14, 0x02,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0a, 0x0d, 0x01,
+		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
+	}
+
+	echoAddr := startEcho(t)
+	m := observe.NewMetrics()
+	cfgOnce := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX} // default data_mode = "once"
+	}))
+	srv := NewServer(testLogger(), NewRuntime(cfgOnce), m)
+	addr := startServer(t, srv)
+
+	// 1. Clean L7 request in "once" mode passes and is echoed back intact.
+	good := roundTrip(t, addr)
+	_ = good.Close()
+
+	// 2. Malicious first packet starting with 'X' is rejected before dialing upstream.
+	bad := dial(t, addr)
+	defer bad.Close()
+	_, _ = bad.Write([]byte("X-INJECTION"))
+	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := bad.Read(make([]byte, 1)); err == nil {
+		t.Fatal("packet starting with 'X' was not rejected by WASM on_data")
+	}
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsPluginRejected >= 1
+	})
+
+	// 3. Hot-reload to "stream" mode: the first packet passes, the second packet
+	// on the SAME connection starts with 'X' and tears down the stream.
+	cfgStream := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX, DataMode: "stream"}
+	}))
+	if _, err := srv.Reload(context.Background(), cfgStream); err != nil {
+		t.Fatalf("reload stream mode: %v", err)
+	}
+	c := roundTrip(t, addr) // first chunk "ping" is allowed and echoed
+	defer c.Close()
+	_, _ = c.Write([]byte("X-SECOND-CHUNK"))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err == nil {
+		t.Fatal("second chunk starting with 'X' was not rejected in stream mode")
+	}
+}
+
 // BenchmarkConnHotPath measures everything Handle does per connection before it
 // touches a socket: load the snapshot, resolve the listener, take a connection
 // slot, pick an upstream, then release both. This is the CPU overhead the proxy

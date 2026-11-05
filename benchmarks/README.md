@@ -27,7 +27,7 @@
 | `BenchmarkLimiterAllowParallel/{shared_key,distinct_keys}` | `internal/observe` (`limiter_test.go`) | лог-лимитер, когда его дёргают все P сразу (один ключ против своих у каждого) | `ns/op` |
 | `BenchmarkMetricsConnection`, `BenchmarkMetricsConnectionParallel` | `internal/observe` (`metrics_test.go`) | всю учётную работу метрик на соединение (Accept + AddBytes ×2 + Close) | `ns/op`, `allocs/op` |
 | `BenchmarkAllow`, `BenchmarkAllowParallel` | `internal/ratelimit` (`window_test.go`) | проверку скользящего окна по IP/подсети (один ключ в один поток против всех P по разным IP) | `ns/op`, `allocs/op` |
-| `BenchmarkOnAccept`, `BenchmarkOnAcceptParallel` | `internal/plugin` (`sandbox_test.go`) | вызов WASM-хука `on_accept` через пул инстансов `wazero` и `CallWithStack` | `ns/op`, `allocs/op` |
+| `BenchmarkOnAccept`, `BenchmarkOnAcceptParallel`, `BenchmarkOnData` | `internal/plugin` (`sandbox_test.go`) | вызов WASM-хуков `on_accept` и L7 `on_data` через пул инстансов `wazero` и `CallWithStack` | `ns/op`, `allocs/op` |
 
 > Подпапок `bench/` нет. Тесты и бенчи лежат вместе, в `X_test.go` того исходника,
 > который покрывают (`copy.go` → `copy_test.go`), тесты сверху, бенчи ниже — так

@@ -102,17 +102,20 @@ func TestLimiterLimitChangeOnReloadTakesEffect(t *testing.T) {
 // the registry: a reload that keeps the same window reuses the limiter so
 // connections already counted in the window are not forgotten.
 func TestRateLimitSurvivesReload(t *testing.T) {
-	withRate := func(max int) *config.Config {
+	withRate := func(limit int) *config.Config {
 		return edgeConfig([]string{"127.0.0.1:9000"}, func(lc *config.ListenerConfig) {
-			lc.RateLimit = config.RateLimit{Max: max, Window: time.Minute}
+			lc.RateLimit = config.RateLimit{Max: limit, Window: time.Minute}
 		})
 	}
 	rt := NewRuntime(withRate(2))
 	ip := net.ParseIP("192.0.2.1")
 	now := time.Now()
 	first := rt.Load().listeners["edge"].rateLimiter
-	if !first.Allow(ip, now) || !first.Allow(ip, now) {
-		t.Fatal("first two connections refused")
+	if !first.Allow(ip, now) {
+		t.Fatal("first connection refused")
+	}
+	if !first.Allow(ip, now) {
+		t.Fatal("second connection refused")
 	}
 
 	rt.Reload(withRate(2))

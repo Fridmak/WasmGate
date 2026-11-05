@@ -76,6 +76,27 @@ var (
 		0x07, 0x0d, 0x01, 0x09, 'o', 'n', '_', 'a', 'c', 'c', 'e', 'p', 't', 0x00, 0x00,
 		0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b,
 	}
+
+	// wasmDenyFirstByteX exports memory (1 page) and on_data(ptr: i32, len: i32) -> i32:
+	// reads the first byte of the packet at linear memory[ptr] (i32.load8_u) and
+	// returns 1 (VerdictDeny) if it equals 'X' (0x58), or 0 (VerdictAllow) otherwise:
+	//   local.get 0; i32.load8_u align=0 offset=0; i32.const 0x58; i32.eq; end
+	wasmDenyFirstByteX = []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // (i32, i32) -> i32
+		0x03, 0x02, 0x01, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x01, // memory: min 1 page (64 KiB)
+		0x07, 0x14, 0x02,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0a, 0x0d, 0x01,
+		0x0b, 0x00,
+		0x20, 0x00, // local.get 0 (ptr)
+		0x2d, 0x00, 0x00, // i32.load8_u
+		0x41, 0xd8, 0x00, // i32.const 0x58 ('X')
+		0x46, // i32.eq
+		0x0b, // end
+	}
 )
 
 func TestPluginAllowAndDenyByIP(t *testing.T) {
@@ -152,6 +173,41 @@ func TestLoadExampleIPGuardPlugin(t *testing.T) {
 	}
 	if err := p.OnClose(ctx, net.ParseIP("127.0.0.1"), 512, 1024); err != nil {
 		t.Fatalf("OnClose: %v", err)
+	}
+}
+
+func TestPluginOnDataInspectsPacketBytes(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(ctx, wasmDenyFirstByteX, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close(ctx)
+
+	if v, err := p.OnData(ctx, []byte("GET /health HTTP/1.1\r\n\r\n")); err != nil || v != VerdictAllow {
+		t.Fatalf("GET payload: got (%v, %v), want VerdictAllow", v, err)
+	}
+	if v, err := p.OnData(ctx, []byte("X-BAD-PAYLOAD")); err != nil || v != VerdictDeny {
+		t.Fatalf("X-BAD-PAYLOAD: got (%v, %v), want VerdictDeny", v, err)
+	}
+}
+
+func BenchmarkOnData(b *testing.B) {
+	ctx := context.Background()
+	p, err := New(ctx, wasmDenyFirstByteX, Options{})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer p.Close(ctx)
+
+	payload := []byte("POST /api/login HTTP/1.1\r\nHost: example.com\r\n\r\n{\"user\":\"alice\"}")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, err := p.OnData(ctx, payload)
+		if err != nil || v != VerdictAllow {
+			b.Fatalf("OnData: %v, %v", v, err)
+		}
 	}
 }
 

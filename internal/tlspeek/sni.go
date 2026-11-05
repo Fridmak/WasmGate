@@ -41,6 +41,11 @@ type Conn struct {
 	data []byte
 }
 
+// Bytes returns the unread peeked prefix currently held in the buffer.
+func (c *Conn) Bytes() []byte {
+	return c.data
+}
+
 // Read serves any remaining peeked bytes before reading from the underlying conn.
 func (c *Conn) Read(p []byte) (int, error) {
 	if len(c.data) > 0 {
@@ -125,6 +130,32 @@ func Peek(conn net.Conn, timeout time.Duration) (sni string, wrapped net.Conn, e
 	}
 
 	return sni, &Conn{Conn: conn, buf: bufp, data: buf[:n]}, nil
+}
+
+// PeekChunk reads the first arriving chunk from conn into a pooled buffer (or
+// reuses the buffer if conn is already a *Conn from an earlier TLS SNI peek)
+// so an L7 WASM plugin can inspect the request payload before dialing the
+// upstream, and then replay the chunk via DrainTo.
+func PeekChunk(conn net.Conn, timeout time.Duration) (chunk []byte, wrapped net.Conn, err error) {
+	if pc, ok := conn.(*Conn); ok {
+		return pc.Bytes(), pc, nil
+	}
+	if timeout > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, conn, err
+		}
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	}
+
+	bufp := peekPool.Get().(*[]byte)
+	buf := *bufp
+	n, err := conn.Read(buf)
+	if n <= 0 {
+		peekPool.Put(bufp)
+		return nil, conn, err
+	}
+	pc := &Conn{Conn: conn, buf: bufp, data: buf[:n]}
+	return pc.Bytes(), pc, nil
 }
 
 // ParseClientHelloSNI parses a single TLS Handshake record containing a

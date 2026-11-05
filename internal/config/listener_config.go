@@ -41,6 +41,7 @@ type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = no per-call timer
+	DataMode       string        `yaml:"data_mode"`        // L7 on_data mode: ""/"once" (first packet, preserves splice) or "stream" (every chunk)
 	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
 }
 
@@ -118,6 +119,11 @@ func (l *ListenerConfig) Validate() error {
 	}
 	if l.Plugin.Timeout < 0 {
 		return errors.New("plugin.timeout cannot be negative")
+	}
+	switch l.Plugin.DataMode {
+	case "", "once", "stream":
+	default:
+		return fmt.Errorf("unknown plugin.data_mode %q (want once or stream)", l.Plugin.DataMode)
 	}
 	return nil
 }
