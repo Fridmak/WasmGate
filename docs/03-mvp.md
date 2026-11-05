@@ -34,7 +34,7 @@
 | 5 | **TLS passthrough** через SNI-peek (без терминации); опц. терминация | ⏳ план |
 | 6 | Health-checks (активный TCP-connect + пассивный по ошибкам) | ⏳ план |
 | 7 | Конфиг из YAML + **hot reload** (SIGHUP — прообраз RCU), reconcile слушателей | ✅ M2 |
-| 8 | Наблюдаемость: структурные логи (`log/slog`) есть; метрики/`pprof` — M3 | 🟡 частично |
+| 8 | Наблюдаемость: структурные логи (`log/slog`), метрики (`/metrics`), `/healthz`, `pprof` | ✅ M3 |
 | 9 | Graceful shutdown & **drain** (перестаём принимать, доигрываем активные) | ✅ M2 |
 | 10 | CLI `wasmgate-ctl` (валидация/применение конфига) | ⏳ план |
 
@@ -83,8 +83,9 @@ clients ─▶ accept-loop ─▶ balancer ─▶ upstream pool ─▶ copy/spli
 internal/
 ├── proxy/       # server, proxy.Handle, pool, balancer, copy/splice, snapshot (RCU)
 ├── config/      # схема YAML, загрузчик, Validate(), валидация (чистые данные)
-└── observe/     # логирование (log/slog); метрики/pprof — M3
-# future: ratelimit/ (DDoS), plugin/ (wazero), tlspeek/ (SNI), control/ (gRPC)
+├── ratelimit/   # скользящее окно по IP (F2)
+└── observe/     # логирование (log/slog), лог-лимитер, метрики Prometheus, admin/pprof
+# future: plugin/ (wazero), tlspeek/ (SNI), control/ (gRPC)
 ```
 
 ---
@@ -148,14 +149,14 @@ upstream_pools:
 
 ## 7. Definition of Done (MVP)
 
-- [ ] Проксирует TCP end-to-end, корректно закрывает соединения (half-close).
-- [ ] Балансировка и health-checks работают, мёртвые upstream исключаются.
-- [ ] Reload под нагрузкой **не рвёт** соединения (проверено chaos-тестом).
-- [ ] `go test -race ./...` зелёный; нет утечек горутин/буферов.
-- [ ] Есть метрики, логи, `pprof`-эндпоинт.
-- [ ] `go test -benchmem` показывает **0 alloc** в steady state на fast path.
-- [ ] Сняты и задокументированы baseline-замеры (см. §8).
-- [ ] Кросс-сборка без CGO проходит (linux/amd64, linux/arm64).
+- [x] Проксирует TCP end-to-end, корректно закрывает соединения (half-close).
+- [ ] Балансировка и health-checks работают, мёртвые upstream исключаются (балансировка — ✅, health-checks — в плане).
+- [x] Reload под нагрузкой **не рвёт** соединения (механика и юнит-тесты — ✅; внешний chaos-прогон — M3).
+- [x] `go test -race ./...` зелёный; нет утечек горутин/буферов.
+- [x] Есть метрики, логи, `pprof`-эндпоинт.
+- [x] `go test -benchmem` показывает **0 alloc** в steady state на fast path.
+- [ ] Сняты и задокументированы внешние baseline-замеры S0–S5 (микробенчмарки и Linux/Windows сравнение сняты — см. `benchmarks/README.md`).
+- [x] Кросс-сборка без CGO проходит (linux/amd64, linux/arm64).
 
 > **Fast path** — это `idle_timeout: 0` (по умолчанию): `io.Copy` идёт через
 > `splice`. Если включить `idle_timeout`, включается буферизованное копирование с

@@ -121,13 +121,13 @@ accept()
 | Zero-copy | `splice` (Linux) через `net.TCPConn.ReadFrom` | Копирование данных в ядре, а не в user-space | буферизованная копия из пула — включается при `idle_timeout > 0` (и вне Linux, ADR-7) |
 | WASM runtime | **`tetratelabs/wazero`** | Чистый Go, **нет CGO**, быстрый старт, sandbox, WASI | `wasmtime-go` (CGO), `wasmer-go` (CGO, тяжелее) |
 | JSON (future DPI) | `valyala/fastjson` / `bytedance/sonic` | Zero/низкие аллокации, SIMD (sonic) | `encoding/json` (рефлексия, аллокации) |
-| Config | `knadh/koanf` (или `yaml.v3` + `mapstructure`) | Лёгкий, без магии Viper | Viper (тяжелее) |
-| Logging | **`rs/zerolog`** (или `zap`) | Структурные логи, zero-alloc | `logrus` (аллокации, медленнее) |
-| Metrics | `prometheus/client_golang` + `open-telemetry/opentelemetry-go` | Стандарт индустрии | — |
-| Rate limit | `golang.org/x/time/rate` + **свой sliding window** | Свой алгоритм — часть ядра | — |
+| Config | **`gopkg.in/yaml.v3`** (`KnownFields(true)`) | Прямое декодирование в структуры и `time.Duration`, отсечение опечаток без лишних обёрток | Viper, koanf (избыточны для плоской схемы) |
+| Logging | **`log/slog`** (stdlib) + `observe.Limiter` | Встроен в стандартную библиотеку Go, структурный вывод без внешних зависимостей | `logrus` (аллокации, медленнее) |
+| Metrics | **`observe.Metrics`** (атомики + Prometheus text 0.0.4) | 0 аллокаций и ~60 нс на соединение, совместимость с любым Prometheus-scraper'ом без тяжёлых зависимостей | `client_golang` на каждом чанке (дороже) |
+| Rate limit | **собственный sliding window** (`internal/ratelimit`) | 64 шарда, кольцевые бакеты, 0 аллокаций в steady state — часть ядра | фикс-окно (всплески на границе окна) |
 | eBPF (future) | `cilium/ebpf` | Современный, чистый Go | `iovisor/gobpf` (устарел) |
 | Control plane | **.NET 8 / ASP.NET Core / gRPC** | Строгий контракт, генерация кода | REST (слабее контракт) |
-| Тесты | `stretchr/testify`, `google/go-cmp`, `testify/suite` | Стандарт | — |
+| Тесты | стандартный **`testing`** (table-driven, `-race`, fuzz, bench) | Нулевые внешние зависимости, единый стиль со stdlib | — |
 | Бенчмарки | `go test -bench`, **`benchstat`**, `wrk2`, `vegeta`/`k6`, `iperf3` | Воспроизводимость + статистика | — |
 | Линт | **`golangci-lint`** | Один запуск — много анализаторов | — |
 | Сборка | `Taskfile`/`Make`, `goreleaser`, Docker | Кросс-сборка, релизы | — |
@@ -172,16 +172,16 @@ wasmgate/                         # ← фактическая структур�
 ├── internal/
 │   ├── config/                   # схема YAML, Load()/Validate(), валидация
 │   ├── proxy/                    # data plane: server, proxy, pool, upstream, state, copy, snapshot
-│   └── observe/                  # логирование (log/slog) + ограничитель частоты
+│   ├── ratelimit/                # sliding window по IP/подсети (первая фича ядра, F2)
+│   └── observe/                  # логирование (log/slog), лог-лимитер, метрики, admin/pprof
 ├── configs/                      # примеры конфигурации (wasmgate.yaml, local-echo.yaml)
 ├── plugins/examples/             # (future) примеры плагинов: rust, csharp, tinygo
-├── benchmarks/                   # (future) скрипты нагрузки (wrk2, k6, vegeta)
+├── benchmarks/                   # методика Go-бенчей и план нагрузочных сценариев
 ├── deployments/                  # (future) Dockerfile, compose, systemd
-├── docs/                         # проектная документация
+├── docs/                         # проектная документация (01–07)
 ├── README.md / DEVELOPMENT.md
 ├── go.mod / .golangci.yml / Makefile
 └── (future)
-    ├── internal/ratelimit/       # sliding window DDoS  ← первая фича ядра
     ├── internal/plugin/          # wazero host, ABI, контракты, лимиты
     ├── internal/tlspeek/         # SNI peek, passthrough/terminate
     ├── internal/control/         # gRPC-клиент к control plane

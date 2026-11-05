@@ -15,8 +15,8 @@
 | **S1** | Skeleton ✅ | accept-loop (`net`), логирование, zero-alloc каркас, CI + линт | Приём соединений, `-race` зелёный |
 | **S2** | Proxy core ✅ | upstream pool, балансировка, copy/splice, таймауты | TCP-прокси end-to-end |
 | **S3** | Config + reload + drain ✅ | YAML, `Snapshot`, `atomic.Pointer`, SIGHUP, reconcile слушателей, graceful drain | Reload без разрыва (механика; chaos-замер — S4) |
-| **S4** | Observe + hardening ⏳ | метрики, логи, pprof, health-checks, CLI | **Baseline-замеры (M3)** |
-| **S5** | **F2 connection flood** | sliding window, шардированные ключи, throttle/deny, /24-агрегация | Фильтр в fast path + замеры |
+| **S4** | Observe + hardening 🟡 | метрики, логи, pprof, health-checks, CLI | Метрики/admin/pprof ✅; внешние замеры S0–S5 ⏳ |
+| **S5** | **F2 connection flood** ✅ | sliding window, шардированные ключи, throttle/deny, /24-агрегация | Фильтр в fast path + замеры |
 | **S6** | **WASM host** | wazero, ABI, host functions, sandbox-лимиты, SDK-примеры | Плагин на любом языке работает |
 | **S7** | **F1 Control Plane** | C#/.NET + gRPC/UDS, версии, валидация, rollback, аудит | Hot-reload из CP без простоя |
 | **S8** | Эксперименты | прогоны S0–S5, `benchstat`, графики, сравнение с nginx/HAProxy | Глава «Эксперименты» |
@@ -35,8 +35,8 @@
 | **M0** Skeleton | приём соединений, 0 alloc в idle, `-race` зелёный — ✅ |
 | **M1** Proxy core | TCP end-to-end, нет утечек горутин — ✅ |
 | **M2** Reload | 0 dropped соединений под reload (chaos-тест) — ✅ механика, замер в M3 |
-| **M3** Baseline | числа S0–S5 сняты и задокументированы (`benchstat`) — ⏳ |
-| **M4** Connection flood (F2) | купирование flood'а, ≤5 % throughput-регресс — ⏳ |
+| **M3** Baseline | метрики/pprof готовы ✅; числа S0–S5 (`benchstat`) — ⏳ |
+| **M4** Connection flood (F2) | купирование flood'а, 0 allocs/op в fast path — ✅ |
 | **M5** WASM | плагин на ≥2 языках, sandbox-лимиты работают — ⏳ |
 | **M6** Hot Reload CP (F1) | apply/rollback из C# без разрыва, < 100 мс — ⏳ |
 
@@ -136,6 +136,7 @@
 - [x] MVP + методика замеров — `03-mvp.md`.
 - [x] Выбор ядровых фич + обоснование — `04-diploma-features.md`.
 - [x] План/структура ВКР — `05-roadmap-thesis.md` (этот файл).
-- [x] Рабочий код: M0–M2 (L4-прокси, config, reload, drain) — см. [`DEVELOPMENT.md`](../DEVELOPMENT.md).
-- [ ] Baseline снят и задокументирован (M3).
-- [ ] Демо reload / plugin / DDoS готовы (M4–M6).
+- [x] Журнал разработки (шаги, задачи, проблемы, решения) — `06-dev-journal.md`.
+- [x] Рабочий код: M0–M2, M4 (L4-прокси, config, reload, drain, метрики/admin/pprof, rate-limit на скользящем окне) — см. [`DEVELOPMENT.md`](../DEVELOPMENT.md).
+- [ ] Внешний baseline S0–S5 снят и задокументирован (M3).
+- [ ] Демо reload / plugin / DDoS готовы (M5–M6).

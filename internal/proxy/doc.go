@@ -20,18 +20,16 @@
 //   - proxy.go    — Proxy.Handle: the per-connection pipeline (the hot path).
 //   - pool.go     — pool: a set of upstreams behind one balancing strategy.
 //   - upstream.go — upstream endpoint and Balancer strategies (round-robin, least-conn).
-//   - state.go    — registry: counters (connection limits, active) that outlive a snapshot.
+//   - state.go    — registry: counters and rate-limit windows that outlive a snapshot.
 //   - copy.go     — join: bidirectional byte pump with half-close; zero-copy
 //     splice on the Linux fast path, pooled buffers everywhere else, and a
 //     connection-wide idle watchdog when idle_timeout > 0.
 //
 // # Extension seams
 //
-// Two seams are intentionally left open for the diploma features:
-//
-//   - Connection-flood rate limiting (sliding window): in Proxy.Handle, right
-//     after the listener and pool are resolved and before the upstream is dialed
-//     (see the "FUTURE" marker in proxy.go).
-//   - WASM plugin hooks (on_accept / on_data / on_close): around the data loop
-//     in Proxy.Handle / join.
+//   - Per-IP connection-flood rate limiting (internal/ratelimit) runs in
+//     Proxy.Handle right after max_conns and before the upstream dial, with its
+//     sliding windows kept in the registry across reloads.
+//   - WASM plugin hooks (on_accept / on_data / on_close) attach around the
+//     accept/data/close stages in Proxy.Handle.
 package proxy

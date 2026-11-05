@@ -19,6 +19,9 @@ listeners:
                               # splice). When enabled, the deadline is refreshed by activity
                               # in EITHER direction, so a slow one-way download is not cut;
                               # set e.g. 60s in production to reap silent conns.
+    rate_limit:               # optional per-IP sliding-window connection rate limit (F2)
+      max: 200                # max new connections per IP per window (0 = disabled)
+      window: 1s              # sliding window length (default 1s, min 10ms)
 
   - name: db
     addr: "127.0.0.1:5433"

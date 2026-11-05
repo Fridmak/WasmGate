@@ -17,14 +17,8 @@ const (
 )
 
 // Proxy is the data-path handler: it turns an accepted client connection into a
-// proxied session against an upstream.
-//
-// Extension points (added in later milestones, kept as explicit seams):
-//   - DDoS / rate limiting on the sliding window: checked right after the
-//     listener is resolved, before dialing the upstream, so abusive connections
-//     are dropped cheaply.
-//   - WASM plugin hooks: on_accept / on_data / on_close, invoked around the
-//     data loop.
+// proxied session against an upstream, enforcing the listener's max_conns and
+// per-IP sliding-window rate_limit before dialing the backend.
 type Proxy struct {
 	log     *slog.Logger     // structured logger
 	rt      *Runtime         // source of the current snapshot

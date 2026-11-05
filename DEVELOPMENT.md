@@ -8,29 +8,30 @@
 
 ## Текущий статус и следующий шаг
 
-**Реализовано (M0–M2):** L4 TCP reverse proxy на `net` — приём соединений,
+**Реализовано (M0–M4):** L4 TCP reverse proxy на `net` — приём соединений,
 балансировка `round_robin`/`least_conn`, проксирование (`io.Copy` → `splice` на
 Linux; fast path при `idle_timeout: 0`), таймауты (`dial_timeout`,
 `idle_timeout` — общий для соединения, а не по направлениям), лимит соединений
-`max_conns`, half-close и корректный teardown при ошибке/принудительном закрытии,
-graceful shutdown (сначала перестаём принимать, затем drain до grace, и только
-потом — принудительное закрытие), reload конфига по SIGHUP через атомарный
-snapshot, **reconcile слушателей** (добавление/удаление адресов без перезапуска),
-сохранение счётчиков лимитов и балансировщика между reload, ограничение частоты
-«шумных» логов, строгая валидация конфига, структурные логи, сборка без CGO.
-Метрики (Prometheus-текст, `/healthz`, `pprof`) — на отдельном admin-листенере
-`admin_addr` (опционально); счётчики — атомики, ~60 нс и 0 аллокаций на
-соединение. Покрыто тестами (`go test ./...`).
+`max_conns`, ограничение частоты новых соединений по IP на скользящем окне
+(`rate_limit`, пакет `internal/ratelimit`, фича F2), half-close и корректный
+teardown при ошибке/принудительном закрытии, graceful shutdown (сначала
+перестаём принимать, затем drain до grace, и только потом — принудительное
+закрытие), reload конфига по SIGHUP через атомарный snapshot, **reconcile
+слушателей** (добавление/удаление/переименование без перезапуска), сохранение
+счётчиков лимитов, окон `rate_limit` и балансировщика между reload, ограничение
+частоты «шумных» логов, строгая валидация конфига, структурные логи, сборка без
+CGO. Метрики (Prometheus-текст, `/healthz`, `pprof`) — на отдельном
+admin-листенере `admin_addr` (опционально); счётчики — атомики, ~60 нс и 0
+аллокаций на соединение. Покрыто тестами (`go test ./...`).
 
-**Ещё не реализовано:** защита от connection flood (rate-limit), WASM-плагины,
-SNI/TLS-peek, health-checks апстримов, CLI, нагрузочные бенчмарки. Куда
-встраивать — §10 «Рецепты».
+**Ещё не реализовано:** WASM-плагины, SNI/TLS-peek, health-checks апстримов,
+CLI, внешние нагрузочные бенчмарки S0–S5. Куда встраивать — §10 «Рецепты».
 
-**Следующий шаг:** пакет `internal/ratelimit` (скользящее окно — первая фича
-ядра). Чек-лист и точка вставки — §10.3; в коде это метка `FUTURE` в
-`internal/proxy/proxy.go`.
+**Следующий шаг:** расширение `internal/ratelimit` (allow-list, `/24`-агрегация,
+exponential backoff ban) и песочница WASM-плагинов (`internal/plugin` на
+`wazero`).
 
-**Milestones:** M0 ✅ · M1 ✅ · M2 ✅ · M3 ⏳ · M4–M6 ⏳ (см. `docs/05`).
+**Milestones:** M0 ✅ · M1 ✅ · M2 ✅ · M3 🟡 (метрики/pprof готовы, baseline S0–S5 впереди) · M4 ✅ · M5–M6 ⏳ (см. `docs/05`).
 
 ---
 
@@ -103,6 +104,9 @@ WasmGate/
 │   │   ├── upstream_test.go тесты + бенч upstream.go: балансировщики
 │   │   ├── pool_test.go     тесты pool.go: резервирование слотов
 │   │   └── helpers_test.go  общие фикстуры: echo, сервер, dial, конфиг, sinks
+│   ├── ratelimit/
+│   │   ├── window.go        скользящее окно по IP (64 шарда, 10 слотов)
+│   │   └── window_test.go   тесты + бенчи Allow / AllowParallel
 │   └── observe/
 │       ├── log.go           ParseLevel + NewLogger (log/slog)
 │       ├── limiter.go       ограничитель частоты логов (анти-«шторм»)
@@ -201,7 +205,8 @@ go test -race ./...                              # детектор гонок (
 - `proxy_test.go`, `state_test.go`, `upstream_test.go` — микро: горячий путь,
   лимитер, балансировщик;
 - `internal/config/config_test.go` — `Load` / `Validate` (цена SIGHUP);
-- `internal/observe/limiter_test.go` — лог-лимитер.
+- `internal/ratelimit/window_test.go` — `Allow` / `AllowParallel` (скользящее окно по IP);
+- `internal/observe/limiter_test.go`, `metrics_test.go` — лог-лимитер и метрики.
 
 В отдельный пакет (подпапку) бенчи не выносят: подпапка — это отдельный пакет, и
 он видит только экспортированные символы. А мерят бенчи как раз неэкспортируемое —
@@ -332,16 +337,17 @@ $client.Close()
 ```
 main.run()
   ├─ config.Load(path)                     схема + валидация
-  ├─ proxy.NewRuntime(cfg)                 Snapshot v1 + компиляция пулов
-  ├─ proxy.NewServer(log, rt)
+  ├─ observe.NewMetrics()                  атомарные счётчики
+  ├─ proxy.NewRuntime(cfg)                 Snapshot v1 + компиляция пулов/лимитеров
+  ├─ proxy.NewServer(log, rt, metrics)
   ├─ srv.Start()                           bind листенеров + accept-loop на каждый
   └─ ждём сигналов: Ctrl+C/SIGTERM → Shutdown, SIGHUP → srv.Reload
 
 Соединение:
   acceptLoop()          server.go   Accept() → горутина на соединение
     └─ Proxy.Handle()   proxy.go    rt.Load() → резолв listener+pool (1 lookup)
-        ├─ max_conns    proxy.go    лимит соединений на listener (limiter из registry)
-        ├─ (FUTURE) rate-limit соединений
+        ├─ max_conns    proxy.go    лимит одновременных соединений (limiter из registry)
+        ├─ rate_limit   proxy.go    скользящее окно по IP (ratelimit.Limiter из registry)
         ├─ pool.Next()  pool.go     балансировщик выбирает upstream (active++)
         ├─ DialContext  proxy.go    подключение к upstream (с dial_timeout)
         └─ join()       copy.go     copy в обе стороны; splice при idle_timeout=0,
@@ -407,6 +413,12 @@ func (s *Server) Shutdown(ctx) error                 // drain, при истеч
 func (s *Server) Addrs() []net.Addr
 ```
 
+### `internal/ratelimit`
+
+- `Limiter` (`window.go`) — скользящее окно из 10 слотов, 64 шарда по 16-байтному
+  каноническому ключу IP (IPv4 и IPv4-mapped IPv6 отображаются в один ключ).
+  Хранится в `registry` (`state.go`), поэтому reload не обнуляет счётчики.
+
 ### `internal/observe`
 
 - `ParseLevel(s) (slog.Level, error)` — разбор текстового уровня (граница:
@@ -465,6 +477,9 @@ listeners:
     max_conns: 10000        # лимит одновременных соединений (0 = без лимита)
     dial_timeout: 3s        # таймаут подключения к бэкенду (по умолчанию 5s)
     idle_timeout: 0s        # idle-таймаут соединения; 0 = выкл (по умолчанию)
+    rate_limit:             # опционально: лимит новых соединений с одного IP
+      max: 200              # соединений за окно (0 = выкл)
+      window: 1s            # длина скользящего окна (по умолчанию 1s, мин. 10ms)
 
 pools:
   web:
@@ -508,13 +523,13 @@ pools:
 3. Разреши значение в валидации (`pool_config.go`, switch `Balance`).
 4. Добавь тест в `proxy_test.go`.
 
-### 10.3. Rate-limit на скользящем окне (первая фича ядра)
-- Создай `internal/ratelimit` (ring-бакеты + шарды, без аллокаций). Окна/счётчики
-  положи в `registry` (`state.go`), а не в snapshot, — иначе reload будет их сбрасывать.
-- В `proxy.go` на метке `// --- FUTURE: connection-flood ... ---` вызови проверку **до** dial.
-- Конфиг: `listeners[].rate_limit` (порог, окно) → поле в `ListenerConfig`.
-- Отказы логируй через `observe.NewLimiter(...)`, чтобы не получить «шторм» логов.
-- Бенчмарк: `go test -bench -benchmem ./internal/ratelimit` → цель `0 allocs/op`.
+### 10.3. Расширение rate-limit на скользящем окне (`internal/ratelimit`)
+- Базовый лимитер уже живёт в `internal/ratelimit/window.go` и привязан к
+  `registry` (`state.go`), вызов в `proxy.go` стоит до `DialContext`.
+- При добавлении новых сигналов (allow-list подсетей, агрегация `/24`,
+  backoff-бан) расширяй `config.RateLimit` в `listener_config.go` и
+  `ratelimit.Limiter`, сохраняя `0 allocs/op` в `BenchmarkAllow` /
+  `BenchmarkAllowParallel`.
 
 ### 10.4. WASM-хуки плагинов (киллер-фича)
 - Определи интерфейс хуков и хост на `wazero` в `internal/plugin`.

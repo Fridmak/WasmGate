@@ -9,10 +9,10 @@
 
 | Параметр | Значение |
 |----------|----------|
-| Статус | прототип ядра (этапы M0/M1), этап проектирования ВКР |
+| Статус | ядро L4 + hot reload + метрики + rate limiting (этапы M0–M4) |
 | Data plane | Go 1.23+ |
 | Control plane (план) | C#/.NET 8, gRPC поверх Unix Domain Socket |
-| Плагины (план) | WebAssembly ([wazero](https://github.com/tetratelabs/wazero)) |
+| Плагины | WebAssembly ([wazero](https://github.com/tetratelabs/wazero)) |
 | Лицензия | MIT |
 
 ---
@@ -36,19 +36,22 @@ WasmGate проектируется как прокси-шлюз с расшир
 
 ## Возможности
 
-### Реализовано (прототип, этапы M0/M1)
+### Реализовано (этапы M0–M4)
 
 - L4/TCP reverse proxy на стандартном `net` (горутина на соединение).
 - Балансировка: `round_robin`, `least_conn`.
 - Проксирование через `io.Copy`; на Linux используется `splice(2)` (zero-copy),
   на других платформах буфер копирования берётся из пула.
 - Таймауты `dial_timeout` и `idle_timeout` (опционально), лимит `max_conns`.
+- Защита от всплесков соединений (`rate_limit`, фича F2) на скользящем окне
+  (64 шарда, 10 слотов, 0 аллокаций в steady state) до `dial` к апстриму.
 - Полу-закрытие (half-close) и корректное завершение при ошибке либо отмене
   контекста.
 - Graceful shutdown: сначала перестаём принимать, затем доигрываем активные
   соединения до `-shutdown-grace`; только после этого они закрываются принудительно.
 - Перезагрузка конфигурации по `SIGHUP` (Unix) через атомарную подмену snapshot;
-  слушатели добавляются/удаляются без перезапуска, счётчики лимитов не сбрасываются.
+  слушатели добавляются/удаляются/переименовываются без перезапуска, счётчики
+  лимитов и окна `rate_limit` не сбрасываются.
 - Строгая валидация конфигурации.
 - Структурное логирование (`log/slog`) с ограничением частоты «шумных» событий.
 - Метрики в формате Prometheus (`/metrics`), `/healthz` и `net/http/pprof` на
@@ -58,10 +61,6 @@ WasmGate проектируется как прокси-шлюз с расшир
 
 ### Планируется
 
-- Защита от всплесков соединений (connection flood) на скользящем окне — первая
-  фича ядра. Это именно rate limiting на уровне соединений после `accept()`, а не
-  защита от объёмных атак (SYN-flood и т. п.): такие атаки отсекаются до
-  user-space, для них предусмотрен eBPF/XDP в будущих работах.
 - Хуки плагинов WASM: `on_accept`, `on_data`, `on_close`.
 - TLS passthrough через SNI peek и опциональная терминация.
 - Health-checks upstream.
@@ -103,10 +102,8 @@ upstream pool
 | M0. Skeleton | accept-loop, логирование, каркас | бинарь принимает соединения | готово |
 | M1. Proxy core | пулы, балансировка, copy/splice, таймауты | проксирование TCP end-to-end | готово |
 | M2. Config + reload + drain | YAML, snapshot, atomic swap, SIGHUP, reconcile слушателей, drain | reload без разрыва соединений | готово |
-| M3. Observe + hardening | метрики, `pprof`, health-checks, CLI | наблюдаемый прокси | в работе (метрики/pprof есть, baseline-замеры впереди) |
-
-После M3 в ядро добавляется защита от connection flood (sliding window), затем WASM
-host и control plane. Drain и её соответствие требованиям проверяются chaos-тестом.
+| M3. Observe + hardening | метрики, `pprof`, health-checks, CLI | наблюдаемый прокси | метрики/pprof готовы, baseline-замеры S0–S5 впереди |
+| M4. Connection flood (F2) | скользящее окно по IP в fast path | фильтр в горячем пути, 0 allocs/op | готово |
 
 ---
 
@@ -160,6 +157,9 @@ listeners:
     max_conns: 10000
     dial_timeout: 3s
     idle_timeout: 0s
+    rate_limit:
+      max: 200
+      window: 1s
 
 pools:
   web:
@@ -197,11 +197,12 @@ zero-copy `splice`. При `idle_timeout > 0` включается буфери�
 cmd/wasmgate/        точка входа и обработка сигналов (unix/windows)
 internal/config/     схема YAML, загрузка, валидация
 internal/proxy/      ядро data plane: сервер, прокси, пулы, балансировщики, copy, snapshot
+internal/ratelimit/  скользящее окно ограничения частоты соединений по IP (F2)
 internal/observe/    логирование (log/slog), лог-лимитер, метрики и admin-эндпоинт
 configs/             примеры конфигурации
 docs/                проектная документация
 plugins/             примеры плагинов (в разработке)
-benchmarks/          методика бенчмарков и сценарии нагрузки (в разработке)
+benchmarks/          методика бенчмарков и сценарии нагрузки
 deployments/         конфигурации развёртывания (в разработке)
 ```
 
@@ -216,6 +217,7 @@ deployments/         конфигурации развёртывания (в р�
 | [`docs/03-mvp.md`](docs/03-mvp.md) | Границы MVP, Definition of Done, методика замеров |
 | [`docs/04-diploma-features.md`](docs/04-diploma-features.md) | Разбор фич, приоритизация, выбор ядра |
 | [`docs/05-roadmap-thesis.md`](docs/05-roadmap-thesis.md) | План работ, milestones, структура ВКР |
+| [`docs/06-dev-journal.md`](docs/06-dev-journal.md) | Журнал разработки: шаги, задачи, проблемы и решения |
 | [`docs/07-glossary.md`](docs/07-glossary.md) | Глоссарий терминов |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Рабочий гайд: команды, структура кода, рецепты |
 

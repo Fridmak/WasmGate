@@ -1,7 +1,6 @@
-// Command wasmgate is the WasmGate data plane: a fast, L4 TCP reverse proxy.
-//
-// Milestone: M0/M1 (basic proxying). The structure is deliberately built with
-// seams for the planned product (hot reload, sliding-window DDoS, WASM plugins).
+// Command wasmgate is the WasmGate data plane: a fast, L4 TCP reverse proxy
+// with zero-downtime configuration reload, per-IP sliding-window rate limiting
+// and a Prometheus/pprof admin endpoint.
 package main
 
 import (
