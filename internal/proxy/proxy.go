@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"strconv"
 	"time"
 
 	"wasmgate/internal/observe"
+	"wasmgate/internal/plugin"
 )
 
 // logWindow and logBurst bound how often per-connection "expected under load"
@@ -70,14 +72,35 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		defer rl.limiter.release()
 	}
 
+	var peerIP net.IP
+	var peerPort int
+	if rl.rateLimiter != nil || rl.plugin != nil {
+		peerIP, peerPort = clientEndpoint(client)
+	}
+
 	if rl.rateLimiter != nil {
-		if !rl.rateLimiter.Allow(clientIP(client), time.Now()) {
+		if !rl.rateLimiter.Allow(peerIP, time.Now()) {
 			p.metrics.RejectRate()
 			if ok, dropped := p.sampler.Allow("rate:" + listenerName); ok {
 				p.log.Warn("per-IP connection rate exceeded",
 					"listener", listenerName,
 					"max", rl.rateLimiter.Max(),
 					"window", rl.rateLimiter.Window(),
+					"suppressed", dropped,
+				)
+			}
+			return
+		}
+	}
+
+	if rl.plugin != nil {
+		verdict, err := rl.plugin.OnAccept(ctx, peerIP, peerPort)
+		if err != nil || verdict != plugin.VerdictAllow {
+			p.metrics.RejectPlugin()
+			if ok, dropped := p.sampler.Allow("plugin:" + listenerName); ok {
+				p.log.Warn("connection rejected by wasm plugin",
+					"listener", listenerName,
+					"err", err,
 					"suppressed", dropped,
 				)
 			}
@@ -111,16 +134,20 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout)
 	p.metrics.AddBytes(rx + tx)
+	if rl.plugin != nil {
+		_ = rl.plugin.OnClose(ctx, peerIP, rx, tx)
+	}
 }
 
-// clientIP returns the peer IP without allocating on the TCP path.
-func clientIP(c net.Conn) net.IP {
+// clientEndpoint returns the peer IP and port without allocating on the TCP path.
+func clientEndpoint(c net.Conn) (net.IP, int) {
 	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
-		return ta.IP
+		return ta.IP, ta.Port
 	}
-	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	host, portStr, err := net.SplitHostPort(c.RemoteAddr().String())
 	if err != nil {
-		return nil
+		return nil, 0
 	}
-	return net.ParseIP(host)
+	port, _ := strconv.Atoi(portStr)
+	return net.ParseIP(host), port
 }

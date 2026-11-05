@@ -7,6 +7,7 @@ import (
 
 	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
+	"wasmgate/internal/plugin"
 	"wasmgate/internal/ratelimit"
 )
 
@@ -22,6 +23,8 @@ type resolvedListener struct {
 	limiter *connLimiter
 	// rateLimiter enforces cfg.RateLimit per client IP; nil means disabled.
 	rateLimiter *ratelimit.Limiter
+	// plugin is the compiled WASM sandbox for this listener; nil means disabled.
+	plugin *plugin.Plugin
 }
 
 // Snapshot is an immutable, ready-to-use view of the configuration together
@@ -118,6 +121,12 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 		}
 		if lc.RateLimit.Enabled() {
 			rl.rateLimiter = r.registry.rateLimiter(lc.Name, lc.RateLimit)
+		}
+		if lc.Plugin.Enabled() {
+			pl, err := r.registry.plugin(lc.Name, lc.Plugin)
+			if err == nil {
+				rl.plugin = pl
+			}
 		}
 		listeners[lc.Name] = rl
 	}

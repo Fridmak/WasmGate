@@ -140,6 +140,51 @@ func TestProxyRateLimitsConnections(t *testing.T) {
 	})
 }
 
+// TestProxyWasmPluginRejectsAndAllows covers the WASM sandbox hook in Handle:
+// a listener with a deny-all WASM plugin rejects connections before dialing the
+// upstream and increments wasmgate_connections_plugin_rejected_total; hot-reloading
+// an allow-all WASM plugin lets subsequent connections through with zero downtime.
+func TestProxyWasmPluginRejectsAndAllows(t *testing.T) {
+	// on_accept(i64, i64, i32) -> i32 returning 1 (VerdictDeny) or 0 (VerdictAllow).
+	wasmVerdict := func(ret byte) []byte {
+		return []byte{
+			0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+			0x01, 0x08, 0x01, 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x01, 0x7f,
+			0x03, 0x02, 0x01, 0x00,
+			0x07, 0x0d, 0x01, 0x09, 'o', 'n', '_', 'a', 'c', 'c', 'e', 'p', 't', 0x00, 0x00,
+			0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, ret, 0x0b,
+		}
+	}
+
+	echoAddr := startEcho(t)
+	m := observe.NewMetrics()
+	cfgDeny := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: wasmVerdict(1)}
+	}))
+	srv := NewServer(testLogger(), NewRuntime(cfgDeny), m)
+	addr := startServer(t, srv)
+
+	denied := dial(t, addr)
+	defer denied.Close()
+	_ = denied.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := denied.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection was not rejected by deny WASM plugin")
+	}
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsPluginRejected >= 1
+	})
+
+	// Hot-reload to an allow WASM plugin: new connections must now succeed.
+	cfgAllow := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: wasmVerdict(0)}
+	}))
+	if _, err := srv.Reload(context.Background(), cfgAllow); err != nil {
+		t.Fatalf("reload allow plugin: %v", err)
+	}
+	c := roundTrip(t, addr)
+	_ = c.Close()
+}
+
 // BenchmarkConnHotPath measures everything Handle does per connection before it
 // touches a socket: load the snapshot, resolve the listener, take a connection
 // slot, pick an upstream, then release both. This is the CPU overhead the proxy

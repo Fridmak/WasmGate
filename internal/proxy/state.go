@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"sync"
 	"sync/atomic"
 
 	"wasmgate/internal/config"
+	"wasmgate/internal/plugin"
 	"wasmgate/internal/ratelimit"
 )
 
@@ -28,15 +31,57 @@ type registry struct {
 	mu         sync.Mutex
 	limiters   map[string]*connLimiter
 	rateLimits map[string]*ratelimit.Limiter
+	plugins    map[string]cachedPlugin
 	upstreams  map[string]*upstream
+}
+
+type cachedPlugin struct {
+	cfg config.PluginConfig
+	pl  *plugin.Plugin
 }
 
 func newRegistry() *registry {
 	return &registry{
 		limiters:   make(map[string]*connLimiter),
 		rateLimits: make(map[string]*ratelimit.Limiter),
+		plugins:    make(map[string]cachedPlugin),
 		upstreams:  make(map[string]*upstream),
 	}
+}
+
+// plugin returns the compiled WASM sandbox for a listener, reusing the existing
+// compiled module and instance pool when the plugin configuration has not changed.
+func (g *registry) plugin(name string, pc config.PluginConfig) (*plugin.Plugin, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if cur, ok := g.plugins[name]; ok && samePluginConfig(cur.cfg, pc) {
+		return cur.pl, nil
+	}
+	opts := plugin.Options{
+		MaxMemoryPages: pc.MaxMemoryPages,
+		Timeout:        pc.Timeout,
+	}
+	var (
+		pl  *plugin.Plugin
+		err error
+	)
+	if len(pc.Wasm) > 0 {
+		pl, err = plugin.New(context.Background(), pc.Wasm, opts)
+	} else {
+		pl, err = plugin.LoadFile(context.Background(), pc.Path, opts)
+	}
+	if err != nil {
+		return nil, err
+	}
+	g.plugins[name] = cachedPlugin{cfg: pc, pl: pl}
+	return pl, nil
+}
+
+func samePluginConfig(a, b config.PluginConfig) bool {
+	return a.Path == b.Path &&
+		a.MaxMemoryPages == b.MaxMemoryPages &&
+		a.Timeout == b.Timeout &&
+		bytes.Equal(a.Wasm, b.Wasm)
 }
 
 // rateLimiter returns the per-IP/subnet connection limiter for a listener. The
@@ -122,6 +167,11 @@ func (g *registry) prune(cfg *config.Config) {
 	for name := range g.rateLimits {
 		if !liveListeners[name] {
 			delete(g.rateLimits, name)
+		}
+	}
+	for name := range g.plugins {
+		if !liveListeners[name] {
+			delete(g.plugins, name)
 		}
 	}
 	for addr, u := range g.upstreams {

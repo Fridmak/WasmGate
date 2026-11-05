@@ -31,13 +31,14 @@ type UpstreamStat struct {
 type Metrics struct {
 	startedAt time.Time
 
-	accepted      atomic.Int64 // total client connections accepted
-	closed        atomic.Int64 // total connection handlers finished
-	active        atomic.Int64 // connections currently being proxied
-	rejectedLimit atomic.Int64 // connections refused by max_conns
-	rejectedRate  atomic.Int64 // connections refused by per-IP rate_limit
-	dialFailed    atomic.Int64 // upstream dials that failed
-	bytes         atomic.Int64 // bytes relayed, both directions combined
+	accepted       atomic.Int64 // total client connections accepted
+	closed         atomic.Int64 // total connection handlers finished
+	active         atomic.Int64 // connections currently being proxied
+	rejectedLimit  atomic.Int64 // connections refused by max_conns
+	rejectedRate   atomic.Int64 // connections refused by per-IP rate_limit
+	rejectedPlugin atomic.Int64 // connections refused by a WASM on_accept plugin
+	dialFailed     atomic.Int64 // upstream dials that failed
+	bytes          atomic.Int64 // bytes relayed, both directions combined
 
 	reloads       atomic.Uint64 // successful configuration reloads
 	configVersion atomic.Uint64 // version of the current configuration snapshot
@@ -83,6 +84,14 @@ func (m *Metrics) RejectRate() {
 	m.rejectedRate.Add(1)
 }
 
+// RejectPlugin records a connection refused by a WASM plugin's on_accept hook.
+func (m *Metrics) RejectPlugin() {
+	if m == nil {
+		return
+	}
+	m.rejectedPlugin.Add(1)
+}
+
 // DialFail records a failed dial to an upstream.
 func (m *Metrics) DialFail() {
 	if m == nil {
@@ -123,16 +132,17 @@ func (m *Metrics) Reload(v uint64) {
 // update can land between reads — fine for reporting, never used for control
 // flow).
 type MetricsSnapshot struct {
-	ConnectionsAccepted      int64
-	ConnectionsClosed        int64
-	ConnectionsActive        int64
-	ConnectionsLimitRejected int64
-	ConnectionsRateRejected  int64
-	UpstreamDialFailures     int64
-	RelayedBytes             int64
-	Reloads                  uint64
-	ConfigVersion            uint64
-	Uptime                   time.Duration
+	ConnectionsAccepted       int64
+	ConnectionsClosed         int64
+	ConnectionsActive         int64
+	ConnectionsLimitRejected  int64
+	ConnectionsRateRejected   int64
+	ConnectionsPluginRejected int64
+	UpstreamDialFailures      int64
+	RelayedBytes              int64
+	Reloads                   uint64
+	ConfigVersion             uint64
+	Uptime                    time.Duration
 }
 
 // Snapshot returns the current metric values. Zero value for a nil Metrics.
@@ -141,16 +151,17 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		return MetricsSnapshot{}
 	}
 	return MetricsSnapshot{
-		ConnectionsAccepted:      m.accepted.Load(),
-		ConnectionsClosed:        m.closed.Load(),
-		ConnectionsActive:        m.active.Load(),
-		ConnectionsLimitRejected: m.rejectedLimit.Load(),
-		ConnectionsRateRejected:  m.rejectedRate.Load(),
-		UpstreamDialFailures:     m.dialFailed.Load(),
-		RelayedBytes:             m.bytes.Load(),
-		Reloads:                  m.reloads.Load(),
-		ConfigVersion:            m.configVersion.Load(),
-		Uptime:                   time.Since(m.startedAt),
+		ConnectionsAccepted:       m.accepted.Load(),
+		ConnectionsClosed:         m.closed.Load(),
+		ConnectionsActive:         m.active.Load(),
+		ConnectionsLimitRejected:  m.rejectedLimit.Load(),
+		ConnectionsRateRejected:   m.rejectedRate.Load(),
+		ConnectionsPluginRejected: m.rejectedPlugin.Load(),
+		UpstreamDialFailures:      m.dialFailed.Load(),
+		RelayedBytes:              m.bytes.Load(),
+		Reloads:                   m.reloads.Load(),
+		ConfigVersion:             m.configVersion.Load(),
+		Uptime:                    time.Since(m.startedAt),
 	}
 }
 
@@ -175,6 +186,7 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	gauge("wasmgate_connections_active", "Connections currently being proxied.", s.ConnectionsActive)
 	counter("wasmgate_connections_limit_rejected_total", "Connections refused because max_conns was reached.", s.ConnectionsLimitRejected)
 	counter("wasmgate_connections_rate_rejected_total", "Connections refused by the per-IP rate limiter.", s.ConnectionsRateRejected)
+	counter("wasmgate_connections_plugin_rejected_total", "Connections refused by a WASM plugin on_accept hook.", s.ConnectionsPluginRejected)
 	counter("wasmgate_upstream_dial_failures_total", "Upstream dials that failed.", s.UpstreamDialFailures)
 	counter("wasmgate_relayed_bytes_total", "Bytes relayed in both directions.", s.RelayedBytes)
 	counter("wasmgate_reloads_total", "Successful configuration reloads.", s.Reloads)

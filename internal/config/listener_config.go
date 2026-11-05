@@ -32,6 +32,20 @@ type ListenerConfig struct {
 	DialTimeout  time.Duration `yaml:"dial_timeout"`  // upstream dial timeout (default 5s)
 	IdleTimeout  time.Duration `yaml:"idle_timeout"`  // connection idle timeout; 0 disables (default 0)
 	RateLimit    RateLimit     `yaml:"rate_limit"`    // per-IP connection rate; max 0 disables
+	Plugin       PluginConfig  `yaml:"plugin"`        // optional WASM plugin sandbox for this listener
+}
+
+// PluginConfig configures an optional WebAssembly plugin attached to a listener.
+type PluginConfig struct {
+	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
+	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
+	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = no per-call timer
+	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
+}
+
+// Enabled reports whether a WASM plugin is configured.
+func (p PluginConfig) Enabled() bool {
+	return p.Path != "" || len(p.Wasm) > 0
 }
 
 // RateLimit caps how many new connections a client IP (and optionally its /24
@@ -100,6 +114,9 @@ func (l *ListenerConfig) Validate() error {
 		if l.RateLimit.Window < MinRateWindow {
 			return fmt.Errorf("rate_limit.window must be at least %s", MinRateWindow)
 		}
+	}
+	if l.Plugin.Timeout < 0 {
+		return errors.New("plugin.timeout cannot be negative")
 	}
 	return nil
 }

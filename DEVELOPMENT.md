@@ -104,8 +104,11 @@ WasmGate/
 │   │   ├── upstream_test.go тесты + бенч upstream.go: балансировщики
 │   │   ├── pool_test.go     тесты pool.go: резервирование слотов
 │   │   └── helpers_test.go  общие фикстуры: echo, сервер, dial, конфиг, sinks
+│   ├── plugin/
+│   │   ├── sandbox.go       песочница wazero: пул инстансов, CallWithStack, лимит памяти/таймаут
+│   │   └── sandbox_test.go  тесты + бенчи OnAccept / OnAcceptParallel
 │   ├── ratelimit/
-│   │   ├── window.go        скользящее окно по IP (64 шарда, 10 слотов)
+│   │   ├── window.go        скользящее окно по IP и /24, allow-list, backoff-бан
 │   │   └── window_test.go   тесты + бенчи Allow / AllowParallel
 │   └── observe/
 │       ├── log.go           ParseLevel + NewLogger (log/slog)
