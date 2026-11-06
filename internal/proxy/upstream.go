@@ -1,8 +1,14 @@
 package proxy
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
 
-// upstream is a single backend endpoint plus its live connection counter.
+	"wasmgate/internal/config"
+)
+
+// upstream is a single backend endpoint plus its live connection counter and
+// lock-free three-state circuit breaker (Closed -> Open -> Half-Open).
 //
 // 32/64-bit safety note: we deliberately use the *typed* atomic wrappers
 // (atomic.Int64, atomic.Uint64) instead of the raw free functions
@@ -10,25 +16,79 @@ import "sync/atomic"
 // so they are correct on 32-bit targets (386, arm) where a plain int64 field
 // is only 4-byte aligned — calling a raw 64-bit atomic on such a field would
 // panic with "unaligned 64-bit atomic operation".
-//
-// Cache-line padding is intentionally NOT done yet. Every upstream has its own
-// cache line only by luck right now; if profiling shows false sharing between
-// hot counters, we will pad `active` to a full line. Deferred on purpose.
 type upstream struct {
 	addr      string
 	active    atomic.Int64
 	unhealthy atomic.Bool // false (zero value) = healthy
+
+	cbThreshold   atomic.Int32 // error_threshold; <= 1 opens immediately on 1st failure
+	cbOpenNano    atomic.Int64 // open_duration in ns; 0 means stay unhealthy until probe/success
+	cbHalfOpenMax atomic.Int32 // half_open_requests needed to close the breaker
+
+	consecFails  atomic.Int32
+	openUntil    atomic.Int64 // >0: Open until UnixNano; -1: Half-Open; 0: Closed
+	halfOpenSucc atomic.Int32
 }
 
-// Healthy reports whether the upstream is currently considered reachable.
-func (u *upstream) Healthy() bool { return !u.unhealthy.Load() }
+// ConfigureBreaker updates the circuit-breaker parameters in place.
+func (u *upstream) ConfigureBreaker(cb config.CircuitBreakerConfig) {
+	u.cbThreshold.Store(int32(cb.ErrorThreshold)) // #nosec G115 -- small threshold from config
+	u.cbOpenNano.Store(int64(cb.OpenDuration))
+	u.cbHalfOpenMax.Store(int32(cb.HalfOpenRequests)) // #nosec G115 -- small probe count from config
+}
 
-// MarkHealthy marks the upstream reachable.
-func (u *upstream) MarkHealthy() { u.unhealthy.Store(false) }
+// Healthy reports whether the upstream is currently eligible for traffic. When
+// an Open circuit breaker's timeout expires, Healthy transitions the upstream
+// to Half-Open and returns true so probe requests can test recovery.
+func (u *upstream) Healthy() bool {
+	if !u.unhealthy.Load() {
+		return true
+	}
+	until := u.openUntil.Load()
+	if until > 0 && time.Now().UnixNano() >= until {
+		if u.openUntil.CompareAndSwap(until, -1) {
+			u.halfOpenSucc.Store(0)
+			u.unhealthy.Store(false)
+		}
+		return true
+	}
+	return false
+}
 
-// MarkUnhealthy marks the upstream unreachable so balancers skip it while
-// healthy peers exist in the pool.
-func (u *upstream) MarkUnhealthy() { u.unhealthy.Store(true) }
+// MarkHealthy records a successful dial or probe. In Half-Open state, the
+// circuit closes once cbHalfOpenMax consecutive successes have landed.
+func (u *upstream) MarkHealthy() {
+	u.consecFails.Store(0)
+	if u.openUntil.Load() == -1 {
+		need := u.cbHalfOpenMax.Load()
+		if need <= 1 || u.halfOpenSucc.Add(1) >= need {
+			u.openUntil.Store(0)
+			u.halfOpenSucc.Store(0)
+			u.unhealthy.Store(false)
+		}
+		return
+	}
+	u.openUntil.Store(0)
+	u.unhealthy.Store(false)
+}
+
+// MarkUnhealthy records a failed dial or probe. When consecFails reaches the
+// configured error_threshold (or immediately when error_threshold <= 1 or while
+// in Half-Open), the circuit opens for open_duration.
+func (u *upstream) MarkUnhealthy() {
+	fails := u.consecFails.Add(1)
+	thresh := u.cbThreshold.Load()
+	inHalfOpen := u.openUntil.Load() == -1
+	if thresh <= 1 || fails >= thresh || inHalfOpen {
+		u.halfOpenSucc.Store(0)
+		if openNano := u.cbOpenNano.Load(); openNano > 0 {
+			u.openUntil.Store(time.Now().UnixNano() + openNano)
+		} else {
+			u.openUntil.Store(0)
+		}
+		u.unhealthy.Store(true)
+	}
+}
 
 // Balancer selects the next upstream for a new connection.
 //

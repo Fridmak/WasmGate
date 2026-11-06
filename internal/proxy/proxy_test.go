@@ -2,7 +2,14 @@ package proxy
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -367,6 +374,172 @@ func TestProxyExampleIPGuardWasmBlocks127_0_0_99(t *testing.T) {
 	waitMetric(t, 2*time.Second, func() bool {
 		return m.Snapshot().ConnectionsPluginRejected >= 1
 	})
+}
+
+// TestProxyDialRetriesFailsOverTransparently verifies that when the first
+// server in a pool is down and dial_retries >= 1, the proxy transparently
+// retries the dial on the next healthy server in the pool without dropping the
+// client connection.
+func TestProxyDialRetriesFailsOverTransparently(t *testing.T) {
+	live := startEcho(t)
+	m := observe.NewMetrics()
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "web",
+			DialTimeout:  500 * time.Millisecond,
+		}},
+		Pools: map[string]config.PoolConfig{
+			"web": {
+				Balance:     "round_robin",
+				Servers:     []string{"127.0.0.1:1", live},
+				DialRetries: 1,
+			},
+		},
+	})
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), m))
+
+	c := roundTrip(t, addr)
+	_ = c.Close()
+
+	waitMetric(t, 2*time.Second, func() bool {
+		s := m.Snapshot()
+		return s.UpstreamDialFailures >= 1 && s.UpstreamRetries >= 1
+	})
+}
+
+// TestProxyWasmOnDataMutatesAndRoutesPool verifies that a WASM on_data hook can
+// both mutate the packet bytes in place inside its linear memory AND return >= 2
+// to route the connection to a secondary pool from plugin.route_pools.
+func TestProxyWasmOnDataMutatesAndRoutesPool(t *testing.T) {
+	defaultEcho := startEcho(t)
+	canaryEcho := startEcho(t)
+
+	// WASM module exporting memory (1 page) and on_data(ptr, len) -> i32:
+	//   overwrites memory[ptr] = 'M' (0x4d) and returns 2 (selects route_pools[0]):
+	//   local.get 0; i32.const 0x4d; i32.store8 align=0 offset=0; i32.const 2; end
+	wasmMutateAndRoute := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+		0x03, 0x02, 0x01, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x14, 0x02,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0a, 0x0e, 0x01,
+		0x0c, 0x00,
+		0x20, 0x00, // local.get 0 (ptr)
+		0x41, 0xcd, 0x00, // i32.const 0x4d ('M')
+		0x3a, 0x00, 0x00, // i32.store8
+		0x41, 0x02, // i32.const 2 (route_pools[0])
+		0x0b,
+	}
+
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "default",
+			DialTimeout:  time.Second,
+			Plugin: config.PluginConfig{
+				Wasm:       wasmMutateAndRoute,
+				RoutePools: []string{"canary"},
+			},
+		}},
+		Pools: map[string]config.PoolConfig{
+			"default": {Servers: []string{defaultEcho}},
+			"canary":  {Servers: []string{canaryEcho}},
+		},
+	})
+	rt := NewRuntime(cfg)
+	addr := startServer(t, NewServer(testLogger(), rt, nil))
+
+	c := dial(t, addr)
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Write([]byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var got [5]byte
+	if _, err := io.ReadFull(c, got[:]); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got[:]) != "Mello" {
+		t.Fatalf("mutated payload = %q, want %q", got[:], "Mello")
+	}
+}
+
+// TestProxyTLSTerminationWithWasmOnData verifies optional TLS termination on a
+// listener: the client connects over TLS, the proxy terminates TLS and hands
+// the decrypted plaintext to the WASM on_data hook before forwarding it to the
+// plain-TCP backend.
+func TestProxyTLSTerminationWithWasmOnData(t *testing.T) {
+	certPEM, keyPEM := generateSelfSignedCert(t)
+	echoAddr := startEcho(t)
+
+	// WASM on_data hook that rejects packets starting with 'X' (0x58).
+	wasmDenyX := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+		0x03, 0x02, 0x01, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x14, 0x02,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0a, 0x0d, 0x01,
+		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
+	}
+
+	cfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.TLS = config.TLSConfig{CertPEM: certPEM, KeyPEM: keyPEM, MinVersion: "1.2"}
+		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
+
+	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test fixture
+	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	if err != nil {
+		t.Fatalf("tls.Dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte("OK-HTTPS")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var back [8]byte
+	if _, err := io.ReadFull(conn, back[:]); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(back[:]) != "OK-HTTPS" {
+		t.Fatalf("got %q, want OK-HTTPS", back[:])
+	}
+}
+
+func generateSelfSignedCert(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 }
 
 // BenchmarkConnHotPath measures everything Handle does per connection before it

@@ -49,7 +49,9 @@ func TestMetricsNilSafe(t *testing.T) {
 	m.RejectLimit()
 	m.RejectRate()
 	m.RejectPlugin()
+	m.PluginDiscard()
 	m.DialFail()
+	m.UpstreamRetry()
 	m.AddBytes(1)
 	m.SetVersion(2)
 	m.Reload(3)
@@ -73,8 +75,8 @@ func TestWritePrometheus(t *testing.T) {
 
 	var buf bytes.Buffer
 	m.WritePrometheus(&buf, []UpstreamStat{
-		{Server: "127.0.0.1:9001", Active: 2},
-		{Server: "127.0.0.1:9002", Active: 0},
+		{Server: "127.0.0.1:9001", Active: 2, Healthy: true},
+		{Server: "127.0.0.1:9002", Active: 0, Healthy: false},
 	})
 	out := buf.String()
 
@@ -87,6 +89,8 @@ func TestWritePrometheus(t *testing.T) {
 		"wasmgate_relayed_bytes_total 42",
 		`wasmgate_upstream_active{server="127.0.0.1:9001"} 2`,
 		`wasmgate_upstream_active{server="127.0.0.1:9002"} 0`,
+		`wasmgate_upstream_healthy{server="127.0.0.1:9001"} 1`,
+		`wasmgate_upstream_healthy{server="127.0.0.1:9002"} 0`,
 		"# TYPE go_goroutines gauge",
 	} {
 		if !strings.Contains(out, want) {

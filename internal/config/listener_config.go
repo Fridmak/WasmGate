@@ -34,6 +34,22 @@ type ListenerConfig struct {
 	RateLimit    RateLimit         `yaml:"rate_limit"`    // per-IP connection rate; max 0 disables
 	Plugin       PluginConfig      `yaml:"plugin"`        // optional WASM plugin sandbox for this listener
 	SNIRoutes    map[string]string `yaml:"sni_routes"`    // optional TLS SNI host (exact or "*.domain") -> pool name
+	TLS          TLSConfig         `yaml:"tls"`           // optional TLS termination for this listener
+}
+
+// TLSConfig configures optional TLS termination on a listener. When CertFile
+// and KeyFile are empty, the listener operates in raw TCP / TLS passthrough mode.
+type TLSConfig struct {
+	CertFile   string `yaml:"cert_file"`   // path to PEM certificate chain
+	KeyFile    string `yaml:"key_file"`    // path to PEM private key
+	MinVersion string `yaml:"min_version"` // "1.2" (default) or "1.3"
+	CertPEM    []byte `yaml:"-"`           // inline PEM cert for programmatic/test use
+	KeyPEM     []byte `yaml:"-"`           // inline PEM key for programmatic/test use
+}
+
+// Enabled reports whether TLS termination is configured.
+func (t TLSConfig) Enabled() bool {
+	return t.CertFile != "" || t.KeyFile != "" || len(t.CertPEM) > 0 || len(t.KeyPEM) > 0
 }
 
 // PluginConfig configures an optional WebAssembly plugin attached to a listener.
@@ -42,6 +58,7 @@ type PluginConfig struct {
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = no per-call timer
 	DataMode       string        `yaml:"data_mode"`        // L7 on_data mode: ""/"once" (first packet, preserves splice) or "stream" (every chunk)
+	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
 	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
 }
 
@@ -124,6 +141,18 @@ func (l *ListenerConfig) Validate() error {
 	case "", "once", "stream":
 	default:
 		return fmt.Errorf("unknown plugin.data_mode %q (want once or stream)", l.Plugin.DataMode)
+	}
+	if l.TLS.Enabled() {
+		hasFiles := l.TLS.CertFile != "" && l.TLS.KeyFile != ""
+		hasInline := len(l.TLS.CertPEM) > 0 && len(l.TLS.KeyPEM) > 0
+		if !hasFiles && !hasInline {
+			return errors.New("tls requires both cert_file and key_file")
+		}
+		switch l.TLS.MinVersion {
+		case "", "1.2", "1.3":
+		default:
+			return fmt.Errorf("unknown tls.min_version %q (want 1.2 or 1.3)", l.TLS.MinVersion)
+		}
 	}
 	return nil
 }

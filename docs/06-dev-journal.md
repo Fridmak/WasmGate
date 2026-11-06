@@ -31,7 +31,8 @@
 | 05.11 | `c98056e`, `ac8fdd3` | **M5 WASM Sandbox (`internal/plugin`)** + эталонный плагин `ipguard`: `wazero` без CGO, Reactor-пул инстансов, `CallWithStack` без аллокаций, fail-fast при старте/reload | `BenchmarkOnAccept` ~91 ns/op, `BenchmarkOnAcceptParallel` ~15 ns/op, **0 B/op, 0 allocs/op** |
 | 05.11 | `fb9a00f` | **Health-checks апстримов**: `pools.*.health_check`, пассивное исключение при ошибке `dial` + активный TCP-пробинг, failover в `round_robin`/`least_conn` | Мёртвые бэкенды исключаются и возвращаются при выздоровлении |
 | 05.11 | `465f7dc` | **`-validate` и `POST /reload` на `admin_addr`**: проверка конфига/WASM из CLI и HTTP-триггер hot reload для Windows (без `SIGHUP`) | Hot reload доступен на Windows и в скриптах |
-| 05.11 | текущий | **TLS SNI-peek passthrough (`internal/tlspeek`)**: парсер `ClientHello` (~27 ns/op, 0 allocs/op), `sni_routes` (exact + wildcard `*.domain`), `DrainTo` с сохранением `splice(2)` на Linux | Весь функциональный scope MVP + F2 + M5 закрыт |
+| 05.11 | `18d4249`, `8a07de5`, `faa807c` | Автотесты и бенчмарки на Ubuntu 24.04 Linux против `nginx stream` 1.24.0 и `HAProxy` 2.8.30 + e2e-тест `ipguard.wasm` по реальным IP `127.0.0.1` и `127.0.0.99` | Сняты и сохранены таблицы S0–S5 в `benchmarks/linux-ubuntu-results.txt` |
+| 06.11 | текущий | **Circuit Breaker (`Closed/Open/Half-Open`) + `dial_retries`**, **WASM L7 роутинг (`route_pools`) и in-place мутация пакета**, **опциональная TLS-терминация (`listeners[].tls`)**, расширенные метрики Prometheus | Полный продакшн-контур ядра с `0 allocs/op` на fast path |
 
 **Текущий статус (на 05.11):** M0 ✅, M1 ✅, M2 ✅, **M3 (код полностью готов) ✅**, **M4 (F2 полный) ✅**, **M5 (WASM sandbox + пример) ✅**.
 Все 6 пакетов (`config`, `observe`, `plugin`, `proxy`, `ratelimit`, `tlspeek`) проходят `go vet` и `go test ./...`.

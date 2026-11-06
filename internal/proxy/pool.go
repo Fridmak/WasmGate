@@ -8,9 +8,10 @@ package proxy
 // reserved, so a pool rebuilt during a reload can never decrement the wrong
 // counter.
 type pool struct {
-	name     string      // pool name from the config (used in logs)
-	servers  []*upstream // upstreams in config order; balancers rely on this order
-	balancer Balancer    // strategy chosen from PoolConfig.Balance
+	name        string      // pool name from the config (used in logs)
+	servers     []*upstream // upstreams in config order; balancers rely on this order
+	balancer    Balancer    // strategy chosen from PoolConfig.Balance
+	dialRetries int         // extra dial attempts across servers in the pool
 }
 
 // newPool constructs a pool together with its balancer. balance is the raw

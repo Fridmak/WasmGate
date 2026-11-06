@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,6 +31,11 @@ type resolvedListener struct {
 	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
 	// SNI routing is not configured on this listener.
 	sniRoutes map[string]*pool
+	// routePools are additional pools selectable by a WASM on_data hook return
+	// value (verdict >= 2 selects routePools[verdict-2]).
+	routePools []*pool
+	// tlsConfig terminates TLS on this listener when non-nil.
+	tlsConfig *tls.Config
 }
 
 // Snapshot is an immutable, ready-to-use view of the configuration together
@@ -83,7 +89,11 @@ func (r *Runtime) UpstreamStats() []observe.UpstreamStat {
 	defer r.registry.mu.Unlock()
 	out := make([]observe.UpstreamStat, 0, len(r.registry.upstreams))
 	for addr, u := range r.registry.upstreams {
-		out = append(out, observe.UpstreamStat{Server: addr, Active: u.active.Load()})
+		out = append(out, observe.UpstreamStat{
+			Server:  addr,
+			Active:  u.active.Load(),
+			Healthy: u.Healthy(),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Server < out[j].Server })
 	return out
@@ -102,19 +112,47 @@ func (r *Runtime) Reload(cfg *config.Config) uint64 {
 	return next.Version
 }
 
-// ValidatePlugins compiles and caches every listener's WASM plugin before a
-// server starts, reloads or runs in -validate mode, so a missing file or
-// invalid module fails fast before any socket is bound or any snapshot is swapped.
+// ValidatePlugins compiles and caches every listener's WASM plugin (and loads
+// any configured TLS certificate pair) before a server starts, reloads or runs
+// in -validate mode, so a missing file or invalid module/certificate fails fast
+// before any socket is bound or any snapshot is swapped.
 func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 	for _, lc := range cfg.Listeners {
-		if !lc.Plugin.Enabled() {
-			continue
+		if lc.Plugin.Enabled() {
+			if _, err := r.registry.plugin(lc.Name, lc.Plugin); err != nil {
+				return fmt.Errorf("listener %q: %w", lc.Name, err)
+			}
 		}
-		if _, err := r.registry.plugin(lc.Name, lc.Plugin); err != nil {
-			return fmt.Errorf("listener %q: %w", lc.Name, err)
+		if lc.TLS.Enabled() {
+			if _, err := buildTLSConfig(lc.TLS); err != nil {
+				return fmt.Errorf("listener %q: tls: %w", lc.Name, err)
+			}
 		}
 	}
 	return nil
+}
+
+func buildTLSConfig(tc config.TLSConfig) (*tls.Config, error) {
+	var (
+		cert tls.Certificate
+		err  error
+	)
+	if len(tc.CertPEM) > 0 || len(tc.KeyPEM) > 0 {
+		cert, err = tls.X509KeyPair(tc.CertPEM, tc.KeyPEM)
+	} else {
+		cert, err = tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var minVer uint16 = tls.VersionTLS12
+	if tc.MinVersion == "1.3" {
+		minVer = tls.VersionTLS13
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   minVer,
+	}, nil
 }
 
 // build compiles cfg into a ready-to-use Snapshot: it turns every configured
@@ -127,7 +165,12 @@ func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 	pools := make(map[string]*pool, len(cfg.Pools))
 	for name, pc := range cfg.Pools {
-		pools[name] = newPool(name, pc.Servers, pc.Balance, r.registry)
+		p := newPool(name, pc.Servers, pc.Balance, r.registry)
+		p.dialRetries = pc.DialRetries
+		for _, u := range p.servers {
+			u.ConfigureBreaker(pc.CircuitBreaker)
+		}
+		pools[name] = p
 	}
 
 	listeners := make(map[string]resolvedListener, len(cfg.Listeners))
@@ -152,6 +195,17 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))
 			for host, poolName := range lc.SNIRoutes {
 				rl.sniRoutes[strings.ToLower(host)] = pools[poolName]
+			}
+		}
+		if len(lc.Plugin.RoutePools) > 0 {
+			rl.routePools = make([]*pool, 0, len(lc.Plugin.RoutePools))
+			for _, poolName := range lc.Plugin.RoutePools {
+				rl.routePools = append(rl.routePools, pools[poolName])
+			}
+		}
+		if lc.TLS.Enabled() {
+			if tcfg, err := buildTLSConfig(lc.TLS); err == nil {
+				rl.tlsConfig = tcfg
 			}
 		}
 		listeners[lc.Name] = rl

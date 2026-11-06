@@ -88,8 +88,17 @@ type Plugin struct {
 	hasData   bool
 	hasClose  bool
 	nextID    atomic.Uint64
+	discarded atomic.Int64
 	pool      sync.Pool
 	initErr   error
+}
+
+// Discarded returns the total number of instances destroyed after a trap or timeout.
+func (p *Plugin) Discarded() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.discarded.Load()
 }
 
 type instance struct {
@@ -276,6 +285,7 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 	if err := inst.onAccept.CallWithStack(ctx, inst.stack[:3]); err != nil {
 		// A trapped or timed-out instance may be left in an inconsistent state:
 		// close and discard it instead of returning it to the pool.
+		p.discarded.Add(1)
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, err
 	}
@@ -289,8 +299,14 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 
 // OnData places payload into the pooled WASM instance's scratch linear memory
 // and invokes on_data(ptr, len) -> verdict via CallWithStack (0 heap
-// allocations). If payload exceeds the scratch capacity, it is truncated to
-// dataCap so the guest cannot overflow its buffer.
+// allocations). Any in-place byte modifications made by the guest in
+// [ptr .. ptr+len] are copied back into payload before the instance is returned
+// to the pool.
+//
+// Return values from on_data:
+//   - 0 (VerdictAllow): allow packet on the default pool;
+//   - 1 (VerdictDeny): reject connection;
+//   - >= 2: allow packet and select route_pools[ret-2].
 func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
 	if p == nil || !p.hasData || len(payload) == 0 {
 		return VerdictAllow, nil
@@ -312,6 +328,7 @@ func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
 	}
 	dst, ok := inst.mod.Memory().Read(inst.dataPtr, n)
 	if !ok {
+		p.discarded.Add(1)
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
 	}
@@ -320,15 +337,16 @@ func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
 	inst.stack[0] = uint64(inst.dataPtr)
 	inst.stack[1] = uint64(n)
 	if err := inst.onData.CallWithStack(ctx, inst.stack[:2]); err != nil {
+		p.discarded.Add(1)
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, err
 	}
-	v := Verdict(inst.stack[0] & 0x7fffffff) // #nosec G115 -- non-zero means VerdictDeny
-	p.pool.Put(inst)
-	if v != VerdictAllow {
-		return VerdictDeny, nil
+	v := Verdict(inst.stack[0] & 0x7fffffff) // #nosec G115 -- 0=allow, 1=deny, >=2=route_pools[v-2]
+	if v != VerdictDeny {
+		copy(payload[:n], dst)
 	}
-	return VerdictAllow, nil
+	p.pool.Put(inst)
+	return v, nil
 }
 
 // OnClose invokes the guest's on_close(ip_hi, ip_lo, rx_bytes, tx_bytes) hook.
@@ -355,6 +373,7 @@ func (p *Plugin) OnClose(ctx context.Context, ip net.IP, rxBytes, txBytes int64)
 	inst.stack[3] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
 
 	if err := inst.onClose.CallWithStack(ctx, inst.stack[:4]); err != nil {
+		p.discarded.Add(1)
 		_ = inst.mod.Close(context.Background())
 		return err
 	}

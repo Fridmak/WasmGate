@@ -110,6 +110,11 @@ func (c *Config) validateListeners() error {
 				return fmt.Errorf("%s: sni_routes[%q] references unknown pool %q", label, host, poolName)
 			}
 		}
+		for _, poolName := range l.Plugin.RoutePools {
+			if _, ok := c.Pools[poolName]; !ok {
+				return fmt.Errorf("%s: plugin.route_pools references unknown pool %q", label, poolName)
+			}
+		}
 	}
 	return nil
 }

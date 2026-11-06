@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net"
 	"strconv"
@@ -96,6 +97,9 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	if rl.plugin != nil {
 		verdict, err := rl.plugin.OnAccept(ctx, peerIP, peerPort)
+		if err != nil {
+			p.metrics.PluginDiscard()
+		}
 		if err != nil || verdict != plugin.VerdictAllow {
 			p.metrics.RejectPlugin()
 			if ok, dropped := p.sampler.Allow("plugin:" + listenerName); ok {
@@ -109,8 +113,12 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
+	if rl.tlsConfig != nil {
+		client = tls.Server(client, rl.tlsConfig)
+	}
+
 	targetPool := rl.pool
-	if len(rl.sniRoutes) > 0 {
+	if len(rl.sniRoutes) > 0 && rl.tlsConfig == nil {
 		sni, wrapped, err := tlspeek.Peek(client, rl.cfg.DialTimeout)
 		if err != nil {
 			return
@@ -124,9 +132,10 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	}
 
 	// L7 first-packet inspection ("once" mode, the default when on_data is
-	// exported): inspect the initial client request in the WASM sandbox BEFORE
-	// dialing the upstream, then DrainTo replays the packet and hands the raw
-	// socket back to splice(2) for the rest of the connection.
+	// exported): inspect (and optionally mutate or route) the initial client
+	// request in the WASM sandbox BEFORE dialing the upstream, then DrainTo
+	// replays the packet and hands the raw socket back to splice(2) for the
+	// rest of the connection.
 	var streamPlugin *plugin.Plugin
 	if rl.plugin != nil && rl.plugin.HasData() {
 		if rl.cfg.Plugin.DataMode == "stream" {
@@ -138,7 +147,10 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 			}
 			client = wrapped
 			verdict, err := rl.plugin.OnData(ctx, chunk)
-			if err != nil || verdict != plugin.VerdictAllow {
+			if err != nil {
+				p.metrics.PluginDiscard()
+			}
+			if err != nil || verdict == plugin.VerdictDeny {
 				p.metrics.RejectPlugin()
 				if ok, dropped := p.sampler.Allow("plugin_data:" + listenerName); ok {
 					p.log.Warn("payload rejected by wasm on_data hook",
@@ -149,19 +161,47 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
+			if idx := int(verdict) - 2; idx >= 0 && idx < len(rl.routePools) && rl.routePools[idx] != nil {
+				targetPool = rl.routePools[idx]
+			}
 		}
 	}
 
-	up := targetPool.Next()
+	up, server, ok := p.dialWithRetry(ctx, listenerName, targetPool, rl.cfg.DialTimeout)
+	if !ok {
+		return
+	}
 	defer targetPool.Release(up)
+	defer server.Close()
 
-	dialCtx, cancel := context.WithTimeout(ctx, rl.cfg.DialTimeout)
-	defer cancel()
+	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
+	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics)
+	p.metrics.AddBytes(rx + tx)
+	if rl.plugin != nil {
+		if err := rl.plugin.OnClose(ctx, peerIP, rx, tx); err != nil {
+			p.metrics.PluginDiscard()
+		}
+	}
+}
+
+func (p *Proxy) dialWithRetry(ctx context.Context, listenerName string, targetPool *pool, timeout time.Duration) (*upstream, net.Conn, bool) {
+	attempts := 1 + targetPool.dialRetries
 	var d net.Dialer
-	server, err := d.DialContext(dialCtx, "tcp", up.addr)
-	if err != nil {
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			p.metrics.UpstreamRetry()
+		}
+		up := targetPool.Next()
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		server, err := d.DialContext(dialCtx, "tcp", up.addr)
+		cancel()
+		if err == nil {
+			up.MarkHealthy()
+			return up, server, true
+		}
 		up.MarkUnhealthy()
+		targetPool.Release(up)
 		p.metrics.DialFail()
 		if ok, dropped := p.sampler.Allow("dial:" + listenerName + ":" + up.addr); ok {
 			p.log.Warn("dial upstream failed",
@@ -171,18 +211,8 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				"suppressed", dropped,
 			)
 		}
-		return
 	}
-	up.MarkHealthy()
-	defer server.Close()
-
-	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
-
-	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics)
-	p.metrics.AddBytes(rx + tx)
-	if rl.plugin != nil {
-		_ = rl.plugin.OnClose(ctx, peerIP, rx, tx)
-	}
+	return nil, nil, false
 }
 
 // clientEndpoint returns the peer IP and port without allocating on the TCP path.

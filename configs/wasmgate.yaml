@@ -26,6 +26,17 @@ listeners:
       ban_duration: 5s        # base ban TTL on violation, exponentially backed off up to 16x (0 = no ban)
       allow_cidrs:            # CIDRs bypassed before counting
         - "127.0.0.1/32"
+    # Optional WASM plugin (L4 on_accept / on_close + L7 on_data inspection, mutation & routing):
+    # plugin:
+    #   path: "plugins/examples/ipguard/ipguard.wasm"
+    #   max_memory_pages: 16
+    #   data_mode: "once"     # "once" (first packet, preserves Linux splice) | "stream" (every chunk)
+    #   route_pools: ["web"]  # selectable by on_data return value (2 -> route_pools[0], ...)
+    # Optional TLS termination (hot-reloaded on SIGHUP / POST /reload):
+    # tls:
+    #   cert_file: "certs/server.crt"
+    #   key_file: "certs/server.key"
+    #   min_version: "1.2"
 
   - name: db
     addr: "127.0.0.1:5433"
@@ -35,6 +46,11 @@ listeners:
 pools:
   web:
     balance: round_robin      # round_robin | least_conn
+    dial_retries: 1           # transparent dial retries onto another healthy server in the pool
+    circuit_breaker:          # optional three-state passive circuit breaker (Closed -> Open -> Half-Open)
+      error_threshold: 5
+      open_duration: 10s
+      half_open_requests: 2
     servers:
       - "127.0.0.1:9001"
       - "127.0.0.1:9002"

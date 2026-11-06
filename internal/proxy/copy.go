@@ -120,7 +120,10 @@ func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, p
 		nr, rerr := r.Read(buf)
 		if nr > 0 {
 			verdict, perr := pl.OnData(ctx, buf[:nr])
-			if perr != nil || verdict != plugin.VerdictAllow {
+			if perr != nil {
+				metrics.PluginDiscard()
+			}
+			if perr != nil || verdict == plugin.VerdictDeny {
 				metrics.RejectPlugin()
 				return total, errPluginDenied
 			}

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"wasmgate/internal/config"
 )
 
 // Tests for upstream.go: the balancing strategies, followed by the benchmark for
@@ -77,6 +80,46 @@ func TestBalancersSkipUnhealthyAndFailOpen(t *testing.T) {
 		if got := bal.Next([]*upstream{a, b}); got == nil {
 			t.Fatalf("%s returned nil when all upstreams were unhealthy", kind)
 		}
+	}
+}
+
+// TestCircuitBreakerClosedOpenHalfOpen walks an upstream through all three
+// circuit-breaker states: Closed -> Open after ErrorThreshold consecutive
+// failures -> Half-Open after OpenDuration expires -> Closed after
+// HalfOpenRequests consecutive successes.
+func TestCircuitBreakerClosedOpenHalfOpen(t *testing.T) {
+	u := &upstream{addr: "127.0.0.1:9001"}
+	u.ConfigureBreaker(config.CircuitBreakerConfig{
+		ErrorThreshold:   3,
+		OpenDuration:     40 * time.Millisecond,
+		HalfOpenRequests: 2,
+	})
+
+	// 1st and 2nd failure stay Below threshold -> still Closed (Healthy).
+	u.MarkUnhealthy()
+	u.MarkUnhealthy()
+	if !u.Healthy() {
+		t.Fatal("breaker opened before reaching error_threshold=3")
+	}
+
+	// 3rd failure opens the circuit.
+	u.MarkUnhealthy()
+	if u.Healthy() {
+		t.Fatal("breaker stayed closed at error_threshold=3")
+	}
+
+	// Wait for OpenDuration to elapse -> transitions to Half-Open on Healthy().
+	time.Sleep(55 * time.Millisecond)
+	if !u.Healthy() {
+		t.Fatal("breaker did not transition to Half-Open after OpenDuration")
+	}
+
+	// 1st success in Half-Open is not enough (need 2); a failure in Half-Open
+	// would re-open immediately, two successes close it.
+	u.MarkHealthy()
+	u.MarkHealthy()
+	if !u.Healthy() || u.openUntil.Load() != 0 {
+		t.Fatal("breaker did not close after HalfOpenRequests=2 successes")
 	}
 }
 
