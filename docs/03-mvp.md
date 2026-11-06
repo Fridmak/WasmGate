@@ -1,9 +1,10 @@
 # 03. MVP: базовая версия и замер производительности
 
 > Документ для **глав «Реализация» и «Эксперименты»**. MVP — это **минимальный
-> L4-TCP-прокси** без сложных фич, созданный ради двух целей:
-> **(1)** проверить гипотезы и **(2)** снять **baseline-производительность**,
-> относительно которой меряются все дальнейшие фичи.
+> L4-TCP-прокси**, созданный ради двух целей: **(1)** проверить гипотезы и
+> **(2)** снять **baseline-производительность**, относительно которой меряются
+> все дальнейшие фичи. Документ также фиксирует, что из последующих этапов уже
+> реализовано (M3–M5), чтобы текст ВКР не расходился с кодом.
 
 ---
 
@@ -12,9 +13,9 @@
 - Получить **работающее прокси-ядро** (L4 TCP) с корректным проксированием,
   балансировкой, таймаутами и drain.
 - Снять **честный baseline**: throughput / latency / allocs / RSS.
-- Заложить **точки расширения** (снапшот конфига, host-functions для плагинов),
-  чтобы последующие фичи (Hot Reload, DDoS, WASM, DPI) насаживались **без
-  переписывания ядра**.
+- Заложить **точки расширения** (снапшот конфига, ABI WASM-плагинов),
+  чтобы последующие фичи (Hot Reload, rate limiting, WASM, TLS) насаживались
+  **без переписывания ядра**.
 
 **Главный принцип:** MVP не «урезанный продукт на выброс», а **фундамент**,
 к которому фичи добавляются инкрементально.
@@ -29,27 +30,31 @@
 |---|-------------|--------|
 | 1 | Приём TCP-соединений (`net`, горутина на соединение; epoll под капотом) | ✅ M0 |
 | 2 | Проксирование на upstream-пул (bidirectional copy, `splice` на Linux) | ✅ M1 |
-| 3 | Балансировка: round-robin / least-conn | ✅ M1 |
+| 3 | Балансировка: round-robin / least-conn, пропуск нездоровых бэкендов | ✅ M1 |
 | 4 | Таймауты: connect, **idle** (общий для соединения); лимит **`max_conns`** | ✅ M2 |
-| 5 | **TLS passthrough** через SNI-peek (`internal/tlspeek`, без терминации) | ✅ M3 |
-| 6 | Health-checks (активный TCP-connect + пассивный по ошибкам `dial`) | ✅ M3 |
-| 7 | Конфиг из YAML + **hot reload** (SIGHUP + `POST /reload` на `admin_addr`), reconcile слушателей | ✅ M2/M3 |
-| 8 | Наблюдаемость: структурные логи (`log/slog`), метрики (`/metrics`), `/healthz`, `pprof` | ✅ M3 |
-| 9 | Graceful shutdown & **drain** (перестаём принимать, доигрываем активные) | ✅ M2 |
-| 10 | Валидация конфига (`-validate`) и применение (`POST /reload` / `SIGHUP`) | ✅ M3 |
+| 5 | **TLS passthrough** через zero-alloc SNI-peek (`internal/tlspeek`, `sni_routes`) | ✅ M3 |
+| 6 | **TLS-терминация** на листенере (`listeners[].tls`, TLS 1.2/1.3, hot reload сертификата) | ✅ M5 |
+| 7 | Health-checks (активный TCP-connect + пассивный по ошибкам `dial`) | ✅ M3 |
+| 8 | **Circuit breaker** (Closed/Open/Half-Open) и прозрачный `dial_retries` | ✅ M5 |
+| 9 | Конфиг из YAML + **hot reload** (SIGHUP + `POST /reload`), reconcile слушателей | ✅ M2/M3 |
+| 10 | Наблюдаемость: `log/slog`, `/metrics`, `/healthz`, `pprof`, `POST /reload` | ✅ M3 |
+| 11 | Graceful shutdown & **drain** (перестаём принимать, доигрываем активные) | ✅ M2 |
+| 12 | Валидация конфига (`-validate`, включая WASM и TLS) | ✅ M3/M5 |
+| 13 | **Rate limiting** соединений: per-IP/subnet окно, allow-list, backoff-бан (F2) | ✅ M4 |
+| 14 | **WASM-плагины** (`on_accept`/`on_data`/`on_close`), L7 mutation и `route_pools` | ✅ M5 |
 
-### 2.2. Не входит (OUT — в следующей волне)
+### 2.2. Не входит (OUT — future work)
 
-- ❌ L7/HTTP-парсинг и JSON DPI (F3) — future work.
+- ❌ Полноценный L7/HTTP-парсинг и JSON DPI (F3) — future work.
 - ❌ eBPF-фильтрация (F4) — future work.
-- ❌ Полноценный WASM-рантайм (в MVP — **заглушка-интерфейс** без реального
-  исполнения; настоящий wazero — Milestone M2).
-- ❌ C# Control Plane как обязательный компонент (в MVP — файл+watch; gRPC — M2).
+- ❌ C# Control Plane как обязательный компонент (сейчас — файл + SIGHUP/`POST /reload`;
+  gRPC/UDS — M6).
 - ❌ Маркетплейс плагинов, GUI, multi-tenant.
+- ❌ mTLS к control plane и клиентские сертификаты; упаковка Docker/systemd.
 
 > Причина такого деления: сначала получить **воспроизводимый baseline** и
-> **не раздувать ядро**, а фичи ядра (Hot Reload / защита от connection flood)
-> добавлять поверх, не ломая замеренные цифры.
+> **не раздувать ядро**, а фичи (Hot Reload, rate limiting, WASM, TLS) добавлять
+> поверх, не ломая замеренные цифры.
 
 ---
 
@@ -70,22 +75,28 @@
 ## 4. Архитектура MVP (упрощённо)
 
 ```
-clients ─▶ accept-loop ─▶ balancer ─▶ upstream pool ─▶ copy/splice
-                │                            ▲
-                └── snapshot (atomic) ◀── config loader ┘
+clients ─▶ accept-loop ─▶ max_conns/rate_limit ─▶ on_accept ─▶ TLS/SNI
+              │                                              │
+              │                                              ▼
+              │                                   on_data (once) ─▶ balancer
+              │                                              │        │
+              │                                              ▼        ▼
+              └── snapshot (atomic) ◀── config loader ── copy/splice ◀─ upstream pool
                         ▲
-                   SIGHUP / file watch / Control Plane (позже)
+          SIGHUP / POST /reload / Control Plane (позже)
 ```
 
-Модули MVP (фактическая структура; `proxy` — это и есть data plane):
+Модули (фактическая структура; `proxy` — это и есть data plane):
 
 ```
 internal/
 ├── proxy/       # server, proxy.Handle, pool, balancer, copy/splice, snapshot (RCU)
 ├── config/      # схема YAML, загрузчик, Validate(), валидация (чистые данные)
-├── ratelimit/   # скользящее окно по IP (F2)
+├── plugin/      # wazero sandbox: on_accept/on_data/on_close, пул инстансов
+├── ratelimit/   # скользящее окно по IP/подсети (F2)
+├── tlspeek/     # zero-alloc SNI peek и прозрачный replay ClientHello
 └── observe/     # логирование (log/slog), лог-лимитер, метрики Prometheus, admin/pprof
-# future: plugin/ (wazero), tlspeek/ (SNI), control/ (gRPC)
+# future: control/ (gRPC Control Plane client)
 ```
 
 ---
@@ -93,28 +104,43 @@ internal/
 ## 5. Модель конфигурации (пример)
 
 ```yaml
-# wasmgate.yaml
+# configs/wasmgate.yaml (сокращённо; полный — в репозитории)
 version: 1
+admin_addr: "127.0.0.1:9099"     # /metrics, /healthz, /reload, /debug/pprof
+
 listeners:
   - name: edge
     addr: "0.0.0.0:443"
-    protocol: tcp
-    tls:
-      mode: passthrough        # passthrough | terminate
-    limits:
-      max_conns: 200000
-      idle_timeout: 60s
-
-routes:
-  - match: { sni: "api.example.com" }
-    upstream_pool: api_pool
-  - match: { sni: "*.example.com" }
     upstream_pool: default_pool
+    max_conns: 200000
+    dial_timeout: 3s
+    idle_timeout: 60s            # >0 отключает splice (idle watchdog)
+    rate_limit:
+      max: 200
+      subnet_max: 1000
+      window: 1s
+      ban_duration: 5s
+      allow_cidrs: ["127.0.0.1/32"]
+    plugin:
+      path: "plugins/examples/ipguard/ipguard.wasm"
+      max_memory_pages: 16
+      timeout: 0s
+      data_mode: "once"
+      route_pools: ["canary"]
+    sni_routes:                  # TLS passthrough; игнорируется при tls:
+      "api.example.com": api_pool
+      "*.example.com": default_pool
+    # tls:                       # опциональная терминация
+    #   cert_file: "certs/server.crt"
+    #   key_file: "certs/server.key"
+    #   min_version: "1.2"
 
-upstream_pools:
+pools:
   api_pool:
     balance: least_conn
-    health_check: { type: tcp, interval: 2s, timeout: 500ms }
+    dial_retries: 1
+    health_check: { interval: 2s, timeout: 1s }
+    circuit_breaker: { error_threshold: 5, open_duration: 10s, half_open_requests: 2 }
     servers:
       - "10.0.0.10:8443"
       - "10.0.0.11:8443"
@@ -122,14 +148,18 @@ upstream_pools:
     balance: round_robin
     servers:
       - "10.0.0.20:8443"
+  canary:
+    balance: least_conn
+    servers:
+      - "10.0.0.30:8443"
 ```
 
-Смена конфига → новый `Snapshot` → `atomic.Store` (прообраз Hot Reload).
+Смена конфига → новый `Snapshot` → `atomic.Store` (Hot Reload). Прежний
+snapshot остаётся активным, если сборка/валидация нового упала.
 
-> **Важно:** пример выше — **целевая** схема (с `routes`, `tls`, `health_check`).
-> Текущая реализация поддерживает подмножество (`listeners` + `pools`) — живой
-> пример см. в [`configs/wasmgate.yaml`](../configs/wasmgate.yaml). Остальные поля
-> включаются по мере реализации фич.
+> Схема в коде — источник истины: [`internal/config/listener_config.go`](../internal/config/listener_config.go)
+> и [`internal/config/pool_config.go`](../internal/config/pool_config.go).
+> Живой пример — [`configs/wasmgate.yaml`](../configs/wasmgate.yaml).
 
 ---
 
@@ -140,10 +170,12 @@ upstream_pools:
 | **M0. Skeleton** | accept-loop (`net`), логирование, каркас | Бинарь принимает соединения | ✅ done |
 | **M1. Proxy core** | пулы, балансировка, copy/splice, таймауты | Проксирует TCP end-to-end | ✅ done |
 | **M2. Config+reload+drain** | YAML, Snapshot, atomic swap, SIGHUP, reconcile слушателей, drain | Reload без разрыва соединений | ✅ done |
-| **M3. Observe+hardening** | метрики, pprof, health-checks, CLI | Наблюдаемый прокси | ⏳ baseline |
+| **M3. Observe+hardening** | метрики, pprof, health-checks, CLI, `-validate`, `POST /reload`, SNI peek | Наблюдаемый прокси + Linux-baseline | ✅ done |
+| **M4. Connection flood (F2)** | скользящее окно per-IP/subnet, allow-list, backoff-бан | Фильтр в горячем пути, 0 allocs/op | ✅ done |
+| **M5. WASM + L7-lite + TLS** | wazero sandbox, ABI, `on_data`, `route_pools`, TLS passthrough/termination, circuit breaker, dial retries | Плагин без рестарта, e2e и сравнение с nginx/HAProxy | ✅ done |
+| **M6. Control Plane** | C#/.NET 8 + gRPC/UDS: версии, публикация, откат, аудит | Hot reload из CP | ⏳ plan |
 
-> **После M3** — ядровые фичи: защита от connection flood (F2, скользящее окно),
-> затем WASM host + C# Control Plane (F1); DPI (F3) и eBPF (F4) — future work.
+> После M5 — только C# control plane; DPI (F3) и eBPF (F4) — future work.
 
 ---
 
@@ -151,23 +183,34 @@ upstream_pools:
 
 - [x] Проксирует TCP end-to-end, корректно закрывает соединения (half-close).
 - [x] Балансировка и health-checks работают, мёртвые upstream исключаются.
-- [x] Reload под нагрузкой **не рвёт** соединения (механика и юнит-тесты — ✅; внешний chaos-прогон — M3).
+- [x] Reload под нагрузкой **не рвёт** соединения: chaos-тест `TestReloadUnderLoadZeroDroppedConnections` (12 reload, 0 dropped).
 - [x] `go test -race ./...` зелёный; нет утечек горутин/буферов.
 - [x] Есть метрики, логи, `pprof`-эндпоинт.
 - [x] `go test -benchmem` показывает **0 alloc** в steady state на fast path.
 - [x] Сняты и задокументированы baseline-замеры S0–S5 против `nginx stream` и `HAProxy` на Linux (см. §8.5 и `benchmarks/README.md`).
 - [x] Кросс-сборка без CGO проходит (linux/amd64, linux/arm64).
+- [x] Rate limiting: per-IP/subnet окно, allow-list, backoff-бан; `BenchmarkAllow` — 0 allocs/op.
+- [x] WASM-плагин загружается, фильтрует соединения и переживает reload; есть e2e-тест `TestProxyExampleIPGuardWasmBlocks127_0_0_99`.
+- [x] L7 `on_data` (once/stream), in-place mutation и `route_pools` работают; `once` сохраняет `splice`.
+- [x] TLS passthrough по SNI и TLS-терминация с hot reload сертификата.
+- [x] Circuit breaker и `dial_retries` покрыты тестами; `/metrics` отдаёт health/retry/discard.
 
-> **Fast path** — это `idle_timeout: 0` (по умолчанию): `io.Copy` идёт через
-> `splice`. Если включить `idle_timeout`, включается буферизованное копирование с
-> read-deadline, и zero-copy/splice для этого направления отключается. Бенчмарки
-> baseline снимаются с `idle_timeout: 0`.
+> **Fast path** — это `idle_timeout: 0` (по умолчанию), без `tls`,
+> `data_mode: once` и без stream-плагина: `io.Copy` идёт через `splice`.
+> Включение idle watchdog, stream-инспекции или терминации переключает
+> соединение на буферизованный путь. Baseline-замеры снимаются на fast path.
 
 ---
 
 ## 8. Методика замеров baseline (ядро этой главы)
 
 ### 8.1. Стенд
+
+Фактический прогон для ВКР: Ubuntu 24.04 в WSL2, ядро
+`6.6.87.2-microsoft-standard-WSL2`, AMD Ryzen 5 3550H (4 vCPU), Go 1.27.2,
+nginx 1.24.0, HAProxy 2.8.30. Прокси, бэкенд и генератор нагрузки — на одном
+хосте (loopback), поэтому числа сравнимы **относительно**, а не как абсолютный
+сетевой throughput. Идеальный стенд с CPU pinning/netns описан ниже как план.
 
 - Отдельный хост/VM (или изолированный netns), **опрос синхронный** по времени.
 - Никаких «шумных соседей»; CPU governor = performance; отключены deep C-states.
@@ -178,13 +221,13 @@ upstream_pools:
 
 | Что меряем | Инструмент |
 |------------|------------|
-| L4 throughput (Gbps) | `iperf3` (TCP) |
-| HTTP RPS/latency через L4 | `wrk2` или `vegeta` / `k6` |
-| Connection rate | `wrk2 -c`, custom accept-bench |
+| L4 throughput / latency / setup rate | `go test -bench` (`BenchmarkProxyComparison`, `BenchmarkThroughput`, `BenchmarkRelayLatency`, `BenchmarkConnectionSetup`) |
+| Сравнение с внешними прокси | реальные процессы `nginx stream` и `HAProxy TCP` в тесте (Linux) |
 | Go-аллокации | `go test -bench . -benchmem` |
 | Статистика прогонов | `benchstat` |
 | Профили CPU/heap | `pprof` |
 | Ресурсы | `pidstat`, `ps`, `/proc` |
+| HTTP RPS (future) | `wrk2` / `k6` |
 
 ### 8.3. Сценарии (матрица)
 
@@ -217,6 +260,11 @@ upstream_pools:
 | S5 `HAProxy TCP` 2.8.30 | 268.9 / 248.3 MB/s | ~859 conn/s (1 164 µs) | 439.2 µs | — | Дефолтный `mode tcp` (без `splice-auto`) |
 
 > Полный разбор цифр и воспроизводимая команда `BenchmarkProxyComparison` — в [`benchmarks/README.md`](../benchmarks/README.md), §2.
+>
+> Числа сняты на коммите `18d4249` (до батча circuit breaker/TLS от 06.11) и
+> **не включают** TLS, circuit breaker и `dial_retries`: `wasmgate_full` — это
+> `max_conns` + `rate_limit` + `ipguard.wasm`. Дословный вывод консоли —
+> [`benchmarks/linux-ubuntu-results.txt`](../benchmarks/linux-ubuntu-results.txt).
 
 ### 8.6. Go-специфика профилирования
 
@@ -238,12 +286,13 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
 
 | Уровень | Что проверяем |
 |---------|---------------|
-| Unit | балансировщик, парсер SNI, Snapshot/atomic swap, таймауты |
-| Integration | проксирование end-to-end, health-check failover, drain |
+| Unit | балансировщик, circuit breaker, парсер SNI, Snapshot/atomic swap, таймауты, rate limiter |
+| Integration | проксирование end-to-end, health-check failover, drain, TLS/SNI, WASM-хуки |
 | Race | `go test -race ./...` |
-| Fuzz | парсер ClientHello/SNI, загрузчик конфига |
+| Fuzz | парсер ClientHello/SNI (`FuzzParseClientHello`) |
 | Load | сценарии S0–S5 (§8.3) |
 | Chaos | reload под нагрузкой, kill upstream, обрыв клиента |
+| E2E | `ipguard.wasm` на реальных source IP, сравнение с nginx/HAProxy (Linux) |
 
 ---
 
@@ -254,6 +303,9 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
 | Движок event-loop (`gnet`) добавляет сложность, если взять его преждевременно | Средняя | Среднее | Решено: старт на `net`+`splice`; `gnet` — только если замеры покажут узкое место |
 | Drain/reload рвёт соединения на гонках | Средняя | Высокое | Chaos-тест + race; фиксировать snapshot per-conn |
 | `splice` не кросс-платформенный | Высокая | Низкое | Linux — fast path; на других платформах копия через пул буферов (подробно — benchmarks/README.md) |
+| TLS-терминация или `stream`-плагин отключают `splice` | Высокая | Среднее | Держать TLS/`stream` только там, где нужна инспекция; `on_data: once` сохраняет zero-copy |
+| Плагин съедает CPU/память | Средняя | Высокое | `max_memory_pages`, опциональный `timeout`, выбраковка инстанса при trap |
+| Старый WASM-runtime не закрывается при reload | Средняя | Низкое | Задокументировано в `docs/06`; инстансы доживают на старом snapshot |
 | Baseline «загрязнён» окружением | Средняя | Среднее | pinning, netns, ≥5 прогонов, benchstat |
 | Разрастание скоупа (feature creep) | Высокая | Среднее | Жёсткий scope §2.2 + milestones |
 
@@ -263,4 +315,5 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
 
 - **Доказуемый артефакт:** работающий прокси + воспроизводимые числа.
 - **База для гипотез:** каждая фича меряется против baseline (H1–H4).
-- **Точки расширения:** Snapshot/RCU и plugin-интерфейс → главы по Hot Reload и WASM.
+- **Точки расширения:** Snapshot/RCU и ABI WASM-плагинов → главы по Hot Reload,
+  rate limiting, L7-инфильтрации и TLS.

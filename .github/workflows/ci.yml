@@ -2,8 +2,8 @@
 #
 # Two jobs:
 #   lint — fails on any unformatted file (gofmt), go vet, golangci-lint.
-#          The lint version is pinned to the last v1.x release because
-#          .golangci.yml targets the v1 configuration schema.
+#          The lint version is pinned to v2.15.0 because .golangci.yml uses the
+#          v2 configuration schema (golangci-lint >= 2.0).
 #   test — race-enabled tests on Linux (gcc is present there, so CGO for the
 #          race detector costs nothing; locally on Windows it needs mingw).
 #          Windows runs the plain test suite: it exercises the platform's

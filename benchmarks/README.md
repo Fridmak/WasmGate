@@ -50,7 +50,9 @@
   (на 4C/8T лэптопе точка `conns=64` шумит — там уже переподписка; смотри тренд,
   а не одну точку, и профиль, а не догадки про мьютекс);
 - `RelayLatency` — задержка на тёплом соединении без dial/close, «чистый» RTT прокси;
-- `ConnectionSetup` даёт потолок по conn/s для сравнения с будущим rate-limit'ом;
+- `ConnectionSetup` даёт потолок по conn/s; `wasmgate_full` добавляет к нему
+  `max_conns` + `rate_limit` + `ipguard.wasm` и показывает их суммарную цену
+  (рост с ~918 до ~1421 µs на коннект в этом стенде);
 - `Reload` должен оставаться в микросекундах (холодный путь, но он на SIGHUP);
 - `least_conn` растёт с размером пула, `round_robin` — плоский; если линейный скан
   начнёт мешать, пора заводить heap;
@@ -104,9 +106,11 @@ internal/config/
   listener_config_test.go  тесты listener_config.go
   pool_config_test.go      тесты pool_config.go
 internal/plugin/
-  sandbox_test.go          тесты sandbox.go + BenchmarkOnAccept / OnAcceptParallel
+  sandbox_test.go          тесты sandbox.go + BenchmarkOnAccept / OnAcceptParallel / OnData
 internal/ratelimit/
   window_test.go           тесты window.go + BenchmarkAllow / AllowParallel
+internal/tlspeek/
+  sni_test.go              тесты sni.go + BenchmarkParseClientHelloSNI, FuzzParseClientHello
 internal/observe/
   limiter_test.go          тесты limiter.go + BenchmarkLimiterAllow / AllowManyKeys
   metrics_test.go          тесты metrics.go + BenchmarkMetricsConnection
@@ -116,21 +120,25 @@ internal/observe/
 
 ### Чего пока нет (зоны наблюдаемости)
 
-Покрыто: CPU-горячий путь, пропускная способность, латентность, масштабирование,
-reload (включая отказ), лимитер, лог-лимитер, конкуренция. Отдельно — то, что
-мерить как бенч бессмысленно, но проверяется тестами: `idle_timeout`, который
-реально **срабатывает** (`TestIdleTimeoutClosesSilentConnection`) и не рвёт
-односторонний поток (`TestIdleTimeoutKeepsOneWayStreamAlive`), и отсутствие утечек
-горутин на соединение (`TestNoGoroutineLeakPerConnection`: 25 соединений на обоих
-copy-путях → счётчик горутин вернулся к базе).
+Покрыто бенчами: CPU-горячий путь, пропускная способность (включая сравнение с
+`nginx stream`/HAProxy), латентность, масштабирование, установление соединений,
+reload (включая отказ), `max_conns`, rate limiter, WASM-хуки, SNI-парсер, метрики
+и лог-лимитер. Отдельно — то, что мерить как бенч бессмысленно, но проверяется
+тестами: `idle_timeout`, который реально **срабатывает**
+(`TestIdleTimeoutClosesSilentConnection`) и не рвёт односторонний поток
+(`TestIdleTimeoutKeepsOneWayStreamAlive`), отсутствие утечек горутин на соединение
+(`TestNoGoroutineLeakPerConnection`), reload под живым трафиком
+(`TestReloadUnderLoadZeroDroppedConnections`: 12 reload, 0 dropped).
 
 **Не** покрыто (осознанные пробелы):
 
-- reload **под нагрузкой** (`BenchmarkReload` мерит только холодную сборку
-  snapshot, без живого трафика);
 - поведение под насыщением: что происходит, когда `max_conns` достигнут, а
   клиенты продолжают ломиться (нагрузочный сценарий, а не бенч);
-- внешние нагрузочные сценарии S0–S5 (см. §2).
+- TLS-терминация и `data_mode: stream` в e2e-замерах: оба переводят соединение с
+  `splice` на буферизованный путь, поэтому их цена измеряется отдельным прогоном,
+  а текущий `linux-ubuntu-results.txt` снят **без** TLS/stream/circuit breaker;
+- память (RSS) под длительной нагрузкой — снимается вручную (`ps`/pprof), в
+  бенч-набор не входит.
 
 ### Запуск
 
@@ -248,6 +256,11 @@ Build-теги становятся правильным выбором, есл�
 
 Замер на Ubuntu 24.04 (WSL2, ядро `6.6.87.2-microsoft-standard-WSL2`, `go1.27.2 linux/amd64`,
 `nginx/1.24.0`, `HAProxy 2.8.30`, AMD Ryzen 5 3550H):
+
+> Прогон снят на коммите `18d4249` — **до** батча circuit breaker/TLS от 06.11.
+> `wasmgate_full` = `max_conns` + `rate_limit` + `ipguard.wasm`; TLS-терминации,
+> `data_mode: stream`, circuit breaker и `dial_retries` в этих числах **нет**.
+> Дословный вывод — [`linux-ubuntu-results.txt`](linux-ubuntu-results.txt).
 
 | Сценарий / Метрика | `direct` (S0) | `wasmgate_l4` (S1) | `wasmgate_full` (F2 + WASM) | `nginx_stream` (S5) | `haproxy_tcp` (S5) |
 |---|---|---|---|---|---|
