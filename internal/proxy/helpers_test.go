@@ -116,6 +116,18 @@ func validated(tb testing.TB, cfg *config.Config) *config.Config {
 	return cfg
 }
 
+// wasmOnAcceptVerdict returns a minimal WASM module exporting
+// on_accept(i64, i64, i32) -> i32 that always returns ret (0 = allow, 1 = deny).
+func wasmOnAcceptVerdict(ret byte) []byte {
+	return []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x08, 0x01, 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x01, 0x7f,
+		0x03, 0x02, 0x01, 0x00,
+		0x07, 0x0d, 0x01, 0x09, 'o', 'n', '_', 'a', 'c', 'c', 'e', 'p', 't', 0x00, 0x00,
+		0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, ret, 0x0b,
+	}
+}
+
 // startServer starts srv and registers its shutdown with tb's cleanup.
 func startServer(tb testing.TB, srv *Server) string {
 	tb.Helper()

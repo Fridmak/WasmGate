@@ -3,10 +3,12 @@ package observe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -182,6 +184,79 @@ func TestAdminAuthHostAndPprofDefault(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin reload: %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminReloadSingleFlightAndErrorRedaction(t *testing.T) {
+	m := NewMetrics()
+	admin, err := NewAdmin("127.0.0.1:0", m, nil, discardLogger(), AdminOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = admin.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = admin.Shutdown(ctx)
+	})
+	base := "http://" + admin.Addr().String()
+
+	// First reload blocks until released.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	admin.SetReload(func(context.Context) (uint64, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		close(started)
+		<-release
+		return 7, nil
+	})
+
+	first := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(base+"/reload", "", nil)
+		if err != nil {
+			first <- -1
+			return
+		}
+		_ = resp.Body.Close()
+		first <- resp.StatusCode
+	}()
+	<-started
+
+	// A concurrent reload must be rejected with 409, not queued.
+	resp, err := http.Post(base+"/reload", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("concurrent reload: %d, want 409", resp.StatusCode)
+	}
+	close(release)
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("first reload: %d, want 200", code)
+	}
+
+	// A failing reload must not leak the underlying error (paths, config
+	// fragments) to the caller.
+	admin.SetReload(func(context.Context) (uint64, error) {
+		return 0, errors.New("secret detail: /etc/wasmgate/config.yaml")
+	})
+	resp, err = http.Post(base+"/reload", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("failing reload: %d, want 400", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "secret detail") || strings.Contains(string(body), "/etc/wasmgate") {
+		t.Fatalf("reload error leaked internals: %s", body)
 	}
 }
 

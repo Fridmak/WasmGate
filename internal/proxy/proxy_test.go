@@ -11,6 +11,8 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -153,15 +155,7 @@ func TestProxyRateLimitsConnections(t *testing.T) {
 // an allow-all WASM plugin lets subsequent connections through with zero downtime.
 func TestProxyWasmPluginRejectsAndAllows(t *testing.T) {
 	// on_accept(i64, i64, i32) -> i32 returning 1 (VerdictDeny) or 0 (VerdictAllow).
-	wasmVerdict := func(ret byte) []byte {
-		return []byte{
-			0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-			0x01, 0x08, 0x01, 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x01, 0x7f,
-			0x03, 0x02, 0x01, 0x00,
-			0x07, 0x0d, 0x01, 0x09, 'o', 'n', '_', 'a', 'c', 'c', 'e', 'p', 't', 0x00, 0x00,
-			0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, ret, 0x0b,
-		}
-	}
+	wasmVerdict := wasmOnAcceptVerdict
 
 	echoAddr := startEcho(t)
 	m := observe.NewMetrics()
@@ -570,6 +564,112 @@ func BenchmarkConnHotPath(b *testing.B) {
 		l.pool.Release(up)
 		l.limiter.release()
 		sinkListener = l
+	}
+}
+
+// TestProxySNIRoutesStreamPluginSeesPeekedPrefix is the regression test for the
+// interaction between SNI peek and data_mode "stream": tlspeek.Peek buffers the
+// first bytes in a *tlspeek.Conn, and that buffered prefix used to be replayed
+// straight to the upstream by DrainTo, bypassing on_data entirely. The plugin
+// must now see the peeked bytes before they reach the backend.
+func TestProxySNIRoutesStreamPluginSeesPeekedPrefix(t *testing.T) {
+	// on_data(ptr, len) -> 1 when payload[0] == 'X', else 0.
+	wasmDenyX := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
+		0x03, 0x03, 0x02, 0x00, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x22, 0x03,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
+		0x0a, 0x14, 0x02,
+		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
+		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
+	}
+
+	echoAddr := startEcho(t)
+	m := observe.NewMetrics()
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "web",
+			DialTimeout:  time.Second,
+			SNIRoutes:    map[string]string{"api.example.com": "web"},
+			Plugin:       config.PluginConfig{Wasm: wasmDenyX, DataMode: "stream"},
+		}},
+		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
+	})
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), m))
+
+	// A non-TLS prefix starting with 'X' is buffered by tlspeek.Peek. Without the
+	// fix it bypassed the plugin and was echoed back; now it must be rejected.
+	bad := dial(t, addr)
+	defer bad.Close()
+	if _, err := bad.Write([]byte("X-BYPASS")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := bad.Read(make([]byte, 1)); err == nil {
+		t.Fatal("peeked prefix bypassed the stream plugin and reached the backend")
+	}
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsPluginRejected >= 1
+	})
+
+	// A benign prefix must still be replayed intact.
+	good := dial(t, addr)
+	defer good.Close()
+	if _, err := good.Write([]byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = good.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got := make([]byte, 5)
+	if _, err := io.ReadFull(good, got); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("echoed prefix = %q, want hello", string(got))
+	}
+}
+
+// TestProxyReloadPicksUpReplacedWasmFile verifies that the plugin cache is keyed
+// by content, not only by path: rewriting the .wasm file in place and reloading
+// must swap allow -> deny without a process restart.
+func TestProxyReloadPicksUpReplacedWasmFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugin.wasm")
+	if err := os.WriteFile(path, wasmOnAcceptVerdict(0), 0o600); err != nil {
+		t.Fatalf("write allow plugin: %v", err)
+	}
+
+	echoAddr := startEcho(t)
+	buildCfg := func() *config.Config {
+		return validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+			lc.Plugin = config.PluginConfig{Path: path}
+		}))
+	}
+	srv := NewServer(testLogger(), NewRuntime(buildCfg()), nil)
+	addr := startServer(t, srv)
+
+	c := roundTrip(t, addr) // allow module: connection works
+	_ = c.Close()
+
+	// Replace the file at the same path with a deny module, then reload.
+	if err := os.WriteFile(path, wasmOnAcceptVerdict(1), 0o600); err != nil {
+		t.Fatalf("write deny plugin: %v", err)
+	}
+	if _, err := srv.Reload(context.Background(), buildCfg()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	denied := dial(t, addr)
+	defer denied.Close()
+	_ = denied.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := denied.Read(make([]byte, 1)); err == nil {
+		t.Fatal("reloaded listener still used the old allow plugin")
 	}
 }
 
