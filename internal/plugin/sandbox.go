@@ -347,7 +347,7 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, err
 	}
-	v := int32(uint32(inst.stack[0])) // WASM i32 result, sign-extended by Go
+	v := int32(uint32(inst.stack[0])) // #nosec G115 -- WASM i32 result is the low 32 bits
 	p.pool.Put(inst)
 	if v != int32(VerdictAllow) {
 		return VerdictDeny, nil
@@ -400,7 +400,7 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 
 	if p.hasDataEx {
 		inst.stack[0] = connID
-		inst.stack[1] = uint64(uint32(dir))
+		inst.stack[1] = uint64(uint32(dir)) // #nosec G115 -- dir is 0 or 1
 		inst.stack[2] = uint64(inst.dataPtr)
 		inst.stack[3] = uint64(n)
 		if err := inst.onDataEx.CallWithStack(ctx, inst.stack[:4]); err != nil {
@@ -418,7 +418,7 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 		}
 	}
 
-	v := int32(uint32(inst.stack[0])) // strict i32 ABI: 0=allow, 1=deny, >=2=route_pools[v-2]
+	v := int32(uint32(inst.stack[0])) // #nosec G115 -- strict i32 ABI: 0=allow, 1=deny, >=2=route_pools[v-2]
 	if v < int32(VerdictAllow) {
 		p.pool.Put(inst)
 		return VerdictDeny, nil
@@ -496,7 +496,7 @@ func (p *Plugin) initError() error {
 
 // Close releases the underlying wazero runtime and all compiled/instantiated
 // resources. It is idempotent.
-func (p *Plugin) Close(ctx context.Context) error {
+func (p *Plugin) Close(_ context.Context) error {
 	if p == nil || p.rt == nil {
 		return nil
 	}

@@ -55,21 +55,6 @@ func newRegistry() *registry {
 	}
 }
 
-// plugin returns the compiled WASM sandbox for a listener, reusing the existing
-// compiled module and instance pool only when both the configuration and the
-// module bytes are unchanged. The file is re-read on every reload so replacing
-// a .wasm at the same path is picked up (or fails closed if the file is bad).
-func (g *registry) plugin(name string, pc config.PluginConfig) (*plugin.Plugin, error) {
-	cp, err := g.preparePlugin(name, pc)
-	if err != nil {
-		return nil, err
-	}
-	g.mu.Lock()
-	g.plugins[name] = cp
-	g.mu.Unlock()
-	return cp.pl, nil
-}
-
 // preparePlugin compiles pc (or reuses the cached instance when config and
 // content hash match) without mutating g.plugins, so a multi-listener reload
 // can validate every listener before committing any change to the registry.

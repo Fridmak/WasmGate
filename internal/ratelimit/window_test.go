@@ -176,8 +176,11 @@ func TestIPv6SubnetKeyDoesNotUseByteHeuristic(t *testing.T) {
 func TestGuardLimitsPerIPAndReleases(t *testing.T) {
 	g := NewGuard(2, 0, 64, 56)
 	ip := net.ParseIP("192.0.2.1")
-	if !g.Acquire(ip) || !g.Acquire(ip) {
-		t.Fatal("first two slots refused")
+	if !g.Acquire(ip) {
+		t.Fatal("first slot refused")
+	}
+	if !g.Acquire(ip) {
+		t.Fatal("second slot refused")
 	}
 	if g.Acquire(ip) {
 		t.Fatal("third concurrent connection allowed past max_concurrent")

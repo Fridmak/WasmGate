@@ -156,11 +156,11 @@ func (a *Admin) handler(m *Metrics, upstreams func() []UpstreamStat, log *slog.L
 		mux.HandleFunc("/debug/pprof/goroutine", a.guardPprof(pprof.Handler("goroutine").ServeHTTP, false))
 	}
 
-	return logRequests(a.secure(mux, log), log)
+	return logRequests(a.secure(mux), log)
 }
 
 // secure enforces Host/Origin/token checks before dispatching an admin request.
-func (a *Admin) secure(next http.Handler, log *slog.Logger) http.Handler {
+func (a *Admin) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hostAllowed(r.Host, a.opts.AllowRemote) {
 			http.Error(w, "host not allowed", http.StatusMisdirectedRequest)
