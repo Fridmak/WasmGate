@@ -3,9 +3,12 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"strconv"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"wasmgate/internal/observe"
@@ -28,6 +31,7 @@ type Proxy struct {
 	rt      *Runtime         // source of the current snapshot
 	sampler *observe.Limiter // rate-limits per-connection log events
 	metrics *observe.Metrics // per-connection counters; nil = disabled
+	nextID  atomic.Uint64    // connection id exposed to ABI v2 plugin hooks
 }
 
 // New returns a Proxy that reads configuration from rt on every connection.
@@ -57,6 +61,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		p.log.Error("pool missing from snapshot", "listener", listenerName, "pool", rl.cfg.UpstreamPool)
 		return
 	}
+	connID := p.nextID.Add(1)
 
 	// Enforce the per-listener connection limit (nil limiter means unlimited).
 	if rl.limiter != nil {
@@ -128,7 +133,19 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	}
 
 	if rl.tlsConfig != nil {
-		client = tls.Server(client, rl.tlsConfig)
+		tlsConn := tls.Server(client, rl.tlsConfig)
+		hsTimeout := rl.cfg.TLS.HandshakeTimeout
+		if hsTimeout <= 0 {
+			hsTimeout = 10 * time.Second
+		}
+		hsCtx, cancel := context.WithTimeout(ctx, hsTimeout)
+		err := tlsConn.HandshakeContext(hsCtx)
+		cancel()
+		if err != nil {
+			p.log.Debug("tls handshake failed", "listener", listenerName, "err", err)
+			return
+		}
+		client = tlsConn
 	}
 
 	targetPool := rl.pool
@@ -160,7 +177,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				return
 			}
 			client = wrapped
-			verdict, err := rl.plugin.OnData(ctx, chunk)
+			verdict, err := rl.plugin.OnDataConn(ctx, connID, 0, chunk)
 			if err != nil {
 				p.metrics.PluginDiscard()
 			}
@@ -175,7 +192,13 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
-			if idx := int(verdict) - 2; idx >= 0 && idx < len(rl.routePools) && rl.routePools[idx] != nil {
+			if verdict >= plugin.Verdict(2) {
+				idx := int(verdict) - 2
+				if idx < 0 || idx >= len(rl.routePools) || rl.routePools[idx] == nil {
+					p.metrics.RejectPlugin()
+					p.log.Warn("wasm on_data selected an unknown route pool", "listener", listenerName, "verdict", verdict)
+					return
+				}
 				targetPool = rl.routePools[idx]
 			}
 		}
@@ -188,12 +211,33 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	defer targetPool.Release(up)
 	defer server.Close()
 
+	// Replay the peeked prefix synchronously, before join starts. This removes
+	// the only shared *tlspeek.Conn between the two copy goroutines: after this
+	// point both directions use raw net.Conns, so splice(2) is preserved and no
+	// Close/Read race is possible.
+	var prefix int64
+	if pc, ok := client.(*tlspeek.Conn); ok {
+		if rl.cfg.DialTimeout > 0 {
+			_ = server.SetWriteDeadline(time.Now().Add(rl.cfg.DialTimeout))
+		}
+		raw, n, err := pc.DrainTo(server)
+		if rl.cfg.DialTimeout > 0 {
+			_ = server.SetWriteDeadline(time.Time{})
+		}
+		if err != nil {
+			return
+		}
+		client = raw
+		prefix = n
+	}
+
 	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
-	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics)
+	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics, connID)
+	tx += prefix
 	p.metrics.AddBytes(rx + tx)
 	if rl.plugin != nil {
-		if err := rl.plugin.OnClose(ctx, peerIP, rx, tx); err != nil {
+		if err := rl.plugin.OnCloseConn(ctx, connID, peerIP, rx, tx); err != nil {
 			p.metrics.PluginDiscard()
 		}
 	}
@@ -214,7 +258,9 @@ func (p *Proxy) dialWithRetry(ctx context.Context, listenerName string, targetPo
 			up.MarkHealthy()
 			return up, server, true
 		}
-		up.MarkUnhealthy()
+		if !localDialError(ctx, err) {
+			up.MarkUnhealthy()
+		}
 		targetPool.Release(up)
 		p.metrics.DialFail()
 		if ok, dropped := p.sampler.Allow("dial:" + listenerName + ":" + up.addr); ok {
@@ -227,6 +273,21 @@ func (p *Proxy) dialWithRetry(ctx context.Context, listenerName string, targetPo
 		}
 	}
 	return nil, nil, false
+}
+
+// localDialError reports an error caused by the local host rather than by the
+// upstream: fd/memory exhaustion, address assignment, or parent cancellation.
+// Such failures must not mark a healthy backend unhealthy.
+func localDialError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, syscall.EMFILE) ||
+		errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM) ||
+		errors.Is(err, syscall.EADDRNOTAVAIL) ||
+		errors.Is(err, context.Canceled)
 }
 
 // clientEndpoint returns the peer IP and port without allocating on the TCP path.

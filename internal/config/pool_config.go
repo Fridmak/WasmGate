@@ -75,13 +75,14 @@ func (p *PoolConfig) Validate() error {
 	if p.CircuitBreaker.HalfOpenRequests < 0 {
 		return errors.New("circuit_breaker.half_open_requests cannot be negative")
 	}
-	if p.CircuitBreaker.ErrorThreshold > 0 {
-		if p.CircuitBreaker.OpenDuration == 0 {
-			p.CircuitBreaker.OpenDuration = DefaultCircuitOpen
-		}
-		if p.CircuitBreaker.HalfOpenRequests == 0 {
-			p.CircuitBreaker.HalfOpenRequests = 1
-		}
+	if p.CircuitBreaker.OpenDuration == 0 {
+		// A zero duration must not mean "stay unhealthy forever": a local
+		// EMFILE during one dial would otherwise disable the backend until a
+		// probe/success that never comes. Use the safe finite default.
+		p.CircuitBreaker.OpenDuration = DefaultCircuitOpen
+	}
+	if p.CircuitBreaker.HalfOpenRequests == 0 {
+		p.CircuitBreaker.HalfOpenRequests = 1
 	}
 	seen := make(map[string]bool, len(p.Servers))
 	for _, s := range p.Servers {

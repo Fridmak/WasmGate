@@ -37,6 +37,8 @@ type Server struct {
 	rt      *Runtime         // source of the current snapshot
 	proxy   *Proxy           // shared by all accept loops
 	metrics *observe.Metrics // per-connection counters; nil = disabled
+	// acceptSampler bounds WARN output for persistent accept errors (e.g. EMFILE).
+	acceptSampler *observe.Limiter
 
 	mu      sync.Mutex
 	started bool
@@ -66,13 +68,14 @@ type boundListener struct {
 func NewServer(log *slog.Logger, rt *Runtime, metrics *observe.Metrics) *Server {
 	connCtx, connCancel := context.WithCancel(context.Background())
 	return &Server{
-		log:        log,
-		rt:         rt,
-		proxy:      New(log, rt, metrics),
-		metrics:    metrics,
-		ln:         make(map[string]boundListener),
-		connCtx:    connCtx,
-		connCancel: connCancel,
+		log:           log,
+		rt:            rt,
+		proxy:         New(log, rt, metrics),
+		metrics:       metrics,
+		acceptSampler: observe.NewLimiter(logWindow, logBurst),
+		ln:            make(map[string]boundListener),
+		connCtx:       connCtx,
+		connCancel:    connCancel,
 	}
 }
 
@@ -281,7 +284,9 @@ func (s *Server) acceptLoop(name string, ln net.Listener) {
 				continue // transient, retry immediately
 			}
 			// Back off briefly so a persistent error cannot spin the CPU.
-			s.log.Warn("accept error", "listener", name, "err", err)
+			if ok, dropped := s.acceptSampler.Allow("accept:" + name); ok {
+				s.log.Warn("accept error", "listener", name, "err", err, "suppressed", dropped)
+			}
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}

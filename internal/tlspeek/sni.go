@@ -76,6 +76,17 @@ func (c *Conn) DrainTo(w io.Writer) (net.Conn, int64, error) {
 	return c.Conn, written, nil
 }
 
+// CloseWrite closes the write half of the underlying connection when it
+// supports it. A wrapper that reaches this method before DrainTo would
+// otherwise be fully closed, losing the unread prefix; after the proxy's
+// synchronous DrainTo it is only a safety net for other callers.
+func (c *Conn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Close()
+}
+
 // Close releases the pooled buffer (if still held) and closes the underlying conn.
 func (c *Conn) Close() error {
 	c.data = nil
