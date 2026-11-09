@@ -28,8 +28,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -54,17 +56,18 @@ const (
 	// (16 * 64 KiB = 1 MiB) when Options.MaxMemoryPages is 0.
 	DefaultMaxMemoryPages = 16
 
-	// ScratchOffset is the byte offset inside the guest's first 64 KiB page
-	// where OnData places packet bytes when the module does not export its own
-	// on_data_ptr() function. Offsets 0..32767 stay untouched for guest globals
-	// and stack; 32768..65535 (32 KiB) holds the packet payload.
+	// ScratchOffset is the byte offset used when a module exports on_data but
+	// fails to export on_data_ptr. It is retained only as documentation: L7
+	// plugins must export on_data_ptr so the host never overwrites guest data.
 	ScratchOffset   = 32 * 1024
 	ScratchCapacity = 32 * 1024
 
 	hookOnAccept  = "on_accept"
 	hookOnData    = "on_data"
+	hookOnDataEx  = "on_data_ex"
 	hookOnDataPtr = "on_data_ptr"
 	hookOnClose   = "on_close"
+	hookOnCloseEx = "on_close_ex"
 )
 
 // Options configures the sandbox limits for a compiled plugin.
@@ -72,7 +75,8 @@ type Options struct {
 	// MaxMemoryPages caps the WASM linear memory in 64 KiB pages (default 16 = 1 MiB).
 	MaxMemoryPages uint32
 	// Timeout bounds a single hook execution. 0 disables the per-call timer
-	// (preserving 0 allocs/op on the fast path) and relies on the connection ctx.
+	// (preserving 0 allocs/op on the fast path). A zero value is an accepted
+	// operator risk: a guest loop can freeze the process, so New logs a warning.
 	Timeout time.Duration
 }
 
@@ -81,16 +85,19 @@ type Options struct {
 // from the caller's perspective so it can sit inside a proxy Snapshot and be
 // closed once drained.
 type Plugin struct {
-	rt        wazero.Runtime
-	compiled  wazero.CompiledModule
-	timeout   time.Duration
-	hasAccept bool
-	hasData   bool
-	hasClose  bool
-	nextID    atomic.Uint64
-	discarded atomic.Int64
-	pool      sync.Pool
-	initErr   error
+	rt         wazero.Runtime
+	compiled   wazero.CompiledModule
+	timeout    time.Duration
+	hasAccept  bool
+	hasData    bool
+	hasDataEx  bool
+	hasClose   bool
+	hasCloseEx bool
+	nextID     atomic.Uint64
+	discarded  atomic.Int64
+	pool       sync.Pool
+	initErr    atomic.Pointer[error]
+	closeOnce  sync.Once
 }
 
 // Discarded returns the total number of instances destroyed after a trap or timeout.
@@ -102,13 +109,15 @@ func (p *Plugin) Discarded() int64 {
 }
 
 type instance struct {
-	mod      api.Module
-	onAccept api.Function
-	onData   api.Function
-	onClose  api.Function
-	dataPtr  uint32
-	dataCap  uint32
-	stack    [4]uint64
+	mod       api.Module
+	onAccept  api.Function
+	onData    api.Function
+	onDataEx  api.Function
+	onClose   api.Function
+	onCloseEx api.Function
+	dataPtr   uint32
+	dataCap   uint32
+	stack     [8]uint64
 }
 
 // LoadFile reads a .wasm binary from path and compiles it into a sandboxed Plugin.
@@ -143,24 +152,36 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		return nil, fmt.Errorf("plugin: compile: %w", err)
 	}
 
-	hasAccept, hasData, hasClose, err := validateExports(compiled)
+	hasAccept, hasData, hasDataEx, hasClose, hasCloseEx, err := validateExports(compiled)
 	if err != nil {
 		_ = rt.Close(ctx)
 		return nil, err
 	}
+	if !hasData && !hasDataEx && !hasAccept && !hasClose && !hasCloseEx {
+		_ = rt.Close(ctx)
+		return nil, fmt.Errorf("plugin: module must export at least one hook")
+	}
 
 	p := &Plugin{
-		rt:        rt,
-		compiled:  compiled,
-		timeout:   opts.Timeout,
-		hasAccept: hasAccept,
-		hasData:   hasData,
-		hasClose:  hasClose,
+		rt:         rt,
+		compiled:   compiled,
+		timeout:    opts.Timeout,
+		hasAccept:  hasAccept,
+		hasData:    hasData,
+		hasDataEx:  hasDataEx,
+		hasClose:   hasClose,
+		hasCloseEx: hasCloseEx,
+	}
+	if p.timeout == 0 {
+		// This is an accepted operator risk, not a silent default: a guest loop
+		// without WithCloseOnContextDone can freeze the whole process.
+		slog.Default().Warn("wasm plugin has no call timeout; a looping hook can freeze the process",
+			"hint", "set plugin.timeout or ensure the plugin is trusted")
 	}
 	p.pool.New = func() any {
 		inst, err := p.instantiate(context.Background())
 		if err != nil {
-			p.initErr = err
+			p.initErr.Store(&err)
 			return nil
 		}
 		return inst
@@ -173,48 +194,71 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		return nil, err
 	}
 	p.pool.Put(warm)
+	runtime.SetFinalizer(p, func(p *Plugin) { _ = p.Close(context.Background()) })
 	return p, nil
 }
 
-// HasData reports whether the compiled module exports the L7 on_data hook.
+// HasData reports whether the compiled module exports an L7 on_data hook
+// (either the legacy on_data or the connection-aware on_data_ex).
 func (p *Plugin) HasData() bool {
-	return p != nil && p.hasData
+	return p != nil && (p.hasData || p.hasDataEx)
 }
+
+// Timeout reports the per-call timeout (0 = disabled).
+func (p *Plugin) Timeout() time.Duration { return p.timeout }
 
 // validateExports checks that the module exports at least one hook and that any
 // exported hook has the exact ABI signature expected by the host.
-func validateExports(compiled wazero.CompiledModule) (hasAccept, hasData, hasClose bool, err error) {
+func validateExports(compiled wazero.CompiledModule) (hasAccept, hasData, hasDataEx, hasClose, hasCloseEx bool, err error) {
 	exports := compiled.ExportedFunctions()
 	if fn, ok := exports[hookOnAccept]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI32}) ||
 			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i32) -> i32", hookOnAccept)
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i32) -> i32", hookOnAccept)
 		}
 		hasAccept = true
 	}
 	if fn, ok := exports[hookOnData]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}) ||
 			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, fmt.Errorf("plugin: %s must have signature (i32, i32) -> i32", hookOnData)
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i32, i32) -> i32", hookOnData)
 		}
 		hasData = true
 	}
+	if fn, ok := exports[hookOnDataEx]; ok {
+		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32}) ||
+			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i32, i32, i32) -> i32", hookOnDataEx)
+		}
+		hasDataEx = true
+	}
 	if fn, ok := exports[hookOnDataPtr]; ok {
 		if len(fn.ParamTypes()) != 0 || !slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, fmt.Errorf("plugin: %s must have signature () -> i32", hookOnDataPtr)
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature () -> i32", hookOnDataPtr)
 		}
 	}
 	if fn, ok := exports[hookOnClose]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
 			len(fn.ResultTypes()) != 0 {
-			return false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64) -> ()", hookOnClose)
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64) -> ()", hookOnClose)
 		}
 		hasClose = true
 	}
-	if !hasAccept && !hasData && !hasClose {
-		return false, false, false, fmt.Errorf("plugin: module must export %s, %s or %s", hookOnAccept, hookOnData, hookOnClose)
+	if fn, ok := exports[hookOnCloseEx]; ok {
+		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
+			len(fn.ResultTypes()) != 0 {
+			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64, i64) -> ()", hookOnCloseEx)
+		}
+		hasCloseEx = true
 	}
-	return hasAccept, hasData, hasClose, nil
+	if (hasData || hasDataEx) && exports[hookOnDataPtr] == nil {
+		return false, false, false, false, false, fmt.Errorf("plugin: %s is required when on_data/on_data_ex is exported", hookOnDataPtr)
+	}
+	if !hasAccept && !hasData && !hasDataEx && !hasClose && !hasCloseEx {
+		return false, false, false, false, false, fmt.Errorf("plugin: module must export %s, %s, %s, %s or %s",
+			hookOnAccept, hookOnData, hookOnDataEx, hookOnClose, hookOnCloseEx)
+	}
+	return hasAccept, hasData, hasDataEx, hasClose, hasCloseEx, nil
 }
 
 func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
@@ -227,26 +271,30 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 		return nil, fmt.Errorf("plugin: instantiate: %w", err)
 	}
 	inst := &instance{
-		mod:      mod,
-		onAccept: mod.ExportedFunction(hookOnAccept),
-		onData:   mod.ExportedFunction(hookOnData),
-		onClose:  mod.ExportedFunction(hookOnClose),
-		dataPtr:  ScratchOffset,
-		dataCap:  ScratchCapacity,
+		mod:       mod,
+		onAccept:  mod.ExportedFunction(hookOnAccept),
+		onData:    mod.ExportedFunction(hookOnData),
+		onDataEx:  mod.ExportedFunction(hookOnDataEx),
+		onClose:   mod.ExportedFunction(hookOnClose),
+		onCloseEx: mod.ExportedFunction(hookOnCloseEx),
+		dataCap:   ScratchCapacity,
 	}
-	if p.hasData {
+	if p.hasData || p.hasDataEx {
 		mem := mod.Memory()
 		if mem == nil {
 			_ = mod.Close(ctx)
 			return nil, errors.New("plugin: module has no exported linear memory for on_data")
 		}
-		if ptrFn := mod.ExportedFunction(hookOnDataPtr); ptrFn != nil {
-			if err := ptrFn.CallWithStack(ctx, inst.stack[:1]); err != nil {
-				_ = mod.Close(ctx)
-				return nil, fmt.Errorf("plugin: call %s: %w", hookOnDataPtr, err)
-			}
-			inst.dataPtr = uint32(inst.stack[0] & 0xffffffff) // #nosec G115 -- 32-bit guest pointer
+		ptrFn := mod.ExportedFunction(hookOnDataPtr)
+		if ptrFn == nil {
+			_ = mod.Close(ctx)
+			return nil, fmt.Errorf("plugin: %s is required for on_data", hookOnDataPtr)
 		}
+		if err := ptrFn.CallWithStack(ctx, inst.stack[:1]); err != nil {
+			_ = mod.Close(ctx)
+			return nil, fmt.Errorf("plugin: call %s: %w", hookOnDataPtr, err)
+		}
+		inst.dataPtr = uint32(inst.stack[0]) // #nosec G115 -- low 32 bits are the guest pointer
 		if mem.Size() < inst.dataPtr+inst.dataCap {
 			neededBytes := (inst.dataPtr + inst.dataCap) - mem.Size()
 			neededPages := (neededBytes + 65535) / 65536
@@ -256,6 +304,7 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 			}
 		}
 	}
+	runtime.SetFinalizer(inst, func(i *instance) { _ = i.mod.Close(context.Background()) })
 	return inst, nil
 }
 
@@ -268,7 +317,7 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 	}
 	inst, ok := p.pool.Get().(*instance)
 	if !ok || inst == nil {
-		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initErr)
+		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initError())
 	}
 
 	if p.timeout > 0 {
@@ -289,31 +338,37 @@ func (p *Plugin) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 		_ = inst.mod.Close(context.Background())
 		return VerdictDeny, err
 	}
-	v := Verdict(inst.stack[0] & 0x7fffffff) // #nosec G115 -- non-zero means VerdictDeny
+	v := int32(uint32(inst.stack[0])) // WASM i32 result, sign-extended by Go
 	p.pool.Put(inst)
-	if v != VerdictAllow {
+	if v != int32(VerdictAllow) {
 		return VerdictDeny, nil
 	}
 	return VerdictAllow, nil
 }
 
-// OnData places payload into the pooled WASM instance's scratch linear memory
-// and invokes on_data(ptr, len) -> verdict via CallWithStack (0 heap
-// allocations). Any in-place byte modifications made by the guest in
-// [ptr .. ptr+len] are copied back into payload before the instance is returned
-// to the pool.
-//
-// Return values from on_data:
-//   - 0 (VerdictAllow): allow packet on the default pool;
-//   - 1 (VerdictDeny): reject connection;
-//   - >= 2: allow packet and select route_pools[ret-2].
+// OnData is the legacy entry point for the client->server direction. New code
+// should use OnDataConn so the plugin can correlate chunks and see direction.
 func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
-	if p == nil || !p.hasData || len(payload) == 0 {
+	return p.OnDataConn(ctx, 0, 0, payload)
+}
+
+// OnDataConn places payload into the pooled WASM instance's scratch linear
+// memory and invokes on_data(ptr, len) or on_data_ex(conn_id, dir, ptr, len).
+// Any in-place byte modifications are copied back into payload before the
+// instance is returned to the pool.
+//
+// dir is 0 for client->server and 1 for server->client. The legacy on_data hook
+// is only called for dir==0; on_data_ex is called for both directions.
+func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, payload []byte) (Verdict, error) {
+	if p == nil || (!p.hasData && !p.hasDataEx) || len(payload) == 0 {
+		return VerdictAllow, nil
+	}
+	if !p.hasDataEx && dir != 0 {
 		return VerdictAllow, nil
 	}
 	inst, ok := p.pool.Get().(*instance)
 	if !ok || inst == nil {
-		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initErr)
+		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initError())
 	}
 
 	if p.timeout > 0 {
@@ -334,30 +389,60 @@ func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
 	}
 	copy(dst, payload[:n])
 
-	inst.stack[0] = uint64(inst.dataPtr)
-	inst.stack[1] = uint64(n)
-	if err := inst.onData.CallWithStack(ctx, inst.stack[:2]); err != nil {
-		p.discarded.Add(1)
-		_ = inst.mod.Close(context.Background())
-		return VerdictDeny, err
+	if p.hasDataEx {
+		inst.stack[0] = connID
+		inst.stack[1] = uint64(uint32(dir))
+		inst.stack[2] = uint64(inst.dataPtr)
+		inst.stack[3] = uint64(n)
+		if err := inst.onDataEx.CallWithStack(ctx, inst.stack[:4]); err != nil {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, err
+		}
+	} else {
+		inst.stack[0] = uint64(inst.dataPtr)
+		inst.stack[1] = uint64(n)
+		if err := inst.onData.CallWithStack(ctx, inst.stack[:2]); err != nil {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, err
+		}
 	}
-	v := Verdict(inst.stack[0] & 0x7fffffff) // #nosec G115 -- 0=allow, 1=deny, >=2=route_pools[v-2]
-	if v != VerdictDeny {
-		copy(payload[:n], dst)
+
+	v := int32(uint32(inst.stack[0])) // strict i32 ABI: 0=allow, 1=deny, >=2=route_pools[v-2]
+	if v < int32(VerdictAllow) {
+		p.pool.Put(inst)
+		return VerdictDeny, nil
+	}
+	if v != int32(VerdictDeny) {
+		// memory.grow inside on_data may have replaced the backing array, so
+		// re-read the scratch region instead of using the stale dst slice.
+		fresh, ok := inst.mod.Memory().Read(inst.dataPtr, n)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: scratch memory out of bounds after hook")
+		}
+		copy(payload[:n], fresh)
 	}
 	p.pool.Put(inst)
-	return v, nil
+	return Verdict(v), nil
 }
 
-// OnClose invokes the guest's on_close(ip_hi, ip_lo, rx_bytes, tx_bytes) hook.
-// No-op if the module does not export on_close.
+// OnClose is the legacy entry point; new code should use OnCloseConn.
 func (p *Plugin) OnClose(ctx context.Context, ip net.IP, rxBytes, txBytes int64) error {
-	if p == nil || !p.hasClose {
+	return p.OnCloseConn(ctx, 0, ip, rxBytes, txBytes)
+}
+
+// OnCloseConn invokes on_close(ip_hi, ip_lo, rx_bytes, tx_bytes) or
+// on_close_ex(conn_id, ip_hi, ip_lo, rx_bytes, tx_bytes).
+func (p *Plugin) OnCloseConn(ctx context.Context, connID uint64, ip net.IP, rxBytes, txBytes int64) error {
+	if p == nil || (!p.hasClose && !p.hasCloseEx) {
 		return nil
 	}
 	inst, ok := p.pool.Get().(*instance)
 	if !ok || inst == nil {
-		return fmt.Errorf("plugin: instantiate failed: %v", p.initErr)
+		return fmt.Errorf("plugin: instantiate failed: %v", p.initError())
 	}
 
 	if p.timeout > 0 {
@@ -367,27 +452,49 @@ func (p *Plugin) OnClose(ctx context.Context, ip net.IP, rxBytes, txBytes int64)
 	}
 
 	hi, lo := encodeIP(ip)
-	inst.stack[0] = hi
-	inst.stack[1] = lo
-	inst.stack[2] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
-	inst.stack[3] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
-
-	if err := inst.onClose.CallWithStack(ctx, inst.stack[:4]); err != nil {
-		p.discarded.Add(1)
-		_ = inst.mod.Close(context.Background())
-		return err
+	if p.hasCloseEx {
+		inst.stack[0] = connID
+		inst.stack[1] = hi
+		inst.stack[2] = lo
+		inst.stack[3] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
+		inst.stack[4] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
+		if err := inst.onCloseEx.CallWithStack(ctx, inst.stack[:5]); err != nil {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return err
+		}
+	} else {
+		inst.stack[0] = hi
+		inst.stack[1] = lo
+		inst.stack[2] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
+		inst.stack[3] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern on WASM stack
+		if err := inst.onClose.CallWithStack(ctx, inst.stack[:4]); err != nil {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return err
+		}
 	}
 	p.pool.Put(inst)
 	return nil
 }
 
+func (p *Plugin) initError() error {
+	if e := p.initErr.Load(); e != nil {
+		return *e
+	}
+	return nil
+}
+
 // Close releases the underlying wazero runtime and all compiled/instantiated
-// resources.
+// resources. It is idempotent.
 func (p *Plugin) Close(ctx context.Context) error {
 	if p == nil || p.rt == nil {
 		return nil
 	}
-	return p.rt.Close(ctx)
+	p.closeOnce.Do(func() {
+		_ = p.rt.Close(context.Background())
+	})
+	return nil
 }
 
 // encodeIP packs ip into two big-endian uint64 values using the IPv4-mapped
