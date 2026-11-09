@@ -13,7 +13,7 @@ listeners:
     plugin:
       path: "plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16   # 16 * 64 KiB = 1 MiB потолок памяти на инстанс
-      timeout: 0s            # 0s = без таймера на вызов (0 allocs/op)
+      timeout: 0s            # 0s = без таймера (0 allocs/op); trusted plugin only
       data_mode: "once"      # "once" (по умолчанию) | "stream"
       route_pools: ["canary"] # on_data >= 2 → route_pools[ret-2]
 ```
@@ -87,7 +87,7 @@ snapshot'а (fail-fast).
    - При `data_mode: "stream"` через `on_data`/`on_data_ex` проверяется каждый чанк (также `0 allocs/op` за счёт `bufferPool` и scratch-памяти WASM, но без `splice`). `on_data_ex` получает `conn_id` и `dir`, поэтому плагин может связывать чанки и видеть оба направления; старый `on_data` вызывается только для `client → server`. `route_pools` в `stream` не применяется.
    - Инстанс WASM берётся из пула **только на время CPU-вызова `on_data` (~76 нс)** и никогда не удерживается на время блокирующего `conn.Read`, поэтому медленные клиенты (Slowloris) не могут исчерпать пул WASM-инстансов.
    - **TLS-терминация** (`listeners[].tls`) расшифровывает поток до `on_data`, поэтому плагин видит открытый текст. **TLS passthrough** (`sni_routes`) оставляет поток зашифрованным: плагин увидит байты `ClientHello`/record'ов. На листенере с терминацией `sni_routes` игнорируется.
-   - Инспектируется не более первых `32 KiB` пакета (размер scratch-региона); всё, что дальше, плагин не видит. In-place мутация ограничена тем же окном и переписывает только уже прочитанный в буфер префикс.
+   - Инспектируется не более первого `Read()` в режиме `once` (фактический предел буфера — 16 389 байт) и не более `32 KiB` на чанк в `stream`. In-place мутация ограничена тем же окном и переписывает только уже прочитанный в буфер префикс.
 
 ---
 

@@ -81,16 +81,13 @@ func (g *Guard) Acquire(ip net.IP) bool {
 }
 
 // Release returns a slot reserved by Acquire. It is safe to call even if the
-// limits were changed after Acquire.
+// limits were changed after Acquire: both keys are decremented (releaseKey is
+// a no-op for an absent key), so a limit disabled by a reload cannot leave a
+// stale active count behind.
 func (g *Guard) Release(ip net.IP) {
-	if g.hostLimit.Load() <= 0 && g.subnetLimit.Load() <= 0 {
-		return
-	}
 	hostKey := keyOf(ip, g.ipv6HostPrefix)
 	g.releaseKey(hostKey, false)
-	if g.subnetLimit.Load() > 0 {
-		g.releaseKey(subnetKeyOf(hostKey, g.ipv6SubnetPrefix), true)
-	}
+	g.releaseKey(subnetKeyOf(hostKey, g.ipv6SubnetPrefix), true)
 }
 
 func (g *Guard) acquireKey(k key, subnet bool, limit int64) bool {
