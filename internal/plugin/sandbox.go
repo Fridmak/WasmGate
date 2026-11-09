@@ -194,7 +194,9 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		return nil, err
 	}
 	p.pool.Put(warm)
-	runtime.SetFinalizer(p, func(p *Plugin) { _ = p.Close(context.Background()) })
+	runtime.AddCleanup(p, func(rt wazero.Runtime) {
+		_ = rt.Close(context.Background())
+	}, p.rt)
 	return p, nil
 }
 
@@ -295,16 +297,23 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 			return nil, fmt.Errorf("plugin: call %s: %w", hookOnDataPtr, err)
 		}
 		inst.dataPtr = uint32(inst.stack[0]) // #nosec G115 -- low 32 bits are the guest pointer
-		if mem.Size() < inst.dataPtr+inst.dataCap {
-			neededBytes := (inst.dataPtr + inst.dataCap) - mem.Size()
+		end := uint64(inst.dataPtr) + uint64(inst.dataCap)
+		if uint64(mem.Size()) < end {
+			neededBytes := end - uint64(mem.Size())
 			neededPages := (neededBytes + 65535) / 65536
-			if _, ok := mem.Grow(neededPages); !ok {
+			if neededPages > 65536 {
+				_ = mod.Close(ctx)
+				return nil, errors.New("plugin: linear memory too small for on_data scratch buffer")
+			}
+			if _, ok := mem.Grow(uint32(neededPages)); !ok {
 				_ = mod.Close(ctx)
 				return nil, errors.New("plugin: linear memory too small for on_data scratch buffer")
 			}
 		}
 	}
-	runtime.SetFinalizer(inst, func(i *instance) { _ = i.mod.Close(context.Background()) })
+	runtime.AddCleanup(inst, func(mod api.Module) {
+		_ = mod.Close(context.Background())
+	}, mod)
 	return inst, nil
 }
 

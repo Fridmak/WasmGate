@@ -61,7 +61,6 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		p.log.Error("pool missing from snapshot", "listener", listenerName, "pool", rl.cfg.UpstreamPool)
 		return
 	}
-	connID := p.nextID.Add(1)
 
 	// Enforce the per-listener connection limit (nil limiter means unlimited).
 	if rl.limiter != nil {
@@ -114,7 +113,9 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		defer rl.connGuard.Release(peerIP)
 	}
 
+	var connID uint64
 	if rl.plugin != nil {
+		connID = p.nextID.Add(1)
 		verdict, err := rl.plugin.OnAccept(ctx, peerIP, peerPort)
 		if err != nil {
 			p.metrics.PluginDiscard()
@@ -217,6 +218,16 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	// Close/Read race is possible.
 	var prefix int64
 	if pc, ok := client.(*tlspeek.Conn); ok {
+		if streamPlugin != nil && len(pc.Bytes()) > 0 {
+			verdict, err := streamPlugin.OnDataConn(ctx, connID, 0, pc.Bytes())
+			if err != nil {
+				p.metrics.PluginDiscard()
+			}
+			if err != nil || verdict != plugin.VerdictAllow {
+				p.metrics.RejectPlugin()
+				return
+			}
+		}
 		if rl.cfg.DialTimeout > 0 {
 			_ = server.SetWriteDeadline(time.Now().Add(rl.cfg.DialTimeout))
 		}

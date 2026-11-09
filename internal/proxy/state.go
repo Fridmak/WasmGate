@@ -60,20 +60,35 @@ func newRegistry() *registry {
 // module bytes are unchanged. The file is re-read on every reload so replacing
 // a .wasm at the same path is picked up (or fails closed if the file is bad).
 func (g *registry) plugin(name string, pc config.PluginConfig) (*plugin.Plugin, error) {
+	cp, err := g.preparePlugin(name, pc)
+	if err != nil {
+		return nil, err
+	}
+	g.mu.Lock()
+	g.plugins[name] = cp
+	g.mu.Unlock()
+	return cp.pl, nil
+}
+
+// preparePlugin compiles pc (or reuses the cached instance when config and
+// content hash match) without mutating g.plugins, so a multi-listener reload
+// can validate every listener before committing any change to the registry.
+func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlugin, error) {
 	wasmBytes := pc.Wasm
 	if len(wasmBytes) == 0 {
 		b, err := os.ReadFile(pc.Path) // #nosec G304 -- path comes from validated config
 		if err != nil {
-			return nil, fmt.Errorf("plugin: read %s: %w", pc.Path, err)
+			return cachedPlugin{}, fmt.Errorf("plugin: read %s: %w", pc.Path, err)
 		}
 		wasmBytes = b
 	}
 	hash := sha256.Sum256(wasmBytes)
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if cur, ok := g.plugins[name]; ok && samePluginConfig(cur.cfg, pc) && cur.hash == hash {
-		return cur.pl, nil
+	cur, ok := g.plugins[name]
+	g.mu.Unlock()
+	if ok && samePluginConfig(cur.cfg, pc) && cur.hash == hash {
+		return cur, nil
 	}
 	opts := plugin.Options{
 		MaxMemoryPages: pc.MaxMemoryPages,
@@ -81,10 +96,20 @@ func (g *registry) plugin(name string, pc config.PluginConfig) (*plugin.Plugin, 
 	}
 	pl, err := plugin.New(context.Background(), wasmBytes, opts)
 	if err != nil {
-		return nil, err
+		return cachedPlugin{}, err
 	}
-	g.plugins[name] = cachedPlugin{cfg: pc, hash: hash, pl: pl}
-	return pl, nil
+	return cachedPlugin{cfg: pc, hash: hash, pl: pl}, nil
+}
+
+func (g *registry) commitPlugins(prepared map[string]cachedPlugin) {
+	if len(prepared) == 0 {
+		return
+	}
+	g.mu.Lock()
+	for name, cp := range prepared {
+		g.plugins[name] = cp
+	}
+	g.mu.Unlock()
 }
 
 func samePluginConfig(a, b config.PluginConfig) bool {

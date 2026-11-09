@@ -159,6 +159,79 @@ func TestPluginOnDataRequiresDataPtr(t *testing.T) {
 	}
 }
 
+func TestPluginOnDataPtrOverflowRejected(t *testing.T) {
+	// on_data_ptr returns -1 (0xffffffff): dataPtr + 32768 would wrap uint32
+	// to 32767 < 65536 without 64-bit bounds checking.
+	wrapPtr := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
+		0x03, 0x03, 0x02, 0x00, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x22, 0x03,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
+		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
+		0x0a, 0x0b, 0x02,
+		0x04, 0x00, 0x41, 0x00, 0x0b, // on_data -> 0
+		0x04, 0x00, 0x41, 0x7f, 0x0b, // on_data_ptr -> -1 (0xffffffff)
+	}
+	if _, err := New(context.Background(), wrapPtr, Options{}); err == nil {
+		t.Fatal("module with overflowing on_data_ptr (-1) was accepted")
+	}
+}
+
+func TestPluginABIv2MemoryGrowAndNegativeVerdict(t *testing.T) {
+	// Module exporting:
+	//   memory (min 1 page)
+	//   on_data_ptr() -> 0x8000
+	//   on_data_ex(conn_id:i64, dir:i32, ptr:i32, len:i32) -> i32:
+	//     if dir == 1: grow memory by 1 page, write 'Z' at ptr[0], return 0 (allow)
+	//     else: return -1 (negative verdict -> must map to VerdictDeny)
+	modBytes := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0d, 0x02,
+		0x60, 0x04, 0x7e, 0x7f, 0x7f, 0x7f, 0x01, 0x7f, // (i64, i32, i32, i32) -> i32
+		0x60, 0x00, 0x01, 0x7f, // () -> i32
+		0x03, 0x03, 0x02, 0x00, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07, 0x25, 0x03,
+		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
+		0x0a, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'e', 'x', 0x00, 0x00,
+		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
+		0x0a, 0x25, 0x02,
+		0x1c, 0x00,
+		0x20, 0x01, 0x41, 0x01, 0x46, // local.get 1 (dir); i32.const 1; i32.eq
+		0x04, 0x7f, // if (result i32)
+		0x41, 0x01, 0x40, 0x00, 0x1a, // i32.const 1; memory.grow; drop
+		0x20, 0x02, 0x41, 0xda, 0x00, 0x3a, 0x00, 0x00, // local.get 2 (ptr); i32.const 'Z'; i32.store8
+		0x41, 0x00, // i32.const 0
+		0x05,       // else
+		0x41, 0x7f, // i32.const -1
+		0x0b, 0x0b, // end; end
+		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b, // on_data_ptr -> 0x8000
+	}
+	ctx := context.Background()
+	p, err := New(ctx, modBytes, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close(ctx)
+
+	// dir=0 returns -1 -> must be treated as VerdictDeny.
+	buf := []byte("hello")
+	if v, err := p.OnDataConn(ctx, 42, 0, buf); err != nil || v != VerdictDeny {
+		t.Fatalf("dir=0 negative verdict: got (%v, %v), want VerdictDeny", v, err)
+	}
+
+	// dir=1 grows memory and mutates buf[0] to 'Z' -> mutation must survive memory.grow.
+	if v, err := p.OnDataConn(ctx, 42, 1, buf); err != nil || v != VerdictAllow {
+		t.Fatalf("dir=1: got (%v, %v), want VerdictAllow", v, err)
+	}
+	if string(buf) != "Zello" {
+		t.Fatalf("payload after memory.grow mutation = %q, want Zello", string(buf))
+	}
+}
+
 func TestPluginRejectsBadSignature(t *testing.T) {
 	// Export named "on_accept" with 0 params -> must be rejected at compile time.
 	bad := []byte{

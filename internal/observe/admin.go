@@ -148,7 +148,7 @@ func (a *Admin) handler(m *Metrics, upstreams func() []UpstreamStat, log *slog.L
 	})
 
 	if a.opts.Pprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/", a.guardPprof(pprof.Index, false))
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", a.guardPprof(pprof.Profile, false))
 		mux.HandleFunc("/debug/pprof/symbol", a.guardPprof(pprof.Symbol, false))
@@ -186,6 +186,8 @@ func hostAllowed(host string, allowRemote bool) bool {
 	h := host
 	if parsed, _, err := net.SplitHostPort(host); err == nil {
 		h = parsed
+	} else {
+		h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
 	}
 	if strings.EqualFold(h, "localhost") {
 		return true
@@ -223,9 +225,21 @@ func bearerMatches(r *http.Request, token string) bool {
 // operator (currently never: the handler is for safe diagnostics only).
 func (a *Admin) guardPprof(h http.HandlerFunc, allowDebug2 bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !allowDebug2 && (r.URL.Query().Get("debug") == "2" || r.URL.Query().Get("gc") == "1") {
-			http.Error(w, "unsafe pprof mode disabled", http.StatusBadRequest)
-			return
+		if !allowDebug2 {
+			if dbg := r.URL.Query().Get("debug"); dbg != "" {
+				n, err := strconv.Atoi(dbg)
+				if err != nil || n < 0 || n >= 2 {
+					http.Error(w, "unsafe pprof mode disabled", http.StatusBadRequest)
+					return
+				}
+			}
+			if gc := r.URL.Query().Get("gc"); gc != "" {
+				n, err := strconv.Atoi(gc)
+				if err != nil || n != 0 {
+					http.Error(w, "unsafe pprof mode disabled", http.StatusBadRequest)
+					return
+				}
+			}
 		}
 		if q := r.URL.Query().Get("seconds"); q != "" {
 			n, err := strconv.Atoi(q)
@@ -251,21 +265,36 @@ func (a *Admin) guardPprof(h http.HandlerFunc, allowDebug2 bool) http.HandlerFun
 // sockets cannot exhaust the process-wide fd limit.
 type limitListener struct {
 	net.Listener
-	sem chan struct{}
+	sem       chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func newLimitListener(ln net.Listener, n int) net.Listener {
-	return &limitListener{Listener: ln, sem: make(chan struct{}, n)}
+	return &limitListener{
+		Listener: ln,
+		sem:      make(chan struct{}, n),
+		done:     make(chan struct{}),
+	}
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
-	l.sem <- struct{}{}
+	select {
+	case <-l.done:
+		return nil, net.ErrClosed
+	case l.sem <- struct{}{}:
+	}
 	c, err := l.Listener.Accept()
 	if err != nil {
 		<-l.sem
 		return nil, err
 	}
 	return &limitConn{Conn: c, release: func() { <-l.sem }}, nil
+}
+
+func (l *limitListener) Close() error {
+	l.closeOnce.Do(func() { close(l.done) })
+	return l.Listener.Close()
 }
 
 type limitConn struct {

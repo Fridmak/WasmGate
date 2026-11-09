@@ -37,6 +37,16 @@ func (u *upstream) ConfigureBreaker(cb config.CircuitBreakerConfig) {
 	u.cbHalfOpenMax.Store(int32(cb.HalfOpenRequests)) // #nosec G115 -- small probe count from config
 }
 
+// IsHealthy reports the current health state without mutating the circuit
+// breaker state machine (safe for read-only /metrics scrapes).
+func (u *upstream) IsHealthy() bool {
+	if !u.unhealthy.Load() {
+		return true
+	}
+	until := u.openUntil.Load()
+	return until > 0 && time.Now().UnixNano() >= until
+}
+
 // Healthy reports whether the upstream is currently eligible for traffic. When
 // an Open circuit breaker's timeout expires, Healthy transitions the upstream
 // to Half-Open and returns true so probe requests can test recovery.

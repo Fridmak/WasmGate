@@ -157,6 +157,58 @@ func TestAdminAuthHostAndPprofDefault(t *testing.T) {
 	if resp.StatusCode != http.StatusMisdirectedRequest {
 		t.Fatalf("bad Host: %d, want 421", resp.StatusCode)
 	}
+
+	// Bracketed IPv6 loopback without port is accepted.
+	req, _ = http.NewRequest(http.MethodGet, base+"/metrics", nil)
+	req.Host = "[::1]"
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Host [::1]: %d, want 200", resp.StatusCode)
+	}
+
+	// Cross-origin POST /reload is rejected with 403.
+	req, _ = http.NewRequest(http.MethodPost, base+"/reload", nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin reload: %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminPprofGuardBlocksHeapGC(t *testing.T) {
+	m := NewMetrics()
+	admin, err := NewAdmin("127.0.0.1:0", m, nil, discardLogger(), AdminOptions{Pprof: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = admin.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = admin.Shutdown(ctx)
+	})
+	base := "http://" + admin.Addr().String()
+
+	for _, path := range []string{"/debug/pprof/heap?gc=1", "/debug/pprof/heap?gc=2", "/debug/pprof/goroutine?debug=02"} {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("GET %s: status %d, want 400", path, resp.StatusCode)
+		}
+	}
 }
 
 // getBody fetches url with a timeout and returns the response body, closing it.

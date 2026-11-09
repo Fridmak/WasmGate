@@ -14,6 +14,8 @@ import (
 type Guard struct {
 	hostLimit   atomic.Int64
 	subnetLimit atomic.Int64
+	hostUsed    atomic.Bool
+	subnetUsed  atomic.Bool
 
 	ipv6HostPrefix   int
 	ipv6SubnetPrefix int
@@ -46,6 +48,12 @@ func NewGuard(hostLimit, subnetLimit int, ipv6HostPrefix, ipv6SubnetPrefix int) 
 // Update changes the concurrency limits in place without touching the active
 // counts. A limit <= 0 disables that dimension.
 func (g *Guard) Update(hostLimit, subnetLimit int) {
+	if hostLimit > 0 {
+		g.hostUsed.Store(true)
+	}
+	if subnetLimit > 0 {
+		g.subnetUsed.Store(true)
+	}
 	g.hostLimit.Store(int64(hostLimit))
 	g.subnetLimit.Store(int64(subnetLimit))
 }
@@ -80,14 +88,23 @@ func (g *Guard) Acquire(ip net.IP) bool {
 	return true
 }
 
-// Release returns a slot reserved by Acquire. It is safe to call even if the
-// limits were changed after Acquire: both keys are decremented (releaseKey is
-// a no-op for an absent key), so a limit disabled by a reload cannot leave a
-// stale active count behind.
+// Release returns a slot reserved by Acquire. It is safe to call even if a
+// limit was disabled after Acquire: any dimension that has ever been active on
+// this Guard continues to decrement its keys (releaseKey is a no-op for an
+// absent key), while dimensions never enabled pay zero lock overhead.
 func (g *Guard) Release(ip net.IP) {
+	hostUsed := g.hostUsed.Load()
+	subnetUsed := g.subnetUsed.Load()
+	if !hostUsed && !subnetUsed {
+		return
+	}
 	hostKey := keyOf(ip, g.ipv6HostPrefix)
-	g.releaseKey(hostKey, false)
-	g.releaseKey(subnetKeyOf(hostKey, g.ipv6SubnetPrefix), true)
+	if hostUsed {
+		g.releaseKey(hostKey, false)
+	}
+	if subnetUsed {
+		g.releaseKey(subnetKeyOf(hostKey, g.ipv6SubnetPrefix), true)
+	}
 }
 
 func (g *Guard) acquireKey(k key, subnet bool, limit int64) bool {

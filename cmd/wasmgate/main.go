@@ -62,6 +62,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var adminToken string
+	if cfg.AdminAddr != "" {
+		adminToken = os.Getenv("WASMGATE_ADMIN_TOKEN")
+		if adminToken == "" && cfg.AdminTokenFile != "" {
+			b, err := os.ReadFile(cfg.AdminTokenFile) // #nosec G304 -- operator-configured path
+			if err != nil {
+				return fmt.Errorf("admin token: %w", err)
+			}
+			adminToken = strings.TrimSpace(string(b))
+			if adminToken == "" {
+				return fmt.Errorf("admin token: %s is empty", cfg.AdminTokenFile)
+			}
+		}
+		if cfg.AdminAllowRemote && adminToken == "" {
+			return fmt.Errorf("admin_allow_remote requires admin_token_file or WASMGATE_ADMIN_TOKEN")
+		}
+	}
 	if *validateOnly {
 		log.Info("configuration is valid", "path", *configPath)
 		return nil
@@ -94,19 +111,8 @@ func run() error {
 	// goroutine.
 	var admin *observe.Admin
 	if cfg.AdminAddr != "" {
-		token := os.Getenv("WASMGATE_ADMIN_TOKEN")
-		if token == "" && cfg.AdminTokenFile != "" {
-			b, err := os.ReadFile(cfg.AdminTokenFile) // #nosec G304 -- operator-configured path
-			if err != nil {
-				return fmt.Errorf("admin token: %w", err)
-			}
-			token = strings.TrimSpace(string(b))
-		}
-		if cfg.AdminAllowRemote && token == "" {
-			return fmt.Errorf("admin_allow_remote requires admin_token_file or WASMGATE_ADMIN_TOKEN")
-		}
 		admin, err = observe.NewAdmin(cfg.AdminAddr, metrics, rt.UpstreamStats, log, observe.AdminOptions{
-			Token:       token,
+			Token:       adminToken,
 			Pprof:       cfg.AdminPprof,
 			AllowRemote: cfg.AdminAllowRemote,
 		})
@@ -119,9 +125,13 @@ func run() error {
 				log.Error("admin endpoint stopped", "err", err)
 			}
 		}()
+		endpoints := "/metrics /healthz /reload"
+		if cfg.AdminPprof {
+			endpoints += " /debug/pprof/"
+		}
 		log.Info("admin endpoint listening",
 			"addr", admin.Addr().String(),
-			"endpoints", "/metrics /healthz /reload /debug/pprof/",
+			"endpoints", endpoints,
 		)
 	}
 

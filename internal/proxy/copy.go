@@ -14,7 +14,6 @@ import (
 
 	"wasmgate/internal/observe"
 	"wasmgate/internal/plugin"
-	"wasmgate/internal/tlspeek"
 )
 
 var errPluginDenied = errors.New("proxy: payload rejected by wasm on_data hook")
@@ -132,7 +131,7 @@ func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, p
 			if perr != nil {
 				metrics.PluginDiscard()
 			}
-			if perr != nil || verdict == plugin.VerdictDeny {
+			if perr != nil || verdict != plugin.VerdictAllow {
 				metrics.RejectPlugin()
 				return total, errPluginDenied
 			}
@@ -178,23 +177,12 @@ func copyConn(dst, src net.Conn, idle time.Duration) (int64, error) {
 // What remains is two interface wrappers per connection, ~64 B: the whole
 // price of the pool.
 func copyPlain(dst, src net.Conn) (int64, error) {
-	var prefix int64
-	if pc, ok := src.(*tlspeek.Conn); ok {
-		raw, n, err := pc.DrainTo(dst)
-		prefix = n
-		if err != nil {
-			return prefix, err
-		}
-		src = raw
-	}
 	if runtime.GOOS == "linux" {
-		n, err := io.Copy(dst, src)
-		return prefix + n, err
+		return io.Copy(dst, src)
 	}
 	bufp := bufferPool.Get().(*[]byte)
 	defer bufferPool.Put(bufp)
-	n, err := io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *bufp)
-	return prefix + n, err
+	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *bufp)
 }
 
 // copyWatched copies src -> dst through a pooled buffer while refreshing the

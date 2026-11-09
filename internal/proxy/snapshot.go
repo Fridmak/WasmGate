@@ -110,7 +110,7 @@ func (r *Runtime) UpstreamStats() []observe.UpstreamStat {
 		out = append(out, observe.UpstreamStat{
 			Server:  addr,
 			Active:  u.active.Load(),
-			Healthy: u.Healthy(),
+			Healthy: u.IsHealthy(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Server < out[j].Server })
@@ -146,7 +146,7 @@ func (r *Runtime) ReloadChecked(cfg *config.Config) (uint64, error) {
 func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 	for _, lc := range cfg.Listeners {
 		if lc.Plugin.Enabled() {
-			if _, err := r.registry.plugin(lc.Name, lc.Plugin); err != nil {
+			if _, err := r.registry.preparePlugin(lc.Name, lc.Plugin); err != nil {
 				return fmt.Errorf("listener %q: %w", lc.Name, err)
 			}
 		}
@@ -190,6 +190,36 @@ func buildTLSConfig(tc config.TLSConfig) (*tls.Config, error) {
 //
 // Caller must hold r.mu (or be the single-threaded constructor).
 func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
+	// Validate and compile all fallible per-listener artifacts (WASM plugins and
+	// TLS certificates) BEFORE mutating any shared registry state (breaker
+	// parameters, connection limiters, rate limiters, concurrency guards). That
+	// way a failed reload is truly atomic and leaves live state untouched.
+	var preparedPlugins map[string]cachedPlugin
+	var preparedTLS map[string]*tls.Config
+	for _, lc := range cfg.Listeners {
+		if lc.Plugin.Enabled() {
+			cp, err := r.registry.preparePlugin(lc.Name, lc.Plugin)
+			if err != nil {
+				return nil, fmt.Errorf("listener %q: plugin: %w", lc.Name, err)
+			}
+			if preparedPlugins == nil {
+				preparedPlugins = make(map[string]cachedPlugin, len(cfg.Listeners))
+			}
+			preparedPlugins[lc.Name] = cp
+		}
+		if lc.TLS.Enabled() {
+			tcfg, err := buildTLSConfig(lc.TLS)
+			if err != nil {
+				return nil, fmt.Errorf("listener %q: tls: %w", lc.Name, err)
+			}
+			if preparedTLS == nil {
+				preparedTLS = make(map[string]*tls.Config, len(cfg.Listeners))
+			}
+			preparedTLS[lc.Name] = tcfg
+		}
+	}
+	r.registry.commitPlugins(preparedPlugins)
+
 	pools := make(map[string]*pool, len(cfg.Pools))
 	for name, pc := range cfg.Pools {
 		p := newPool(name, pc.Servers, pc.Balance, r.registry)
@@ -215,12 +245,8 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 		if lc.RateLimit.ConcurrencyEnabled() {
 			rl.connGuard = r.registry.connGuard(lc.Name, lc.RateLimit)
 		}
-		if lc.Plugin.Enabled() {
-			pl, err := r.registry.plugin(lc.Name, lc.Plugin)
-			if err != nil {
-				return nil, fmt.Errorf("listener %q: plugin: %w", lc.Name, err)
-			}
-			rl.plugin = pl
+		if cp, ok := preparedPlugins[lc.Name]; ok {
+			rl.plugin = cp.pl
 		}
 		if len(lc.SNIRoutes) > 0 {
 			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))
@@ -234,11 +260,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 				rl.routePools = append(rl.routePools, pools[poolName])
 			}
 		}
-		if lc.TLS.Enabled() {
-			tcfg, err := buildTLSConfig(lc.TLS)
-			if err != nil {
-				return nil, fmt.Errorf("listener %q: tls: %w", lc.Name, err)
-			}
+		if tcfg, ok := preparedTLS[lc.Name]; ok {
 			rl.tlsConfig = tcfg
 		}
 		listeners[lc.Name] = rl

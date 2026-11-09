@@ -86,6 +86,38 @@ func TestBuildResolvesListenerToPool(t *testing.T) {
 	}
 }
 
+func TestReloadCheckedFailClosedPreservesLiveState(t *testing.T) {
+	cfg1 := &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{
+			{Name: "l1", Addr: "127.0.0.1:0", UpstreamPool: "web", MaxConns: 5},
+			{Name: "l2", Addr: "127.0.0.1:0", UpstreamPool: "web"},
+		},
+		Pools: map[string]config.PoolConfig{"web": {Servers: []string{"127.0.0.1:9001"}}},
+	}
+	rt, err := NewRuntimeChecked(cfg1)
+	if err != nil {
+		t.Fatalf("NewRuntimeChecked: %v", err)
+	}
+
+	// Second reload changes l1.MaxConns to 99, but l2 has a corrupt plugin.
+	// ReloadChecked must fail AND leave l1's live limiter at 5.
+	cfgBad := &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{
+			{Name: "l1", Addr: "127.0.0.1:0", UpstreamPool: "web", MaxConns: 99},
+			{Name: "l2", Addr: "127.0.0.1:0", UpstreamPool: "web", Plugin: config.PluginConfig{Wasm: []byte("not-a-wasm")}},
+		},
+		Pools: map[string]config.PoolConfig{"web": {Servers: []string{"127.0.0.1:9001"}}},
+	}
+	if _, err := rt.ReloadChecked(cfgBad); err == nil {
+		t.Fatal("ReloadChecked succeeded with corrupt plugin")
+	}
+	if got := rt.Load().listeners["l1"].limiter.limit(); got != 5 {
+		t.Fatalf("live limiter was mutated on failed reload: got %d, want 5", got)
+	}
+}
+
 // BenchmarkRuntimeLoad isolates the atomic snapshot load that opens every
 // connection — the floor cost of the hot-reload seam.
 func BenchmarkRuntimeLoad(b *testing.B) {

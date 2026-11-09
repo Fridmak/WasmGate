@@ -134,13 +134,6 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 	if err := cfg.Validate(); err != nil {
 		return 0, err
 	}
-	if err := s.rt.ValidatePlugins(cfg); err != nil {
-		return 0, err
-	}
-	// Binding and rollback must not be aborted just because the HTTP caller
-	// disconnected: otherwise a cancelled POST /reload could leave a listener
-	// missing. The request context still governs validation/work above.
-	bindCtx := context.WithoutCancel(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,6 +144,16 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 	if s.closing {
 		return 0, errors.New("proxy: Server is shutting down")
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := s.rt.ValidatePlugins(cfg); err != nil {
+		return 0, err
+	}
+	// Binding and rollback must not be aborted just because the HTTP caller
+	// disconnected after socket changes began: otherwise a cancelled POST
+	// /reload could leave a listener missing.
+	bindCtx := context.WithoutCancel(ctx)
 
 	// An address that a new or changed listener needs may still be held by an
 	// old socket under another name (a renamed or removed listener). Such old
