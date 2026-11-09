@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,10 +20,19 @@ const ConfigVersion = 1
 
 // Config is the root of the configuration file.
 type Config struct {
-	Version   int                   `yaml:"version"`    // schema version (must be 1)
-	AdminAddr string                `yaml:"admin_addr"` // optional: /metrics, /healthz, pprof listener; empty = disabled
-	Listeners []ListenerConfig      `yaml:"listeners"`  // front-facing TCP listeners
-	Pools     map[string]PoolConfig `yaml:"pools"`      // backend groups, keyed by pool name
+	Version   int    `yaml:"version"`    // schema version (must be 1)
+	AdminAddr string `yaml:"admin_addr"` // optional: /metrics, /healthz, pprof listener; empty = disabled
+	// AdminTokenFile optionally points at a bearer token for /reload and
+	// /debug/pprof/*. WASMGATE_ADMIN_TOKEN takes precedence when set.
+	AdminTokenFile string `yaml:"admin_token_file"`
+	// AdminPprof enables the pprof handlers. Off by default: profiling can
+	// amplify memory and stop the world.
+	AdminPprof bool `yaml:"admin_pprof"`
+	// AdminAllowRemote permits binding admin to a non-loopback address. A token
+	// is then required by the CLI before serving.
+	AdminAllowRemote bool                  `yaml:"admin_allow_remote"`
+	Listeners        []ListenerConfig      `yaml:"listeners"` // front-facing TCP listeners
+	Pools            map[string]PoolConfig `yaml:"pools"`     // backend groups, keyed by pool name
 }
 
 // Load reads, parses and validates the configuration file at path.
@@ -67,6 +77,10 @@ func (c *Config) Validate() error {
 		// so tests can take an ephemeral one.
 		if err := validateAddr(c.AdminAddr, false); err != nil {
 			return fmt.Errorf("config: admin_addr: %w", err)
+		}
+		host, _, _ := net.SplitHostPort(c.AdminAddr)
+		if !isLoopbackHost(host) && !c.AdminAllowRemote {
+			return fmt.Errorf("config: admin_addr %q is not loopback; set admin_allow_remote: true and configure admin_token_file", c.AdminAddr)
 		}
 	}
 	if err := c.validateListeners(); err != nil {
@@ -145,6 +159,14 @@ func listenerLabel(i int, name string) string {
 func hasZeroPort(addr string) bool {
 	_, port, err := net.SplitHostPort(addr)
 	return err == nil && port == "0"
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // validateAddr checks that addr is a well-formed "host:port".

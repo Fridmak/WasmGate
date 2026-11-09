@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"wasmgate/internal/config"
@@ -83,7 +84,22 @@ func run() error {
 	// goroutine.
 	var admin *observe.Admin
 	if cfg.AdminAddr != "" {
-		admin, err = observe.NewAdmin(cfg.AdminAddr, metrics, rt.UpstreamStats, log)
+		token := os.Getenv("WASMGATE_ADMIN_TOKEN")
+		if token == "" && cfg.AdminTokenFile != "" {
+			b, err := os.ReadFile(cfg.AdminTokenFile) // #nosec G304 -- operator-configured path
+			if err != nil {
+				return fmt.Errorf("admin token: %w", err)
+			}
+			token = strings.TrimSpace(string(b))
+		}
+		if cfg.AdminAllowRemote && token == "" {
+			return fmt.Errorf("admin_allow_remote requires admin_token_file or WASMGATE_ADMIN_TOKEN")
+		}
+		admin, err = observe.NewAdmin(cfg.AdminAddr, metrics, rt.UpstreamStats, log, observe.AdminOptions{
+			Token:       token,
+			Pprof:       cfg.AdminPprof,
+			AllowRemote: cfg.AdminAllowRemote,
+		})
 		if err != nil {
 			return err
 		}

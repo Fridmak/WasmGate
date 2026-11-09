@@ -24,7 +24,7 @@ func TestAdminEndpoints(t *testing.T) {
 	upstreams := func() []UpstreamStat {
 		return []UpstreamStat{{Server: "127.0.0.1:9001", Active: 1}}
 	}
-	admin, err := NewAdmin("127.0.0.1:0", m, upstreams, discardLogger())
+	admin, err := NewAdmin("127.0.0.1:0", m, upstreams, discardLogger(), AdminOptions{Pprof: true})
 	if err != nil {
 		t.Fatalf("admin listen: %v", err)
 	}
