@@ -31,6 +31,7 @@ type registry struct {
 	mu         sync.Mutex
 	limiters   map[string]*connLimiter
 	rateLimits map[string]*ratelimit.Limiter
+	guards     map[string]*ratelimit.Guard
 	plugins    map[string]cachedPlugin
 	upstreams  map[string]*upstream
 }
@@ -44,6 +45,7 @@ func newRegistry() *registry {
 	return &registry{
 		limiters:   make(map[string]*connLimiter),
 		rateLimits: make(map[string]*ratelimit.Limiter),
+		guards:     make(map[string]*ratelimit.Guard),
 		plugins:    make(map[string]cachedPlugin),
 		upstreams:  make(map[string]*upstream),
 	}
@@ -91,23 +93,66 @@ func samePluginConfig(a, b config.PluginConfig) bool {
 // ban_duration or allow_cidrs are applied in place.
 func (g *registry) rateLimiter(name string, rl config.RateLimit) *ratelimit.Limiter {
 	allow, _ := ratelimit.ParseCIDRs(rl.AllowCIDRs) // already validated by config.Validate
+	hostPrefix, subnetPrefix := ratePrefixes(rl)
 	opts := ratelimit.Options{
-		Max:         rl.Max,
-		SubnetMax:   rl.SubnetMax,
-		Window:      rl.Window,
-		BanDuration: rl.BanDuration,
-		Allow:       allow,
+		Max:              rl.Max,
+		SubnetMax:        rl.SubnetMax,
+		Window:           rl.Window,
+		BanDuration:      rl.BanDuration,
+		Allow:            allow,
+		IPv6HostPrefix:   hostPrefix,
+		IPv6SubnetPrefix: subnetPrefix,
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.rateLimits[name]
-	if l == nil || l.Window() != rl.Window {
+	curHost, curSubnet := 0, 0
+	if l != nil {
+		curHost, curSubnet = l.Prefixes()
+	}
+	if l == nil || l.Window() != rl.Window || curHost != hostPrefix || curSubnet != subnetPrefix {
 		l = ratelimit.NewWithOptions(opts)
 		g.rateLimits[name] = l
 		return l
 	}
 	l.Update(opts)
 	return l
+}
+
+func ratePrefixes(rl config.RateLimit) (host, subnet int) {
+	host, subnet = rl.IPv6HostPrefix, rl.IPv6SubnetPrefix
+	if host == 0 {
+		host = 64
+	}
+	if subnet == 0 {
+		subnet = 56
+	}
+	if host < subnet {
+		host = subnet
+	}
+	return host, subnet
+}
+
+// connGuard returns the per-IP/subnet concurrent-connection guard for a
+// listener. Its counters live outside the snapshot, so a reload or a rate
+// window change does not reset active connections. A changed IPv6 prefix
+// requires a new guard (and therefore loses counts, like a window change).
+func (g *registry) connGuard(name string, rl config.RateLimit) *ratelimit.Guard {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	hostPrefix, subnetPrefix := ratePrefixes(rl)
+	gd := g.guards[name]
+	curHost, curSubnet := 0, 0
+	if gd != nil {
+		curHost, curSubnet = gd.Prefixes()
+	}
+	if gd == nil || curHost != hostPrefix || curSubnet != subnetPrefix {
+		gd = ratelimit.NewGuard(rl.MaxConcurrent, rl.SubnetMaxConcurrent, hostPrefix, subnetPrefix)
+		g.guards[name] = gd
+		return gd
+	}
+	gd.Update(rl.MaxConcurrent, rl.SubnetMaxConcurrent)
+	return gd
 }
 
 // limiter returns the connection limiter for a listener name, creating it on
@@ -168,6 +213,11 @@ func (g *registry) prune(cfg *config.Config) {
 	for name := range g.rateLimits {
 		if !liveListeners[name] {
 			delete(g.rateLimits, name)
+		}
+	}
+	for name := range g.guards {
+		if !liveListeners[name] {
+			delete(g.guards, name)
 		}
 	}
 	for name := range g.plugins {

@@ -21,6 +21,10 @@ const (
 	// preserve zero-copy by default; set idle_timeout explicitly in production
 	// to reap half-open connections.
 	DefaultIdleTimeout = 0 * time.Second
+
+	// DefaultTLSHandshakeTimeout bounds the TLS handshake when tls is enabled.
+	// It costs one deadline on the accepted socket and does not affect plain TCP.
+	DefaultTLSHandshakeTimeout = 10 * time.Second
 )
 
 // ListenerConfig describes a single front-facing TCP listener.
@@ -40,11 +44,12 @@ type ListenerConfig struct {
 // TLSConfig configures optional TLS termination on a listener. When CertFile
 // and KeyFile are empty, the listener operates in raw TCP / TLS passthrough mode.
 type TLSConfig struct {
-	CertFile   string `yaml:"cert_file"`   // path to PEM certificate chain
-	KeyFile    string `yaml:"key_file"`    // path to PEM private key
-	MinVersion string `yaml:"min_version"` // "1.2" (default) or "1.3"
-	CertPEM    []byte `yaml:"-"`           // inline PEM cert for programmatic/test use
-	KeyPEM     []byte `yaml:"-"`           // inline PEM key for programmatic/test use
+	CertFile         string        `yaml:"cert_file"`         // path to PEM certificate chain
+	KeyFile          string        `yaml:"key_file"`          // path to PEM private key
+	MinVersion       string        `yaml:"min_version"`       // "1.2" (default) or "1.3"
+	HandshakeTimeout time.Duration `yaml:"handshake_timeout"` // TLS handshake deadline (default 10s)
+	CertPEM          []byte        `yaml:"-"`                 // inline PEM cert for programmatic/test use
+	KeyPEM           []byte        `yaml:"-"`                 // inline PEM key for programmatic/test use
 }
 
 // Enabled reports whether TLS termination is configured.
@@ -73,10 +78,22 @@ func (p PluginConfig) Enabled() bool {
 // disables the limiter; Window defaults to 1s when enabled.
 type RateLimit struct {
 	Max         int           `yaml:"max"`          // connections per IP per window; 0 = disabled
-	SubnetMax   int           `yaml:"subnet_max"`   // connections per /24 (IPv4) or /64 (IPv6) per window; 0 = disabled
+	SubnetMax   int           `yaml:"subnet_max"`   // connections per subnet per window; 0 = disabled
 	Window      time.Duration `yaml:"window"`       // sliding window length (default 1s)
 	BanDuration time.Duration `yaml:"ban_duration"` // base ban TTL on violation (exponentially backed off up to 16x); 0 = no ban
 	AllowCIDRs  []string      `yaml:"allow_cidrs"`  // CIDRs bypassed before counting
+
+	// Concurrent connection limits, independent of the sliding window. 0 means
+	// "no per-IP/subnet concurrent limit"; the global listener max_conns still
+	// applies. These counters survive reloads and window changes.
+	MaxConcurrent       int `yaml:"max_concurrent"`        // concurrent connections per IP; 0 = disabled
+	SubnetMaxConcurrent int `yaml:"subnet_max_concurrent"` // concurrent connections per subnet; 0 = disabled
+
+	// IPv6 aggregation prefixes in bits. Host prefix defaults to 64 (a typical
+	// provider allocation), subnet prefix to 56. IPv4 always uses the exact
+	// address for hosts and /24 for subnets.
+	IPv6HostPrefix   int `yaml:"ipv6_host_prefix"`   // 1..128; default 64
+	IPv6SubnetPrefix int `yaml:"ipv6_subnet_prefix"` // 1..128; default 56
 }
 
 // MinRateWindow is the shortest accepted rate-limit window. The limiter splits
@@ -118,15 +135,38 @@ func (l *ListenerConfig) Validate() error {
 	if l.RateLimit.SubnetMax < 0 {
 		return errors.New("rate_limit.subnet_max cannot be negative")
 	}
+	if l.RateLimit.MaxConcurrent < 0 {
+		return errors.New("rate_limit.max_concurrent cannot be negative")
+	}
+	if l.RateLimit.SubnetMaxConcurrent < 0 {
+		return errors.New("rate_limit.subnet_max_concurrent cannot be negative")
+	}
 	if l.RateLimit.BanDuration < 0 {
 		return errors.New("rate_limit.ban_duration cannot be negative")
+	}
+	if l.RateLimit.IPv6HostPrefix < 0 || l.RateLimit.IPv6HostPrefix > 128 {
+		return errors.New("rate_limit.ipv6_host_prefix must be between 1 and 128")
+	}
+	if l.RateLimit.IPv6SubnetPrefix < 0 || l.RateLimit.IPv6SubnetPrefix > 128 {
+		return errors.New("rate_limit.ipv6_subnet_prefix must be between 1 and 128")
+	}
+	if l.RateLimit.Enabled() {
+		if l.RateLimit.IPv6HostPrefix == 0 {
+			l.RateLimit.IPv6HostPrefix = 64
+		}
+		if l.RateLimit.IPv6SubnetPrefix == 0 {
+			l.RateLimit.IPv6SubnetPrefix = 56
+		}
+		if l.RateLimit.IPv6HostPrefix < l.RateLimit.IPv6SubnetPrefix {
+			return errors.New("rate_limit.ipv6_host_prefix must be >= ipv6_subnet_prefix")
+		}
 	}
 	for _, cidr := range l.RateLimit.AllowCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("rate_limit.allow_cidrs: invalid CIDR %q: %w", cidr, err)
 		}
 	}
-	if l.RateLimit.Enabled() {
+	if l.RateLimit.WindowEnabled() {
 		if l.RateLimit.Window == 0 {
 			l.RateLimit.Window = time.Second
 		}
@@ -136,6 +176,9 @@ func (l *ListenerConfig) Validate() error {
 	}
 	if l.Plugin.Timeout < 0 {
 		return errors.New("plugin.timeout cannot be negative")
+	}
+	if l.Plugin.MaxMemoryPages > 65536 {
+		return errors.New("plugin.max_memory_pages cannot exceed 65536")
 	}
 	switch l.Plugin.DataMode {
 	case "", "once", "stream":
@@ -153,11 +196,26 @@ func (l *ListenerConfig) Validate() error {
 		default:
 			return fmt.Errorf("unknown tls.min_version %q (want 1.2 or 1.3)", l.TLS.MinVersion)
 		}
+		if l.TLS.HandshakeTimeout == 0 {
+			l.TLS.HandshakeTimeout = DefaultTLSHandshakeTimeout
+		} else if l.TLS.HandshakeTimeout < 0 {
+			return errors.New("tls.handshake_timeout cannot be negative")
+		}
 	}
 	return nil
 }
 
-// Enabled reports whether either the per-IP or the per-subnet limit is active.
-func (r RateLimit) Enabled() bool {
+// WindowEnabled reports whether a sliding-window limit is configured.
+func (r RateLimit) WindowEnabled() bool {
 	return r.Max > 0 || r.SubnetMax > 0
+}
+
+// ConcurrencyEnabled reports whether a concurrent-connection limit is configured.
+func (r RateLimit) ConcurrencyEnabled() bool {
+	return r.MaxConcurrent > 0 || r.SubnetMaxConcurrent > 0
+}
+
+// Enabled reports whether any rate or concurrency limit is active.
+func (r RateLimit) Enabled() bool {
+	return r.WindowEnabled() || r.ConcurrencyEnabled()
 }

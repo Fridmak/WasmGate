@@ -26,6 +26,9 @@ type resolvedListener struct {
 	limiter *connLimiter
 	// rateLimiter enforces cfg.RateLimit per client IP; nil means disabled.
 	rateLimiter *ratelimit.Limiter
+	// connGuard enforces cfg.RateLimit.MaxConcurrent per client IP/subnet; nil
+	// means no concurrent limit is configured.
+	connGuard *ratelimit.Guard
 	// plugin is the compiled WASM sandbox for this listener; nil means disabled.
 	plugin *plugin.Plugin
 	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
@@ -182,8 +185,11 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 		if lc.MaxConns > 0 {
 			rl.limiter = lim
 		}
-		if lc.RateLimit.Enabled() {
+		if lc.RateLimit.WindowEnabled() {
 			rl.rateLimiter = r.registry.rateLimiter(lc.Name, lc.RateLimit)
+		}
+		if lc.RateLimit.ConcurrencyEnabled() {
+			rl.connGuard = r.registry.connGuard(lc.Name, lc.RateLimit)
 		}
 		if lc.Plugin.Enabled() {
 			pl, err := r.registry.plugin(lc.Name, lc.Plugin)

@@ -89,7 +89,7 @@ func TestShardResetBoundsMemory(t *testing.T) {
 	}
 	total := 0
 	for i := range l.shards {
-		total += len(l.shards[i].keys)
+		total += len(l.shards[i].host) + len(l.shards[i].subnet)
 	}
 	if total > shardCount*shardCap {
 		t.Fatalf("tracked keys = %d, want at most %d", total, shardCount*shardCap)
@@ -142,6 +142,77 @@ func TestSubnet24AggregationCatchesDistributedFlood(t *testing.T) {
 	// Another /24 is unaffected.
 	if !l.Allow(net.IPv4(198, 51, 100, 1), t0) {
 		t.Fatal("unrelated /24 was refused")
+	}
+}
+
+func TestIPv6HostKeyGroupsBy64(t *testing.T) {
+	l := NewWithOptions(Options{Max: 1, Window: time.Second})
+	a := net.ParseIP("2001:db8:1:2::1")
+	b := net.ParseIP("2001:db8:1:2::2")
+	if !l.Allow(a, t0) {
+		t.Fatal("first IPv6 host refused")
+	}
+	if l.Allow(b, t0) {
+		t.Fatal("IPv6 host in the same /64 bypassed the per-IP limit")
+	}
+	// A different /64 is independent.
+	if !l.Allow(net.ParseIP("2001:db8:1:3::1"), t0) {
+		t.Fatal("unrelated IPv6 /64 was refused")
+	}
+}
+
+func TestIPv6SubnetKeyDoesNotUseByteHeuristic(t *testing.T) {
+	// Bytes 10..11 are 0xffff, but this is a real IPv6 address, not an
+	// IPv4-mapped one. It must be grouped by the IPv6 prefix, not by /24.
+	l := NewWithOptions(Options{Max: 100, SubnetMax: 1, Window: time.Second})
+	if !l.Allow(net.ParseIP("2001:db8::ffff:1:2"), t0) {
+		t.Fatal("first connection refused")
+	}
+	if l.Allow(net.ParseIP("2001:db8::ffff:1:3"), t0) {
+		t.Fatal("IPv6 address with ffff bytes was grouped as IPv4")
+	}
+}
+
+func TestGuardLimitsPerIPAndReleases(t *testing.T) {
+	g := NewGuard(2, 0, 64, 56)
+	ip := net.ParseIP("192.0.2.1")
+	if !g.Acquire(ip) || !g.Acquire(ip) {
+		t.Fatal("first two slots refused")
+	}
+	if g.Acquire(ip) {
+		t.Fatal("third concurrent connection allowed past max_concurrent")
+	}
+	g.Release(ip)
+	if !g.Acquire(ip) {
+		t.Fatal("released slot was not reusable")
+	}
+}
+
+func TestGuardSubnetRollbackOnReject(t *testing.T) {
+	g := NewGuard(10, 1, 64, 56)
+	if !g.Acquire(net.ParseIP("2001:db8::1")) {
+		t.Fatal("first subnet slot refused")
+	}
+	if g.Acquire(net.ParseIP("2001:db8::2")) {
+		t.Fatal("second host in the same /56 allowed past subnet limit")
+	}
+	// The rejected attempt must not leak the host slot.
+	g.Release(net.ParseIP("2001:db8::1"))
+	if !g.Acquire(net.ParseIP("2001:db8::2")) {
+		t.Fatal("host slot leaked after subnet rejection")
+	}
+}
+
+func TestEvictOnePrefersUnbanned(t *testing.T) {
+	l := NewWithOptions(Options{Max: 1, Window: time.Second, BanDuration: time.Hour})
+	keys := make(map[key]*ipWindow)
+	banned := keyOf(net.ParseIP("192.0.2.1"), 64)
+	free := keyOf(net.ParseIP("192.0.2.2"), 64)
+	keys[banned] = &ipWindow{banUntil: t0.Add(time.Hour).UnixNano()}
+	keys[free] = &ipWindow{}
+	l.evictOne(keys, t0.UnixNano()/l.bucket, t0.UnixNano())
+	if _, ok := keys[banned]; !ok {
+		t.Fatal("eviction removed an active ban instead of an unbanned entry")
 	}
 }
 

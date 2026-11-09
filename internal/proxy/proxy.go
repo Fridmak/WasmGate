@@ -76,7 +76,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	var peerIP net.IP
 	var peerPort int
-	if rl.rateLimiter != nil || rl.plugin != nil {
+	if rl.rateLimiter != nil || rl.connGuard != nil || rl.plugin != nil {
 		peerIP, peerPort = clientEndpoint(client)
 	}
 
@@ -93,6 +93,20 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 			}
 			return
 		}
+	}
+
+	if rl.connGuard != nil {
+		if !rl.connGuard.Acquire(peerIP) {
+			p.metrics.RejectRate()
+			if ok, dropped := p.sampler.Allow("concurrent:" + listenerName); ok {
+				p.log.Warn("per-IP concurrent connection limit reached",
+					"listener", listenerName,
+					"suppressed", dropped,
+				)
+			}
+			return
+		}
+		defer rl.connGuard.Release(peerIP)
 	}
 
 	if rl.plugin != nil {
