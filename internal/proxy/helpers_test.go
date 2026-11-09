@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,51 +222,91 @@ func freeBindAddr(tb testing.TB) string {
 	return addr
 }
 
-// waitListening polls addr until a TCP connection succeeds or deadline expires.
-func waitListening(tb testing.TB, addr string, deadline time.Duration) {
+// waitExternalProxy waits until addr accepts a TCP connection. If the child
+// process exits first (bad config, missing module, port conflict) the test is
+// skipped with its captured log instead of failing on an opaque timeout: these
+// helpers exercise optional third-party proxies, not WasmGate itself.
+func waitExternalProxy(tb testing.TB, name, addr string, timeout time.Duration, exited <-chan error, logPath string) {
 	tb.Helper()
-	end := time.Now().Add(deadline)
+	deadline := time.Now().Add(timeout)
 	for {
 		c, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
 		if err == nil {
 			_ = c.Close()
 			return
 		}
-		if time.Now().After(end) {
-			tb.Fatalf("external proxy on %s did not start listening in time: %v", addr, err)
+		select {
+		case werr := <-exited:
+			tb.Skipf("%s exited before listening on %s: %v\n%s", name, addr, werr, readLog(logPath))
+		default:
+		}
+		if time.Now().After(deadline) {
+			tb.Skipf("%s did not listen on %s within %s\n%s", name, addr, timeout, readLog(logPath))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
+func readLog(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "(no log: " + err.Error() + ")"
+	}
+	return string(b)
+}
+
+// nginxStreamSupport reports whether nginx can serve a stream {} block, either
+// statically (--with-stream) or through a loadable module, and returns the
+// load_module directive in the latter case. Ubuntu's nginx package is built
+// with --with-stream=dynamic, so the module lives in a separate
+// libnginx-mod-stream package that is not always installed.
+func nginxStreamSupport(bin string) (loadModule string, ok bool) {
+	for _, modPath := range []string{
+		"/usr/lib/nginx/modules/ngx_stream_module.so",
+		"/usr/lib64/nginx/modules/ngx_stream_module.so",
+		"/usr/local/libexec/nginx/ngx_stream_module.so",
+		"/usr/local/nginx/modules/ngx_stream_module.so",
+	} {
+		if _, err := os.Stat(modPath); err == nil {
+			return fmt.Sprintf("load_module %s;\n", modPath), true
+		}
+	}
+	out, _ := exec.Command(bin, "-V").CombinedOutput()
+	return "", nginxHasStaticStream(string(out))
+}
+
+// nginxHasStaticStream reports whether nginx -V lists --with-stream as a static
+// module. --with-stream=dynamic does not count: it still needs the .so.
+func nginxHasStaticStream(versionOutput string) bool {
+	for _, f := range strings.Fields(versionOutput) {
+		if f == "--with-stream" {
+			return true
+		}
+	}
+	return false
+}
+
 // startNginxStream launches a real nginx process configured with the L4 stream
-// module forwarding to backend. Skips tb if nginx or ngx_stream_module is not
-// installed on the host.
+// module forwarding to backend. It skips tb when nginx, its stream module, or a
+// working start is unavailable on the host.
 func startNginxStream(tb testing.TB, backend string) string {
 	tb.Helper()
 	bin, err := exec.LookPath("nginx")
 	if err != nil {
 		tb.Skip("nginx not installed")
 	}
+	loadMod, ok := nginxStreamSupport(bin)
+	if !ok {
+		tb.Skip("nginx has no stream module (install libnginx-mod-stream)")
+	}
 	dir := tb.TempDir()
 	addr := freeBindAddr(tb)
-
-	var loadMod string
-	for _, modPath := range []string{
-		"/usr/lib/nginx/modules/ngx_stream_module.so",
-		"/usr/lib64/nginx/modules/ngx_stream_module.so",
-	} {
-		if _, err := os.Stat(modPath); err == nil {
-			loadMod = fmt.Sprintf("load_module %s;\n", modPath)
-			break
-		}
-	}
 
 	confPath := filepath.Join(dir, "nginx.conf")
 	conf := fmt.Sprintf(`%sdaemon off;
 worker_processes 2;
 pid %s/nginx.pid;
-error_log %s/error.log crit;
+error_log stderr notice;
 events {
     worker_connections 4096;
 }
@@ -275,26 +316,40 @@ stream {
         proxy_pass %s;
     }
 }
-`, loadMod, dir, dir, addr, backend)
+`, loadMod, dir, addr, backend)
 
 	if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
 		tb.Fatalf("write nginx.conf: %v", err)
 	}
 
+	logPath := filepath.Join(dir, "nginx.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		tb.Fatalf("create nginx log: %v", err)
+	}
 	cmd := exec.Command(bin, "-p", dir, "-c", confPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		tb.Skipf("start nginx: %v", err)
 	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	tb.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+		}
+		_ = logFile.Close()
 	})
-	waitListening(tb, addr, 3*time.Second)
+	waitExternalProxy(tb, "nginx", addr, 5*time.Second, exited, logPath)
 	return addr
 }
 
 // startHAProxyTCP launches a real HAProxy process in L4 TCP mode forwarding to
-// backend. Skips tb if haproxy is not installed on the host.
+// backend. It skips tb when haproxy is missing or cannot start.
 func startHAProxyTCP(tb testing.TB, backend string) string {
 	tb.Helper()
 	bin, err := exec.LookPath("haproxy")
@@ -326,14 +381,45 @@ backend be
 		tb.Fatalf("write haproxy.cfg: %v", err)
 	}
 
+	logPath := filepath.Join(dir, "haproxy.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		tb.Fatalf("create haproxy log: %v", err)
+	}
 	cmd := exec.Command(bin, "-f", confPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		tb.Skipf("start haproxy: %v", err)
 	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	tb.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+		}
+		_ = logFile.Close()
 	})
-	waitListening(tb, addr, 3*time.Second)
+	waitExternalProxy(tb, "haproxy", addr, 5*time.Second, exited, logPath)
 	return addr
+}
+
+func TestNginxHasStaticStream(t *testing.T) {
+	cases := []struct {
+		out  string
+		want bool
+	}{
+		{"--with-stream --with-http_ssl_module", true},
+		{"--with-stream=dynamic --with-http_ssl_module", false},
+		{"--with-http_ssl_module", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := nginxHasStaticStream(tc.out); got != tc.want {
+			t.Errorf("nginxHasStaticStream(%q) = %v, want %v", tc.out, got, tc.want)
+		}
+	}
 }

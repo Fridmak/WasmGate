@@ -67,6 +67,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # ubuntu's nginx is built with --with-stream=dynamic, but the module lives
+      # in a separate package. Install it so the nginx comparison actually runs;
+      # if it is unavailable the subtest skips itself with a clear message.
+      - name: Optional proxy fixtures (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libnginx-mod-stream || echo "nginx stream module unavailable; comparison will be skipped"
+
       - name: go test
         run: go test ${{ matrix.race }} ./...
 
