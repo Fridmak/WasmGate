@@ -73,11 +73,26 @@ type Runtime struct {
 	registry *registry
 }
 
-// NewRuntime builds the first snapshot (version 1) from cfg.
+// NewRuntime builds the first snapshot (version 1) from cfg. It panics if cfg
+// cannot be built; production code should use NewRuntimeChecked.
 func NewRuntime(cfg *config.Config) *Runtime {
-	r := &Runtime{registry: newRegistry()}
-	r.cur.Store(r.build(1, cfg))
+	r, err := NewRuntimeChecked(cfg)
+	if err != nil {
+		panic(err)
+	}
 	return r
+}
+
+// NewRuntimeChecked builds the first snapshot and returns a build error instead
+// of publishing a partially configured (fail-open) runtime.
+func NewRuntimeChecked(cfg *config.Config) (*Runtime, error) {
+	r := &Runtime{registry: newRegistry()}
+	snap, err := r.build(1, cfg)
+	if err != nil {
+		return nil, err
+	}
+	r.cur.Store(snap)
+	return r, nil
 }
 
 // Load returns the current snapshot. Lock-free and allocation-free.
@@ -103,16 +118,25 @@ func (r *Runtime) UpstreamStats() []observe.UpstreamStat {
 }
 
 // Reload compiles a new snapshot and publishes it, returning the new version.
-// Safe for concurrent use.
-//
-// Precondition: cfg must already be validated (see config.Config.Validate).
+// It is kept as a concise wrapper for tests; production reload paths should use
+// ReloadChecked so a build error is never swallowed.
 func (r *Runtime) Reload(cfg *config.Config) uint64 {
+	v, _ := r.ReloadChecked(cfg)
+	return v
+}
+
+// ReloadChecked builds a new snapshot and publishes it, or returns an error
+// while keeping the previous snapshot active.
+func (r *Runtime) ReloadChecked(cfg *config.Config) (uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	next := r.build(r.cur.Load().Version+1, cfg)
+	next, err := r.build(r.cur.Load().Version+1, cfg)
+	if err != nil {
+		return 0, err
+	}
 	r.cur.Store(next)
-	return next.Version
+	return next.Version, nil
 }
 
 // ValidatePlugins compiles and caches every listener's WASM plugin (and loads
@@ -165,7 +189,7 @@ func buildTLSConfig(tc config.TLSConfig) (*tls.Config, error) {
 // reads.
 //
 // Caller must hold r.mu (or be the single-threaded constructor).
-func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
+func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 	pools := make(map[string]*pool, len(cfg.Pools))
 	for name, pc := range cfg.Pools {
 		p := newPool(name, pc.Servers, pc.Balance, r.registry)
@@ -193,9 +217,10 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 		}
 		if lc.Plugin.Enabled() {
 			pl, err := r.registry.plugin(lc.Name, lc.Plugin)
-			if err == nil {
-				rl.plugin = pl
+			if err != nil {
+				return nil, fmt.Errorf("listener %q: plugin: %w", lc.Name, err)
 			}
+			rl.plugin = pl
 		}
 		if len(lc.SNIRoutes) > 0 {
 			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))
@@ -210,13 +235,15 @@ func (r *Runtime) build(version uint64, cfg *config.Config) *Snapshot {
 			}
 		}
 		if lc.TLS.Enabled() {
-			if tcfg, err := buildTLSConfig(lc.TLS); err == nil {
-				rl.tlsConfig = tcfg
+			tcfg, err := buildTLSConfig(lc.TLS)
+			if err != nil {
+				return nil, fmt.Errorf("listener %q: tls: %w", lc.Name, err)
 			}
+			rl.tlsConfig = tcfg
 		}
 		listeners[lc.Name] = rl
 	}
 
 	r.registry.prune(cfg)
-	return &Snapshot{Version: version, Config: cfg, listeners: listeners}
+	return &Snapshot{Version: version, Config: cfg, listeners: listeners}, nil
 }

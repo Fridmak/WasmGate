@@ -3,6 +3,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -37,8 +40,9 @@ type registry struct {
 }
 
 type cachedPlugin struct {
-	cfg config.PluginConfig
-	pl  *plugin.Plugin
+	cfg  config.PluginConfig
+	hash [32]byte
+	pl   *plugin.Plugin
 }
 
 func newRegistry() *registry {
@@ -52,30 +56,34 @@ func newRegistry() *registry {
 }
 
 // plugin returns the compiled WASM sandbox for a listener, reusing the existing
-// compiled module and instance pool when the plugin configuration has not changed.
+// compiled module and instance pool only when both the configuration and the
+// module bytes are unchanged. The file is re-read on every reload so replacing
+// a .wasm at the same path is picked up (or fails closed if the file is bad).
 func (g *registry) plugin(name string, pc config.PluginConfig) (*plugin.Plugin, error) {
+	wasmBytes := pc.Wasm
+	if len(wasmBytes) == 0 {
+		b, err := os.ReadFile(pc.Path) // #nosec G304 -- path comes from validated config
+		if err != nil {
+			return nil, fmt.Errorf("plugin: read %s: %w", pc.Path, err)
+		}
+		wasmBytes = b
+	}
+	hash := sha256.Sum256(wasmBytes)
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if cur, ok := g.plugins[name]; ok && samePluginConfig(cur.cfg, pc) {
+	if cur, ok := g.plugins[name]; ok && samePluginConfig(cur.cfg, pc) && cur.hash == hash {
 		return cur.pl, nil
 	}
 	opts := plugin.Options{
 		MaxMemoryPages: pc.MaxMemoryPages,
 		Timeout:        pc.Timeout,
 	}
-	var (
-		pl  *plugin.Plugin
-		err error
-	)
-	if len(pc.Wasm) > 0 {
-		pl, err = plugin.New(context.Background(), pc.Wasm, opts)
-	} else {
-		pl, err = plugin.LoadFile(context.Background(), pc.Path, opts)
-	}
+	pl, err := plugin.New(context.Background(), wasmBytes, opts)
 	if err != nil {
 		return nil, err
 	}
-	g.plugins[name] = cachedPlugin{cfg: pc, pl: pl}
+	g.plugins[name] = cachedPlugin{cfg: pc, hash: hash, pl: pl}
 	return pl, nil
 }
 

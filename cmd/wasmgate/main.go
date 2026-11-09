@@ -47,8 +47,8 @@ func run() error {
 	}
 
 	metrics := observe.NewMetrics()
-	rt := proxy.NewRuntime(cfg)
-	if err := rt.ValidatePlugins(cfg); err != nil {
+	rt, err := proxy.NewRuntimeChecked(cfg)
+	if err != nil {
 		return err
 	}
 	if *validateOnly {

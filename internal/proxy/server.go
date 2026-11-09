@@ -134,6 +134,10 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 	if err := s.rt.ValidatePlugins(cfg); err != nil {
 		return 0, err
 	}
+	// Binding and rollback must not be aborted just because the HTTP caller
+	// disconnected: otherwise a cancelled POST /reload could leave a listener
+	// missing. The request context still governs validation/work above.
+	bindCtx := context.WithoutCancel(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,12 +179,12 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 			next[l.Name] = cur // unchanged: keep socket and loop
 			continue
 		}
-		sock, err := (&net.ListenConfig{}).Listen(ctx, "tcp", l.Addr)
+		sock, err := (&net.ListenConfig{}).Listen(bindCtx, "tcp", l.Addr)
 		if err != nil {
 			for _, name := range opened {
 				_ = next[name].ln.Close()
 			}
-			rerr := s.restoreReleased(ctx, released)
+			rerr := s.restoreReleased(bindCtx, released)
 			return 0, errors.Join(fmt.Errorf("reload: listen %q on %s: %w", l.Name, l.Addr, err), rerr)
 		}
 		next[l.Name] = boundListener{cfgAddr: l.Addr, ln: sock}
@@ -198,7 +202,14 @@ func (s *Server) Reload(ctx context.Context, cfg *config.Config) (uint64, error)
 		}
 	}
 
-	v := s.rt.Reload(cfg)
+	v, err := s.rt.ReloadChecked(cfg)
+	if err != nil {
+		for _, name := range opened {
+			_ = next[name].ln.Close()
+		}
+		rerr := s.restoreReleased(bindCtx, released)
+		return 0, errors.Join(fmt.Errorf("reload: build snapshot: %w", err), rerr)
+	}
 	s.metrics.Reload(v)
 
 	snap := s.rt.Load()
