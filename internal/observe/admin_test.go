@@ -99,6 +99,66 @@ func TestAdminEndpoints(t *testing.T) {
 	})
 }
 
+func TestAdminAuthHostAndPprofDefault(t *testing.T) {
+	m := NewMetrics()
+	admin, err := NewAdmin("127.0.0.1:0", m, nil, discardLogger(), AdminOptions{Token: "s3cret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = admin.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = admin.Shutdown(ctx)
+	})
+	base := "http://" + admin.Addr().String()
+
+	// No token -> 401.
+	resp, err := http.Get(base + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("metrics without token: %d, want 401", resp.StatusCode)
+	}
+
+	// Correct bearer token -> 200, but pprof is still disabled by default.
+	req, _ := http.NewRequest(http.MethodGet, base+"/metrics", nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics with token: %d, want 200", resp.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodGet, base+"/debug/pprof/", nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("pprof without opt-in: %d, want 404", resp.StatusCode)
+	}
+
+	// DNS-rebinding-style Host is rejected before auth.
+	req, _ = http.NewRequest(http.MethodGet, base+"/metrics", nil)
+	req.Host = "evil.example"
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Fatalf("bad Host: %d, want 421", resp.StatusCode)
+	}
+}
+
 // getBody fetches url with a timeout and returns the response body, closing it.
 func getBody(t *testing.T, url string) string {
 	t.Helper()
