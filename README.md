@@ -10,7 +10,7 @@ circuit breaker и проектную документацию (материал
 | Параметр | Значение |
 |----------|----------|
 | Статус | ядро L4 + WASM L7-lite + SNI/TLS + health-checks + circuit breaker + hot reload + метрики (M0–M5) |
-| Data plane | Go 1.23+ |
+| Data plane | Go 1.25+ |
 | Control plane (план) | C#/.NET 8, gRPC поверх Unix Domain Socket |
 | Плагины | WebAssembly, чистый Go-рантайм ([wazero](https://github.com/tetratelabs/wazero)), без WASI |
 | Лицензия | MIT |
@@ -135,7 +135,7 @@ IP/порту и метаданным соединения. L7-lite включа
 
 ## Требования
 
-- Go 1.23 или новее.
+- Go 1.25 или новее.
 - C-компилятор нужен только для `go test -race` (CGO). На Windows удобнее
   запускать race-тесты в WSL; на Linux компилятор обычно уже доступен.
 - Windows: PowerShell. Unix: любой shell.

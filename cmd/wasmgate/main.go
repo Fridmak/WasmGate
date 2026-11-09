@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -41,10 +42,19 @@ func run() error {
 		return err
 	}
 	log := observe.NewLogger(level)
+	slog.SetDefault(log)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
+	}
+	for _, lc := range cfg.Listeners {
+		if lc.MaxConns == 0 {
+			log.Warn("listener has unlimited max_conns; slow clients can exhaust the process", "listener", lc.Name)
+		}
+		if lc.RateLimit.MaxConcurrent == 0 {
+			log.Warn("listener has no per-IP concurrent connection limit", "listener", lc.Name)
+		}
 	}
 
 	metrics := observe.NewMetrics()

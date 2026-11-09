@@ -9,9 +9,13 @@
 version: 1
 
 # Optional observability endpoint: /metrics (Prometheus text), /healthz,
-# /reload (POST) and /debug/pprof/. Keep it on loopback unless you really want
-# it exposed. Empty or omitted = disabled. Changing admin_addr needs a restart.
+# /reload (POST) and optionally /debug/pprof/. Keep it on loopback unless you
+# really want it exposed. Empty or omitted = disabled.
+# Non-loopback admin_addr requires admin_allow_remote: true and a token.
 admin_addr: "127.0.0.1:9099"
+# admin_token_file: "/etc/wasmgate/admin.token"  # or WASMGATE_ADMIN_TOKEN
+admin_pprof: false        # pprof is dangerous: enable only for local debugging
+admin_allow_remote: false
 
 listeners:
   - name: edge
@@ -25,7 +29,11 @@ listeners:
                               # set e.g. 60s in production to reap silent conns.
     rate_limit:               # optional per-IP/subnet sliding-window rate limit (F2)
       max: 200                # max new connections per IP per window (0 = disabled)
-      subnet_max: 1000        # max new connections per /24 (IPv4) or /64 (IPv6) per window (0 = disabled)
+      subnet_max: 1000        # max new connections per subnet per window (0 = disabled)
+      max_concurrent: 0       # concurrent connections per IP (0 = disabled; WARN at startup)
+      subnet_max_concurrent: 0 # concurrent connections per subnet (0 = disabled)
+      ipv6_host_prefix: 64    # IPv6 per-IP grouping (default 64)
+      ipv6_subnet_prefix: 56  # IPv6 subnet grouping (default 56)
       window: 1s              # sliding window length (default 1s, min 10ms)
       ban_duration: 5s        # base ban TTL on violation, exponentially backed off up to 16x (0 = no ban)
       allow_cidrs:            # CIDRs bypassed before counting
@@ -35,7 +43,7 @@ listeners:
     # plugin:
     #   path: "plugins/examples/ipguard/ipguard.wasm"
     #   max_memory_pages: 16   # 16 pages = 1 MiB linear-memory cap per instance
-    #   timeout: 0s            # per-hook timeout; 0 = no timer (keeps 0 allocs/op)
+    #   timeout: 0s            # per-hook timeout; 0 = no timer (trusted plugin only; WARN)
     #   data_mode: "once"      # "once" (first packet, preserves Linux splice) | "stream" (every chunk)
     #   route_pools: ["web"]   # selectable by on_data return value (2 -> route_pools[0], ...)
     #
@@ -53,6 +61,7 @@ listeners:
     #   cert_file: "certs/server.crt"
     #   key_file: "certs/server.key"
     #   min_version: "1.2"     # "1.2" | "1.3"
+    #   handshake_timeout: 10s # TLS handshake deadline (default 10s)
 
   - name: db
     addr: "127.0.0.1:5433"
