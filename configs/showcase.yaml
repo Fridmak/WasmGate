@@ -7,8 +7,9 @@
 #   go run ./cmd/wasmgate -config configs/showcase.yaml -validate
 #
 # All plugins are committed as prebuilt .wasm files, so no Rust toolchain is
-# required to try this config. See plugins/examples/README.md for the ABI and
-# for the limits of stateless L7 inspection.
+# required to try this config. See plugins/examples/README.md for the ABI,
+# stateless L7 limits, and the ABI v3 host-managed state used by
+# http_body_guard.
 version: 1
 
 admin_addr: "127.0.0.1:9098"

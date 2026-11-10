@@ -2,8 +2,9 @@
 #
 # The gateway is a raw TCP reverse proxy: it accepts connections on `listeners`
 # and forwards them to one of the backends in the referenced pool. Optional
-# layers on top: rate limiting, WASM plugins (L4 hooks + L7-lite `on_data`),
-# TLS passthrough (SNI peek) or termination, health checks and a circuit breaker.
+# layers on top: rate limiting, WASM plugins (L4 hooks + L7 `on_data` /
+# `on_data_ex` / `on_data_state`), TLS passthrough (SNI peek) or termination,
+# health checks and a circuit breaker.
 #
 # Validation: `wasmgate -config configs/wasmgate.yaml -validate`.
 version: 1
