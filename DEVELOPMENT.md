@@ -8,7 +8,7 @@
 
 ## Текущий статус и следующий шаг
 
-**Реализовано (M0–M5):** L4 TCP reverse proxy на `net` — приём соединений,
+**Реализовано (M0–M5 + ABI v3):** L4 TCP reverse proxy на `net` — приём соединений,
 балансировка `round_robin`/`least_conn` с пропуском нездоровых бэкендов,
 прозрачный `dial_retries` и трёхфазный circuit breaker (`Closed/Open/Half-Open`),
 проксирование (`io.Copy` → `splice` на Linux; fast path при `idle_timeout: 0`),
@@ -24,9 +24,13 @@
 балансировщика между reload, ограничение частоты «шумных» логов, строгая
 валидация конфига, структурные логи, сборка без CGO.
 
-Поверх ядра: **WASM-плагины** (`internal/plugin`, wazero без WASI) с хуками
-`on_accept`/`on_data`/`on_close`, L7-инспекцией `once`/`stream`, in-place
-мутацией пакета и выбором пула через `plugin.route_pools`; **TLS passthrough** с
+Поверх ядра: **WASM-плагины** (`internal/plugin`, wazero без WASI) с ABI
+v1/v2/v3 (`on_accept`, `on_data`, `on_data_ex`, `on_data_state`, `on_close`,
+`on_close_ex`), L7-инспекцией `once`/`stream` в обоих направлениях, in-place
+мутацией пакета, выбором пула через `plugin.route_pools` и host-managed
+состоянием до 4 KiB на направление; **восемь showcase-плагинов** с готовыми
+`.wasm` (`ipguard`, `http_guard`, `http_body_guard`, `path_router`, `sni_guard`,
+`protocol_router`, `redis_guard`, `stream_guard`); **TLS passthrough** с
 zero-alloc SNI peek и `sni_routes`; **TLS-терминация** на листенере с горячей
 перезагрузкой сертификата; **health-checks** upstream (пассивные + активный TCP
 probe). Метрики (Prometheus-текст, `/healthz`, `pprof`, `POST /reload`) — на
@@ -34,8 +38,9 @@ probe). Метрики (Prometheus-текст, `/healthz`, `pprof`, `POST /reloa
 и 0 аллокаций на соединение. Покрыто тестами (`go test ./...`), включая chaos
 reload под нагрузкой и e2e-прогоны против nginx/HAProxy на Linux.
 
-**Ещё не реализовано:** C# control plane, полноценный HTTP/JSON DPI, eBPF,
-упаковка (Docker/systemd). Куда встраивать — §10 «Рецепты».
+**Следующие направления:** C# control plane (M6), upstream TLS/mTLS, zero-alloc
+JSON DPI в ядре, eBPF-фильтрация и контейнерная упаковка. Куда встраивать —
+§10 «Рецепты».
 
 **Следующий шаг:** отдельная ветка `feat/dotnet-control-plane` — C#/.NET 8
 control plane с gRPC/UDS, версиями конфигурации, публикацией и откатом.
@@ -120,11 +125,16 @@ WasmGate/
 │   │   └── helpers_test.go  общие фикстуры: echo, сервер, dial, конфиг, sinks
 │   ├── plugin/
 │   │   ├── sandbox.go       песочница wazero: пул инстансов, CallWithStack,
-│   │   │                    on_accept/on_data/on_close, лимит памяти/таймаут
-│   │   └── sandbox_test.go  тесты + бенчи OnAccept / OnData
+│   │   │                    ABI v1/v2/v3 (on_accept/on_data/on_data_ex/
+│   │   │                    on_data_state/on_close), ConnState, лимит памяти/таймаут
+│   │   ├── sandbox_test.go  тесты + бенчи OnAccept / OnData / OnDataState
+│   │   └── examples_test.go e2e-тесты showcase-плагинов + BenchmarkExampleHTTPBodyGuard
 │   ├── ratelimit/
-│   │   ├── window.go        скользящее окно по IP и /24, allow-list, backoff-бан
-│   │   └── window_test.go   тесты + бенчи Allow / AllowParallel
+│   │   ├── window.go        скользящее окно по IP/подсети, IPv6-префиксы,
+│   │   │                    allow-list, backoff-бан
+│   │   ├── guard.go         лимит одновременных соединений на IP/подсеть
+│   │   ├── window_test.go   тесты + бенчи Allow / AllowParallel
+│   │   └── guard_test.go    тесты лимита одновременных соединений
 │   ├── tlspeek/
 │   │   ├── sni.go           zero-alloc разбор ClientHello + прозрачный replay
 │   │   └── sni_test.go      тесты + бенч ParseClientHello
@@ -132,19 +142,21 @@ WasmGate/
 │       ├── log.go           ParseLevel + NewLogger (log/slog)
 │       ├── limiter.go       ограничитель частоты логов (анти-«шторм»)
 │       ├── metrics.go       счётчики соединений/байтов/reload (атомики) + рендер Prometheus
-│       ├── admin.go         admin-эндпоинт: /metrics, /healthz, /debug/pprof
+│       ├── admin.go         admin-эндпоинт: /metrics, /healthz, /reload, /debug/pprof
 │       ├── limiter_test.go  тесты + бенчи лог-лимитера
 │       ├── metrics_test.go  тесты + бенчи метрик (цена на соединение)
 │       ├── admin_test.go    тесты эндпоинтов
 │       └── log_test.go      тесты разбора уровня логирования
 ├── configs/
 │   ├── wasmgate.yaml        основной пример
+│   ├── showcase.yaml        все восемь плагинов + native SNI baseline
 │   └── local-echo.yaml      конфиг для smoke-теста (см. §5)
 ├── benchmarks/
 │   ├── README.md            методика, сценарии и таблица «что чем меряем»
 │   └── linux-ubuntu-results.txt  дословный вывод Linux-прогона (nginx/HAProxy)
-├── plugins/examples/        примеры плагинов (Rust no_std, TinyGo) + ipguard.wasm
-├── deployments/             заглушка под упаковку (Docker/systemd)
+├── plugins/examples/        workspace восьми Rust no_std плагинов + common crate;
+│                            готовые .wasm закоммичены, Rust для запуска не нужен
+├── deployments/             production-сборка и systemd-юнит
 ├── docs/                    01–07: проектная документация (Obsidian)
 ├── go.mod / go.sum
 ├── Makefile / .golangci.yml / .gitignore
@@ -233,8 +245,9 @@ go test -race ./...                              # детектор гонок (
   лимитер, балансировщик;
 - `internal/config/config_test.go` — `Load` / `Validate` (цена SIGHUP);
 - `internal/ratelimit/window_test.go` — `Allow` / `AllowParallel` (скользящее окно по IP);
-- `internal/plugin/sandbox_test.go` — `OnAccept`, `OnAcceptParallel`, `OnData`
-  (цена вызова WASM-хука);
+- `internal/plugin/sandbox_test.go` — `OnAccept`, `OnAcceptParallel`, `OnData`,
+  `OnDataState` (цена вызова WASM-хука);
+- `internal/plugin/examples_test.go` — `ExampleHTTPBodyGuard` (полный stateful-плагин);
 - `internal/tlspeek/sni_test.go` — `ParseClientHelloSNI`, `MatchRouteWildcard`;
 - `internal/observe/limiter_test.go`, `metrics_test.go` — лог-лимитер и метрики.
 
@@ -308,8 +321,8 @@ $env:GOOS="windows";$env:GOARCH="amd64"; go build -o bin/wasmgate.exe ./cmd/wasm
 
 ### 4.7. Профилирование (pprof)
 
-Живой эндпоинт: задай `admin_addr` в конфиге — `/debug/pprof/` появится вместе
-с `/metrics` и `/healthz` (см. §9). Пример:
+Живой эндпоинт: задай `admin_addr` и `admin_pprof: true` в конфиге — `/debug/pprof/`
+появится вместе с `/metrics` и `/healthz` (см. §9). Пример:
 
 ```powershell
 go tool pprof http://127.0.0.1:9099/debug/pprof/profile?seconds=10
@@ -381,7 +394,8 @@ main.run()
         ├─ OnAccept     plugin      WASM-хук по IP/порту; ненулевой verdict = deny
         ├─ TLS          proxy.go    tls.Server (терминация) ИЛИ tlspeek.Peek + sni_routes
         ├─ OnData       proxy.go    once: первый пакет до dial + DrainTo;
-        │                           stream: каждый чанк client→server в join()
+        │                           stream: каждый чанк в join(), оба направления
+        │                           (ABI v2/v3), legacy on_data — только client→server
         ├─ dialWithRetry proxy.go   Next() + DialContext; retry по пулу, circuit breaker
         └─ join()       copy.go     copy в обе стороны; splice при idle_timeout=0
                                     и отсутствии stream-плагина/TLS; teardown по ошибке
@@ -456,22 +470,26 @@ func (s *Server) Addrs() []net.Addr
 
 - `Limiter` (`window.go`) — скользящее окно из 10 слотов, 64 шарда по 16-байтному
   каноническому ключу IP (IPv4 и IPv4-mapped IPv6 отображаются в один ключ).
-  Дополнительно: агрегация по `/24` (IPv4) и `/64` (IPv6), CIDR allow-list,
-  экспоненциальный бан `1x..16x` базового `ban_duration`. Хранится в `registry`
+  Дополнительно: агрегация по `/24` (IPv4), для IPv6 — host-ключ `/64` и
+  subnet-ключ `/56` (настраиваются), CIDR allow-list, экспоненциальный бан
+  `1x..16x` базового `ban_duration`. Хранится в `registry`
   (`state.go`), поэтому reload не обнуляет счётчики.
 
 ### `internal/plugin` — WASM-песочница
 
 - `Plugin` (`sandbox.go`) — wazero без WASI: компиляция один раз, пул
   реакторных инстансов (`sync.Pool`), вызовы через `CallWithStack` с
-  `[4]uint64`, без аллокаций на горячем пути.
-- Хуки: `OnAccept(ip, port)`, `OnData(chunk)`, `OnClose(ip, rx, tx)`.
-  `OnAccept`: любой ненулевой verdict = deny. `OnData`: `0` — allow/default pool,
-  `1` — deny, `>= 2` — выбрать `route_pools[ret-2]` (только в режиме `once`).
-- Для L7 байты кладутся в фиксированный scratch-регион линейной памяти
-  (32 KiB); плагин может менять их на месте. `max_memory_pages` (по умолчанию 16
-  страниц = 1 MiB) и опциональный `timeout` ограничивают ресурсы; при
-  trap/timeout инстанс выбрасывается.
+  числовыми аргументами, без аллокаций на горячем пути.
+- Хуки: `OnAccept(ip, port)`, `OnData`/`OnDataConn` (ABI v1/v2), `OnDataState`
+  (ABI v3), `OnClose`/`OnCloseEx`. `OnAccept`: любой ненулевой verdict = deny.
+  `OnData`: `0` — allow/default pool, `1` — deny, `>= 2` — выбрать
+  `route_pools[ret-2]` (только в режиме `once`).
+- Для L7 байты кладутся в scratch-регион линейной памяти, адрес которого гость
+  сообщает через обязательный `on_data_ptr()` (до 32 KiB); плагин может менять
+  их на месте. ABI v3 дополнительно копирует до 4 KiB состояния на направление
+  через `on_state_ptr()`. `max_memory_pages` (по умолчанию 16 страниц = 1 MiB) и
+  опциональный `timeout` ограничивают ресурсы; при trap/timeout инстанс
+  выбрасывается.
 
 ### `internal/tlspeek` — SNI без терминации
 
@@ -489,10 +507,11 @@ func (s *Server) Addrs() []net.Addr
   флаг CLI/конфиг); внутри программы все ходят с `slog.Level`.
 - `NewLogger(level)` — единая точка создания логгера (stdlib `log/slog`).
 - `Metrics` — счётчики прокси (accepted/closed/active/rejected/dial-fail/bytes/
-  reloads/config_version + per-upstream active). Методы nil-безопасны и стоят
-  ~60 нс / 0 аллокаций на соединение; `WritePrometheus` — холодный путь.
+  reloads/config_version + per-upstream active/healthy). Методы nil-безопасны и
+  стоят ~60 нс / 0 аллокаций на соединение; `WritePrometheus` — холодный путь.
 - `Admin` — опциональный admin-листенер (`admin_addr`): `/metrics` (Prometheus
-  text), `/healthz` (JSON), `/debug/pprof/*`. Биндится синхронно при старте,
+  text), `/healthz` (JSON), `POST /reload`, `/debug/pprof/*` (по флагу
+  `admin_pprof`). Биндится синхронно при старте,
   `Serve()` — блокирующий, `Shutdown(ctx)` — graceful.
 
 ### `cmd/wasmgate`
@@ -514,12 +533,15 @@ func (s *Server) Addrs() []net.Addr
   `connWG` — так ни один обработчик не может зарегистрироваться уже после начала
   ожидания (Add, гоняющийся с Wait, — неопределённое поведение).
 - **Конфиг** — `atomic.Pointer`, на горячем пути **нет блокировок**; `Reload`
-  сериализуется мьютексом (версия — это read-modify-write).
+  сериализуется мьютексом (версия — это read-modify-write). Rate limiter держит
+  таблицу в 64 шардах с короткой блокировкой на шард, поэтому разные IP обычно
+  не конкурируют.
 - **Состояние, зависящее от истории** (лимит соединений, счётчики active)
   вынесено в `registry` (`state.go`) и живёт дольше snapshot — reload его не
   сбрасывает.
 - **Счётчики upstream** — типизированные атомики (`atomic.Int64`), безопасны на 32/64-бит.
-- `sync.Mutex` только там, где не горячо: список листенеров, `Reload`, `registry`.
+- `sync.Mutex` только там, где он не создаёт общей точки: список листенеров,
+  `Reload`, `registry` и отдельный шард rate limiter.
 - **Два контекста на стороне соединений**: `ctx` из `Start`/`Reload` не трогает
   живые соединения; при `Shutdown` они сначала доигрывают, и лишь по истечении
   grace (или при форс-остановке) их контекст отменяется и `join` закрывает обе стороны.
@@ -545,7 +567,11 @@ listeners:
     idle_timeout: 0s        # idle-таймаут соединения; 0 = выкл (по умолчанию)
     rate_limit:             # опционально: лимит новых соединений по IP и подсети (F2)
       max: 200              # соединений с одного IP за окно (0 = выкл)
-      subnet_max: 1000      # соединений с /24 (IPv4) или /64 (IPv6) за окно (0 = выкл)
+      subnet_max: 1000      # соединений с подсети за окно (0 = выкл)
+      max_concurrent: 0     # одновременных соединений с IP (0 = выкл)
+      subnet_max_concurrent: 0  # одновременных с подсети (0 = выкл)
+      ipv6_host_prefix: 64  # группировка IPv6-хоста (по умолчанию 64)
+      ipv6_subnet_prefix: 56 # группировка IPv6-подсети (по умолчанию 56)
       window: 1s            # длина скользящего окна (по умолчанию 1s, мин. 10ms)
       ban_duration: 5s      # базовый TTL бана при превышении, растёт экспоненциально до 16x (0 = выкл)
       allow_cidrs:          # белые подсети, пропускаемые без подсчёта
@@ -563,6 +589,7 @@ listeners:
     #   cert_file: "certs/server.crt"
     #   key_file: "certs/server.key"
     #   min_version: "1.2"  # "1.2" | "1.3"
+    #   handshake_timeout: 10s # таймаут рукопожатия (по умолчанию 10s)
 
 pools:
   web:
@@ -598,8 +625,9 @@ pools:
 > zero-copy `splice`. При `idle_timeout > 0` включается буферизованное копирование
 > с общим watchdog'ом на всё соединение: дедлайн сдвигается при активности **любого**
 > из направлений, поэтому долгая односторонняя передача (медленное скачивание, SSE)
-> не рвётся, а «молчащие» полу-открытые соединения сбрасываются. В проде
-> `idle_timeout` лучше задать.
+> не рвётся, а «молчащие» полу-открытые соединения сбрасываются. Это выбор
+> между защитой от полуоткрытых соединений и zero-copy: `idle_timeout > 0`
+> отключает `splice`, поэтому включайте его осознанно.
 
 > **Что отключает `splice`.** `idle_timeout > 0`, `plugin.data_mode: stream` и
 > TLS-терминация (`listeners[].tls`) переводят соединение на буферизованный путь.
@@ -613,8 +641,9 @@ pools:
 >
 > **Circuit breaker.** `error_threshold: 0` означает «открыться после первой
 > ошибки dial». При `threshold > 0` дефолты — `open_duration: 10s` и
-> `half_open_requests: 1`. Если `open_duration: 0` при `threshold > 0` — сервер
-> остаётся нездоровым до успешного probe/диаля (fail-open в балансировщике).
+> `half_open_requests: 1`. Явный `open_duration: 0` при `threshold > 0`
+> валидация тоже заменяет на 10s: иначе локальная ошибка (`EMFILE`) выключила бы
+> бэкенд навсегда.
 >
 > **`dial_retries`.** Это число *дополнительных* попыток (всего `1 + N`).
 > Балансировщик может выбрать тот же сервер; гарантии «другой сервер» нет.
@@ -651,13 +680,15 @@ pools:
 - Песочница и ABI — `internal/plugin/sandbox.go`; примеры —
   `plugins/examples/ipguard/` (Rust `no_std`, TinyGo) и
   `plugins/examples/README.md`.
-- `on_accept` вызывается на уровне соединения; `on_data` — либо один раз до
-  `dial` (`once`), либо на каждый чанк в `join` (`stream`); `on_close` — после
-  завершения relay.
+- `on_accept` вызывается на уровне соединения; `on_data`/`on_data_ex`/
+  `on_data_state` — либо один раз до `dial` (`once`), либо на каждый чанк в
+  `join` (`stream`); `on_close`/`on_close_ex` — после завершения relay.
+- Состояние между чанками — только через ABI v3 (`ConnState`); глобальная память
+  инстанса не привязана к соединению, потому что инстансы берутся из пула.
 - Не добавляй сетевой I/O или блокирующие вызовы в хуки: инстанс занят на время
   CPU-вызова, а `timeout`/trap приводят к его выбрасыванию.
 - Для новой возможности сначала оцени, можно ли её сделать плагином: ядро
-  остаётся L4, L7-lite включается только явными полями конфига.
+  остаётся L4, L7-инспекция включается только явными полями конфига.
 
 ### 10.5. TLS-терминация и SNI
 - `tls.Config` собирается в `snapshot.go` (`buildTLSConfig`); сертификат
@@ -715,10 +746,10 @@ pools:
 | Тест/соединение «висит» | Полу-открытое соединение без трафика. Задай `idle_timeout > 0` (буферизованный путь с общим watchdog'ом) |
 | После reload «пропали» соединения на старом порту | Слушатель переименован или сменил адрес: `Reload` закрывает прежний сокет и открывает новый. Смена адреса без перезапуска поддержана. Смена `admin_addr` на лету не применяется (B4) — нужен рестарт |
 | `sni_routes` не маршрутизирует | На этом листенере включён `tls` (терминация): SNI-routing работает только в passthrough-режиме без `tls` |
-| Плагин «не видит» L7-трафик | Не экспортирован `on_data` или выбран `stream`; в `once` инспектируется только первый пакет (до 32 KiB scratch) |
-| `on_data` вернул `>= 2`, но пул не сменился | `route_pools` учитывается только в `data_mode: once`; в `stream` непустой verdict трактуется как allow |
+| Плагин «не видит» L7-трафик | Не экспортирован `on_data`/`on_data_ex`/`on_data_state` или выбран `stream`; в `once` инспектируется только первый пакет (до 16 389 байт) |
+| `on_data` вернул `>= 2`, но пул не сменился | `route_pools` учитывается только в `data_mode: once`; в `stream` любой ненулевой вердикт закрывает соединение |
 | После включения TLS/stream-плагина просел throughput | Ожидаемо: терминация и per-chunk инспекция отключают `splice(2)` и идут через буферизованный copy |
-| После reload старый плагин продолжает жить | Известное ограничение: runtime старого `plugin.Plugin` не закрывается при замене/удалении (см. `docs/06`, §6) |
+| После reload старый плагин продолжает жить | Runtime старого плагина закрывается через `runtime.AddCleanup` при сборке мусора, а не мгновенно при подмене; в долгоживущем процессе освобождение памяти может задерживаться (`docs/06`, §6) |
 | В логе мало строк `connection limit reached` / `dial upstream failed` | Включён anti-storm лимитер (см. `observe/limiter.go`); рядом появляется `suppressed=N` |
 
 ---
@@ -729,4 +760,4 @@ pools:
   (методика замеров) и `docs/02-architecture-tech.md` (стек, кодстайл, ADR).
 - Незнакомый термин — [`docs/07-glossary.md`](docs/07-glossary.md).
 - Пакет `internal/proxy` целиком описан в `internal/proxy/doc.go`.
-- Точки расширения помечены в коде комментариями `FUTURE` / `TODO`.
+- Точки расширения перечислены в §10 «Рецепты» и в `doc.go`.
