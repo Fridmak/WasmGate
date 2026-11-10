@@ -32,8 +32,11 @@
 | 05.11 | `465f7dc` | **`-validate` и `POST /reload` на `admin_addr`**: проверка конфига/WASM из CLI и HTTP-триггер hot reload для Windows (без `SIGHUP`) | Hot reload доступен на Windows и в скриптах |
 | 05.11 | `18d4249`, `8a07de5`, `faa807c` | Автотесты и бенчмарки на Ubuntu 24.04 Linux против `nginx stream` 1.24.0 и `HAProxy` 2.8.30 + e2e-тест `ipguard.wasm` по реальным IP `127.0.0.1` и `127.0.0.99` | Сняты и сохранены таблицы S0–S5 в `benchmarks/linux-ubuntu-results.txt` |
 | 06.11 | `0fe01ab` | **Circuit Breaker (`Closed/Open/Half-Open`) + `dial_retries`**, **WASM L7 роутинг (`route_pools`) и in-place мутация пакета**, **опциональная TLS-терминация (`listeners[].tls`)**, расширенные метрики Prometheus | Полный продакшн-контур ядра с `0 allocs/op` на fast path |
+| 06–07.11 | `16f03a7` … `3b2b8be` | Hardening-батч: `on_data_ptr` обязателен, `AddCleanup` для выброшенных инстансов, атомарный `initErr`, release concurrency-слотов, admin auth/host/pprof defaults, single-flight reload, stream+SNI peek, ротация файла плагина | Закрыты найденные гонки и утечки; тесты на каждый сценарий |
+| 07.11 | `ea63c60`, `a8c7bae` | **Восемь showcase-плагинов** (Rust `no_std` workspace + prebuilt `.wasm`): `ipguard`, `http_guard`, `http_body_guard`, `path_router`, `sni_guard`, `protocol_router`, `redis_guard`, `stream_guard`; `configs/showcase.yaml` | Покрыты типовые nginx-сценарии без Rust-тулчейна у пользователя |
+| 07.11 | `b4fab00`, `cd5ab09`, `f0b7923` | **ABI v3**: `on_data_state` + `on_state_ptr`, host-managed `ConnState` до 4 KiB на направление, упаковка verdict/state_len в `i64`, эталонный stateful `http_body_guard` | Состояние между чанками и keep-alive без sticky-инстанса; ~111–122 нс, 0 allocs/op |
 
-**Текущий статус (на 06.11):** M0 ✅, M1 ✅, M2 ✅, **M3 ✅**, **M4 (F2 полный) ✅**, **M5 (WASM + L7-lite + TLS/SNI + circuit breaker) ✅**; M6 (C# Control Plane) — следующий шаг.
+**Текущий статус (на 07.11):** M0 ✅, M1 ✅, M2 ✅, **M3 ✅**, **M4 (F2 полный) ✅**, **M5 + ABI v3 (WASM, L7, TLS/SNI, circuit breaker, 8 плагинов) ✅**; M6 (C# Control Plane) — следующий шаг.
 Все пакеты (`config`, `observe`, `plugin`, `proxy`, `ratelimit`, `tlspeek`) проходят
 `go vet`, `go test ./...`; на Ubuntu — `go test -race ./...`; `golangci-lint v2.15.0` — 0 issues.
 
@@ -164,9 +167,9 @@
   1. Если вызывать WASM на каждый пакет соединения, на Linux пропадает `splice(2)` для всего потока, хотя в 90 % задач (HTTP-метод/URL, заголовки, JWT, JSON RPC) нужно проверить только первый запрос клиента.
   2. Если удерживать WASM-инстанс из `sync.Pool` на время `conn.Read()`, медленные клиенты (Slowloris) вычерпают все инстансы.
 - **Решение (`internal/plugin/sandbox.go`, `internal/proxy/proxy.go`, `internal/proxy/copy.go`):**
-  1. В линейной памяти каждого инстанса резервируется scratch-буфер 32 KiB (по смещению `32768` либо `on_data_ptr()`). Вызов `OnData` копирует прочитанный чанк в память инстанса и вызывает `on_data(ptr, len) -> verdict` через `CallWithStack` за **76 ns/op, 0 B/op, 0 allocs/op**, сразу возвращая инстанс в пул. Максимум инспекции/мутации — 32 KiB; in-place изменения копируются обратно в payload.
+  1. В линейной памяти каждого инстанса резервируется scratch-буфер 32 KiB, адрес которого гость сообщает через обязательный `on_data_ptr()` (раньше хост писал по фиксированному смещению `32768`). Вызов `OnData` копирует прочитанный чанк в память инстанса и вызывает `on_data(ptr, len) -> verdict` через `CallWithStack` за **76 ns/op, 0 B/op, 0 allocs/op**, сразу возвращая инстанс в пул. В `once` читается до 16 389 байт, в `stream` — до 32 KiB на чанк; in-place изменения копируются обратно в payload.
   2. По умолчанию (`data_mode: "once"`) проверяется первый пакет клиента **до** `dial` к апстриму (через `tlspeek.PeekChunk`, разделяющий буфер с `sni_routes`), а после `VerdictAllow` `DrainTo` сбрасывает префикс и возвращает сокет на ядерный `splice(2)`.
-  3. Вердикт `>= 2` выбирает пул из `plugin.route_pools` (`ret-2`) — L7-роутинг/canary. Это работает только в `once`: в `stream` пул уже выбран до `dial`, поэтому `>= 2` трактуется как allow.
+  3. Вердикт `>= 2` выбирает пул из `plugin.route_pools` (`ret-2`) — L7-роутинг/canary. Это работает только в `once`: в `stream` пул уже выбран до `dial`, а любой ненулевой вердикт закрывает соединение.
   4. Для протоколов с проверкой каждого фрейма предусмотрен `data_mode: "stream"` (`copyInspected` в `copy.go`), также работающий с `0 allocs/op` поверх `bufferPool`.
 
 ### P15. Circuit breaker и `dial_retries`: отказоустойчивость без блокировок
@@ -184,8 +187,8 @@
 - **Ограничение:** `sni_routes` на листенере с `tls` игнорируется — SNI уже не нужен для passthrough-маршрутизации.
 
 ### P17. L7-роутинг и mutation: `route_pools` только в `once`
-- **Что:** `on_data` возвращает `0` (allow), `1` (deny) или `>= 2` (пул `route_pools[ret-2]`). В режиме `stream` пул уже выбран до `dial`, поэтому вердикт `>= 2` не может сменить бэкенд и трактуется как allow. В `once` первый пакет читается до `dial`, поэтому выбор пула корректен.
-- **Mutation:** плагин меняет байты в `[ptr, ptr+len)`; хост копирует изменённый префикс обратно в payload до `DrainTo`/отправки. Ограничение — 32 KiB scratch.
+- **Что:** `on_data` возвращает `0` (allow), `1` (deny) или `>= 2` (пул `route_pools[ret-2]`). В режиме `stream` пул уже выбран до `dial`, поэтому вердикт `>= 2` не может сменить бэкенд: любой ненулевой вердикт закрывает соединение. В `once` первый пакет читается до `dial`, поэтому выбор пула корректен.
+- **Mutation:** плагин меняет байты в `[ptr, ptr+len)`; хост копирует изменённый префикс обратно в payload до `DrainTo`/отправки. В `once` окно — до 16 389 байт, в `stream` — до 32 KiB на чанк.
 - **Решение:** документировать это как явное ограничение, а не молчаливое поведение; в `stream` использовать `on_data` только для allow/deny.
 
 ---
@@ -362,7 +365,7 @@ ok  	wasmgate/internal/tlspeek	2.530s
 
 ---
 
-## 6. Открытые проблемы (найдены при ревью, на 06.11)
+## 6. Открытые проблемы (ревью 06.11, обновлено 07.11)
 
 | # | Проблема | Статус | Где |
 |---|----------|--------|-----|
@@ -371,10 +374,10 @@ ok  	wasmgate/internal/tlspeek	2.530s
 | B3 | `least_conn`: выбор и резервирование (`Next` + `active.Add`) не один атомарный шаг | Теоретическое окно, **не воспроизведено** (200 параллельных выборов → 100/100). Счётчики сами по себе атомарны | `pool.go`, `upstream.go` |
 | B4 | `admin_addr` при reload игнорируется молча | Открыто (нужен рестарт) | `server.go`, `main.go` |
 | B5 | `Start` при ошибке bind одного из листенеров оставлял уже запущенные accept-loop'ы; `started` оставался `true` | **Исправлено**: `Start` сначала биндит все сокеты и запускает accept-loop'ы только после успеха всех `Listen` | `server.go`, `Start` |
-| B6 | Runtime старого `plugin.Plugin` не вызывается `Close` при замене/удалении плагина: wazero-рантайм и пул инстансов живут до сборки мусора | Открыто; нужно закрывать runtime при вытеснении из `registry` | `state.go`, `plugin.go` |
-| B7 | `/metrics` вызывает `u.Healthy()`, который может перевести `Open → Half-Open`; скрейп меняет состояние breaker'а | Открыто; для метрик нужен не мутирующий снимок | `upstream.go`, `snapshot.go` |
+| B6 | Runtime старого `plugin.Plugin` не вызывается `Close` сразу при замене/удалении плагина | **Частично исправлено** 07.11: `runtime.AddCleanup` закрывает runtime и выброшенные инстансы при сборке мусора; детерминированного `Close` в момент подмены по-прежнему нет | `state.go`, `sandbox.go` |
+| B7 | `/metrics` вызывает `u.Healthy()`, который может перевести `Open → Half-Open`; скрейп меняет состояние breaker'а | **Исправлено**: `UpstreamStats` использует не мутирующий `IsHealthy()`; скрейп больше не меняет состояние breaker'а | `upstream.go`, `snapshot.go` |
 | B8 | TLS-терминация отключает `splice` для соединения (клиентский conn становится `*tls.Conn`) | Осознанное ограничение, задокументировано; альтернатива — passthrough | `proxy.go`, `copy.go` |
-| B9 | `route_pools` учитывается только в `data_mode: once`; в `stream` вердикт `>= 2` = allow | Осознанное ограничение, задокументировано | `proxy.go`, `copy.go` |
+| B9 | `route_pools` учитывается только в `data_mode: once`; в `stream` любой ненулевой вердикт закрывает соединение | Осознанное ограничение, задокументировано | `proxy.go`, `copy.go` |
 | B10 | `dial_retries` может повторно выбрать тот же сервер: гарантии «другой сервер» нет | Осознанное ограничение; при необходимости — исключать уже опробованные | `proxy.go`, `pool.go` |
 | M1 | `wasmgate_relayed_bytes_total` добавляется только по завершении соединения: на долгих потоках метрика стоит на нуле, графики скорости не видны | Открыто (архитектурное ограничение, решать через периодическое добавление) | `proxy.go`, `copy.go` |
 | M2 | `/metrics` выводит `wasmgate_upstream_active` для всех upstream из registry, включая удалённые из конфига, пока у них есть активные соединения | Открыто, поведение ожидаемое, но не задокументировано | `snapshot.go`, `UpstreamStats` |

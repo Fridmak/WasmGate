@@ -41,16 +41,18 @@
 | 11 | Graceful shutdown & **drain** (перестаём принимать, доигрываем активные) | ✅ M2 |
 | 12 | Валидация конфига (`-validate`, включая WASM и TLS) | ✅ M3/M5 |
 | 13 | **Rate limiting** соединений: per-IP/subnet окно, allow-list, backoff-бан (F2) | ✅ M4 |
-| 14 | **WASM-плагины** (`on_accept`/`on_data`/`on_close`), L7 mutation и `route_pools` | ✅ M5 |
+| 14 | **WASM-плагины** (`on_accept`/`on_data`/`on_data_ex`/`on_data_state`/`on_close`), L7 mutation, `route_pools`, ABI v3 state и 8 showcase-плагинов | ✅ M5 + ABI v3 |
 
-### 2.2. Не входит (OUT — future work)
+### 2.2. Не входит в MVP (следующие направления)
 
-- ❌ Полноценный L7/HTTP-парсинг и JSON DPI (F3) — future work.
-- ❌ eBPF-фильтрация (F4) — future work.
+- ❌ Zero-alloc JSON DPI **в ядре** (F3) — следующее направление. HTTP/1.x-разбор
+  уже доступен через showcase-плагины `http_guard` и `http_body_guard`.
+- ❌ eBPF-фильтрация (F4) — следующее направление.
 - ❌ C# Control Plane как обязательный компонент (сейчас — файл + SIGHUP/`POST /reload`;
   gRPC/UDS — M6).
 - ❌ Маркетплейс плагинов, GUI, multi-tenant.
-- ❌ mTLS к control plane и клиентские сертификаты; упаковка Docker/systemd.
+- ❌ mTLS к control plane и клиентские сертификаты; Docker-упаковка
+  (systemd-юнит и production-гайд уже есть — `deployments/`).
 
 > Причина такого деления: сначала получить **воспроизводимый baseline** и
 > **не раздувать ядро**, а фичи (Hot Reload, rate limiting, WASM, TLS) добавлять
@@ -92,7 +94,7 @@ clients ─▶ accept-loop ─▶ max_conns/rate_limit ─▶ on_accept ─▶ T
 internal/
 ├── proxy/       # server, proxy.Handle, pool, balancer, copy/splice, snapshot (RCU)
 ├── config/      # схема YAML, загрузчик, Validate(), валидация (чистые данные)
-├── plugin/      # wazero sandbox: on_accept/on_data/on_close, пул инстансов
+├── plugin/      # wazero sandbox: ABI v1/v2/v3, пул инстансов, ConnState
 ├── ratelimit/   # скользящее окно по IP/подсети (F2)
 ├── tlspeek/     # zero-alloc SNI peek и прозрачный replay ClientHello
 └── observe/     # логирование (log/slog), лог-лимитер, метрики Prometheus, admin/pprof
@@ -172,10 +174,11 @@ snapshot остаётся активным, если сборка/валидац
 | **M2. Config+reload+drain** | YAML, Snapshot, atomic swap, SIGHUP, reconcile слушателей, drain | Reload без разрыва соединений | ✅ done |
 | **M3. Observe+hardening** | метрики, pprof, health-checks, CLI, `-validate`, `POST /reload`, SNI peek | Наблюдаемый прокси + Linux-baseline | ✅ done |
 | **M4. Connection flood (F2)** | скользящее окно per-IP/subnet, allow-list, backoff-бан | Фильтр в горячем пути, 0 allocs/op | ✅ done |
-| **M5. WASM + L7-lite + TLS** | wazero sandbox, ABI, `on_data`, `route_pools`, TLS passthrough/termination, circuit breaker, dial retries | Плагин без рестарта, e2e и сравнение с nginx/HAProxy | ✅ done |
+| **M5. WASM + L7 + TLS** | wazero sandbox, ABI v1/v2/v3, `on_data`/`on_data_ex`/`on_data_state`, `route_pools`, TLS passthrough/termination, circuit breaker, dial retries, 8 showcase-плагинов | Плагин без рестарта, e2e и сравнение с nginx/HAProxy | ✅ done |
 | **M6. Control Plane** | C#/.NET 8 + gRPC/UDS: версии, публикация, откат, аудит | Hot reload из CP | ⏳ plan |
 
-> После M5 — только C# control plane; DPI (F3) и eBPF (F4) — future work.
+> После M5 — C# control plane; zero-alloc JSON DPI в ядре (F3) и eBPF (F4) —
+> следующие направления.
 
 ---
 
@@ -276,8 +279,8 @@ go test -run '^$' -bench . -benchmem -cpuprofile cpu.out -memprofile mem.out ./i
 go test -bench . -benchmem ./... > new.txt
 benchstat old.txt new.txt
 
-# Живой профиль под нагрузкой
-go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+# Живой профиль под нагрузкой (admin_addr + admin_pprof: true)
+go tool pprof http://127.0.0.1:9099/debug/pprof/profile?seconds=30
 ```
 
 ---

@@ -17,11 +17,11 @@
 | **S3** | Config + reload + drain ✅ | YAML, `Snapshot`, `atomic.Pointer`, SIGHUP, reconcile слушателей, graceful drain | Reload без разрыва + chaos-тест |
 | **S4** | Observe + hardening ✅ | метрики, логи, pprof, health-checks, CLI, `-validate`, `POST /reload`, SNI peek | Метрики/admin/pprof + baseline S0–S5 |
 | **S5** | **F2 rate limiting** ✅ | sliding window, 64 шарда, per-IP/subnet, allow-list, backoff-бан | Фильтр в fast path + замеры |
-| **S6** | **WASM host + L7-lite** ✅ | wazero без WASI, ABI, `on_data` once/stream, mutation, `route_pools`, sandbox-лимиты, примеры | Плагин на Rust/TinyGo работает без рестарта |
+| **S6** | **WASM host + L7-плагины** ✅ | wazero без WASI, ABI v1/v2/v3, `on_data`/`on_data_ex`/`on_data_state` once/stream, mutation, `route_pools`, ConnState, sandbox-лимиты, 8 плагинов | Плагин на Rust/TinyGo работает без рестарта |
 | **S7** | **TLS + отказоустойчивость** ✅ | TLS passthrough/termination, SNI-routes, circuit breaker, `dial_retries` | TLS-листенеры и failover |
 | **S8** | **F1 Control Plane** ⏳ | C#/.NET + gRPC/UDS, версии, валидация, rollback, аудит | Hot-reload из CP без простоя |
 | **S9** | Эксперименты ✅ | прогоны S0–S5, `benchstat`, сравнение с nginx/HAProxy | Глава «Эксперименты» |
-| **S10** | F3 (опц.) ⏳ | L7/HTTP-парсинг + zero-alloc JSON DPI | Дифференциатор №1 (опц.) |
+| **S10** | F3 (опц.) ⏳ | zero-alloc JSON DPI в ядре | Дифференциатор №1 (опц.) |
 | **S11** | Текст + защита ⏳ | написание ВКР, слайды, демо-стенд | Документ + защита |
 
 > **Критический путь:** S1 → S2 → S3 → S4 (baseline) → S5 (F2) → S6/S7
@@ -38,7 +38,7 @@
 | **M2** Reload | 0 dropped соединений под reload (chaos-тест: 12 reload, 0 dropped) — ✅ |
 | **M3** Baseline | метрики/pprof/health-checks/CLI + числа S0–S5 против nginx/HAProxy — ✅ |
 | **M4** Rate limiting (F2) | купирование flood'а, 0 allocs/op в fast path (≈65 нс) — ✅ |
-| **M5** WASM + L7-lite + TLS | плагин на Rust/TinyGo, sandbox-лимиты, `on_data`, `route_pools`, TLS/SNI — ✅ |
+| **M5** WASM + L7 + TLS | плагин на Rust/TinyGo, sandbox-лимиты, `on_data`/`on_data_ex`/`on_data_state`, `route_pools`, TLS/SNI, ABI v3 — ✅ |
 | **M6** Hot Reload CP (F1) | apply/rollback из C# без разрыва, < 100 мс — ⏳ plan |
 
 ---
@@ -52,7 +52,7 @@
 | Оверхед WASM выше ожиданий | Средняя | Высокое | Пул инстансов, `CallWithStack`, компиляция один раз, budget; измерено ≈76–81 нс на вызов |
 | Reload ловит гонки на drain | Средняя | Высокое | Snapshot-per-conn, race, chaos |
 | TLS-терминация/stream-плагин ломают zero-copy | Высокая | Среднее | `on_data: once` сохраняет `splice`; TLS/stream — только где нужна инспекция |
-| Старый WASM-runtime не закрывается при reload | Средняя | Низкое | Задокументировано как открытый вопрос; инстансы доживают на старом snapshot |
+| Старый WASM-runtime не закрывается мгновенно при reload | Средняя | Низкое | `runtime.AddCleanup` закрывает runtime при сборке мусора; инстансы доживают на старом snapshot |
 | Замеры «шумят» | Средняя | Среднее | pinning, netns, ≥5 прогонов, benchstat |
 | Разрастание скоупа | Высокая | Среднее | Жёсткий scope + milestones |
 
@@ -75,7 +75,8 @@
   2.2. Выбор технологий и библиотек (Go, `net`, wazero, .NET, gRPC).   ← см. 02
   2.3. Модель конфигурации и механизм Zero-Downtime Hot Reload (RCU/Snapshot).
   2.4. Модель rate limiting соединений на скользящем окне.
-  2.5. Подсистема WASM-плагинов: ABI без WASI, sandbox, контракты, L7-lite.
+  2.5. Подсистема WASM-плагинов: ABI без WASI, sandbox, контракты, L7-хуки,
+       host-managed состояние ABI v3.
   2.6. TLS: passthrough (SNI peek) и терминация; взаимодействие с zero-copy.
   2.7. Соглашения разработки, кодстайл, стратегия тестирования.
 
@@ -128,9 +129,11 @@
 2. Предложен механизм **Zero-Downtime Hot Reload** на immutable-snapshot/RCU,
    дающий **0 разорванных соединений** при смене логики под нагрузкой.
 3. Реализован **rate limiting соединений** на скользящем окне (per-IP/subnet,
-   allow-list, backoff) **в fast path** без блокировок и аллокаций (≈65 нс).
-4. Реализован **L7-lite** через WASM `on_data`: inspect/mutate/route первого
-   пакета с сохранением `splice`, плюс TLS passthrough/termination.
+   allow-list, backoff) **в fast path**: 0 аллокаций, короткая критическая
+   секция шарда, ≈65 нс.
+4. Реализована **L7-инспекция** через WASM `on_data`/`on_data_ex`/
+   `on_data_state`: inspect/mutate/route первого пакета с сохранением `splice`,
+   состояние между чанками и keep-alive, плюс TLS passthrough/termination.
 5. Собран **open baseline** и методика воспроизводимых замеров, позволившая
    сравнить решение с индустриальными аналогами.
 
@@ -144,9 +147,9 @@
 - [x] Выбор ядровых фич + обоснование — `04-diploma-features.md`.
 - [x] План/структура ВКР — `05-roadmap-thesis.md` (этот файл).
 - [x] Журнал разработки (шаги, задачи, проблемы, решения) — `06-dev-journal.md`.
-- [x] Рабочий код: M0–M5 (L4-прокси, config, reload, drain, метрики/admin/pprof,
-  rate-limit, WASM, L7-lite, TLS/SNI, health-checks, circuit breaker) — см.
-  [`DEVELOPMENT.md`](../DEVELOPMENT.md).
+- [x] Рабочий код: M0–M5 + ABI v3 (L4-прокси, config, reload, drain,
+  метрики/admin/pprof, rate-limit, WASM, L7, TLS/SNI, health-checks, circuit
+  breaker, 8 showcase-плагинов) — см. [`DEVELOPMENT.md`](../DEVELOPMENT.md).
 - [x] Внешний baseline S0–S5 снят и задокументирован (M3).
 - [x] Демо reload / plugin / rate limiting готовы (M5).
 - [ ] C# Control Plane (M6) и защита ВКР.

@@ -39,13 +39,15 @@ WasmGate формулирует контртезис: **расширяемост
 производительности**. Логику можно писать на любом языке, компилировать в WASM,
 подхватывать **без рестарта**, и всё это — в прокси, который остаётся быстрым.
 
-> **Что уже проверено кодом.** Ядро (M0–M5) реализовано: L4 TCP-прокси,
+> **Что уже проверено кодом.** Ядро (M0–M5 + ABI v3) реализовано: L4 TCP-прокси,
 > zero-copy `splice(2)` на Linux, hot reload по RCU-snapshot, rate limiting
-> соединений, WASM-хуки `on_accept`/`on_data`/`on_close` с L7-lite
-> (inspect/mutate/route до 32 KiB), TLS passthrough/termination, health-checks и
-> circuit breaker. Поэтому дальше «должно быть» отделено от «есть сейчас»: C#
-> control plane (M6), полноценный HTTP/JSON DPI (F3) и eBPF (F4) остаются
-> future work.
+> соединений, WASM-хуки `on_accept`/`on_data`/`on_data_ex`/`on_data_state`/
+> `on_close` с L7-инспекцией в обоих направлениях, host-managed состоянием до
+> 4 KiB и восемью showcase-плагинами (включая stateful `http_body_guard`),
+> TLS passthrough/termination, health-checks и circuit breaker. Поэтому дальше
+> «должно быть» отделено от «есть сейчас»: C# control plane (M6), zero-alloc
+> JSON DPI в ядре (F3), eBPF (F4) и upstream TLS/mTLS остаются следующими
+> направлениями.
 
 ---
 
@@ -192,9 +194,10 @@ sandbox · предсказуемая латентность (no GC-пауз в 
 
 - Не делаем «убийцу nginx» по всем фичам: не таргетим **полную** совместимость.
 - Не строим GUI/маркетплейс плагинов на этапе ВКР.
-- Не реализуем **полноценный** HTTP/JSON-парсинг и DPI (F3): в ядре есть только
-  L7-lite через WASM `on_data` (до 32 KiB, inspect/mutate/route), без разбора
-  протокола.
+- Не строим **zero-alloc JSON DPI внутри ядра** (F3): L7-разбор доступен через
+  WASM-плагины (`on_data`/`on_data_ex`/`on_data_state`, inspect/mutate/route,
+  состояние между чанками), включая готовые HTTP-политики `http_guard` и
+  `http_body_guard`.
 - Не претендуем на замену service mesh control plane (xDS) — только базовое
   управление; C# control plane (M6) ещё не начат.
 - Не решаем сетевую безопасность уровня ОС (SYN-flood, eBPF/XDP — F4, future):
