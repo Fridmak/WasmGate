@@ -1,0 +1,4 @@
+# Keep the Rust wasm stack small: the host caps an instance at 16 pages
+# (1 MiB) by default, and plugins also reserve a 32 KiB on_data scratch buffer.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=32768"]

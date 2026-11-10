@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "common",
+    "ipguard",
+    "http_guard",
+    "path_router",
+    "sni_guard",
+    "protocol_router",
+    "redis_guard",
+    "stream_guard",
+]
+resolver = "2"
+
+# All example plugins are tiny no_std cdylibs. Keeping the profile here means
+# every crate under plugins/examples is built the same way.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
