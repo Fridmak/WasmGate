@@ -28,7 +28,8 @@
 | `BenchmarkLimiterAllowParallel/{shared_key,distinct_keys}` | `internal/observe` (`limiter_test.go`) | лог-лимитер, когда его дёргают все P сразу (один ключ против своих у каждого) | `ns/op` |
 | `BenchmarkMetricsConnection`, `BenchmarkMetricsConnectionParallel` | `internal/observe` (`metrics_test.go`) | всю учётную работу метрик на соединение (Accept + AddBytes ×2 + Close) | `ns/op`, `allocs/op` |
 | `BenchmarkAllow`, `BenchmarkAllowParallel` | `internal/ratelimit` (`window_test.go`) | проверку скользящего окна по IP/подсети (один ключ в один поток против всех P по разным IP) | `ns/op`, `allocs/op` |
-| `BenchmarkOnAccept`, `BenchmarkOnAcceptParallel`, `BenchmarkOnData` | `internal/plugin` (`sandbox_test.go`) | вызов WASM-хуков `on_accept` и L7 `on_data` через пул инстансов `wazero` и `CallWithStack` | `ns/op`, `allocs/op` |
+| `BenchmarkOnAccept`, `BenchmarkOnAcceptParallel`, `BenchmarkOnData`, `BenchmarkOnDataState` | `internal/plugin` (`sandbox_test.go`) | вызов WASM-хуков `on_accept`, L7 `on_data` и stateful `on_data_state` (ABI v3) через пул инстансов `wazero` и `CallWithStack` | `ns/op`, `allocs/op` |
+| `BenchmarkExampleHTTPBodyGuard` | `internal/plugin` (`examples_test.go`) | полный stateful-плагин `http_body_guard` на одном чанке: сборка заголовков, `Content-Length`, rolling tail, маскировка | `ns/op`, `allocs/op` |
 
 > Подпапок `bench/` нет. Тесты и бенчи лежат вместе, в `X_test.go` того исходника,
 > который покрывают (`copy.go` → `copy_test.go`), тесты сверху, бенчи ниже — так
@@ -65,6 +66,22 @@
   место один общий мьютекс, и это надо называть явно, а не прятать за именем бенча.
 - `LoadInvalid` не должен быть дороже `Load`: отказ конфига тоже обязан быть дешёвым.
 
+### ABI v3: цена состояния
+
+Host-managed state (`on_data_state`) добавляет к вызову копирование активного
+состояния в память гостя и обратно, но остаётся в наносекундном бюджете и не
+аллоцирует. Замер на текущем HEAD (`f0b7923`, WSL2, `-benchmem`):
+
+| Бенчмарк | Результат |
+|---|---|
+| `BenchmarkOnData` (stateless, ABI v1/v2) | 84–94 нс, 0 allocs/op |
+| `BenchmarkOnDataState` (ABI v3, состояние до 4 KiB) | 111–122 нс, 0 allocs/op |
+| `BenchmarkExampleHTTPBodyGuard` (полный stateful-плагин) | ~2.29 µs на чанк, 0 allocs/op |
+
+Разница `on_data` → `on_data_state` — порядка 30 нс: это цена копии состояния, а
+не «второго прокси». `http_body_guard` дороже, потому что внутри него реальный
+разбор HTTP: сборка заголовков, `Content-Length`, rolling tail и маскировка.
+
 ### Почему цифры такие
 
 Короткие пояснения к тому, что иначе выглядит контринтуитивно (числа — Ryzen 5
@@ -75,7 +92,7 @@
 | `ConnLimiter/at_limit` (1.2 ns) **в 12 раз дешевле** `below_limit` (15 ns) | приём — это `Load` + `CAS` в `acquire` и ещё `CAS` в `release`; отказ — два обычных `Load` и сравнение. Все `b.N` итераций идут в reject-ветку (бенч падает, если `acquire` хоть раз вернёт `true`) |
 | `at_limit`/`unlimited` в параллельном бенче **дешевле**, чем в одиночном | обе ветки только читают счётчики: линия не инвалидируется, у каждого ядра своя копия, а `ns/op` делится на число горутин. `below_limit` там же дорожает 15 → 87 ns: `CAS` на общей линии — это её передача между ядрами |
 | `Balancer/round_robin` (8.4 ns) и `baseline_inline` (8.3 ns) — одно число | вся цена — общий `atomic.Uint64` (locked RMW), а не интерфейс `Balancer`, не `%` и не индексация. Оптимизировать в диспетчере нечего |
-| `least_conn` 73 ns на 64 серверах, но в параллельном бенче **17 ns** (против 3 ns на 1 сервере) | линейный скан O(n), но только **чтение** `active`: он масштабируется, пока пул небольшой. На 1000 серверах это ~1 µs на соединение — известное ограничение (heap в future work) |
+| `least_conn` 73 ns на 64 серверах, но в параллельном бенче **17 ns** (против 3 ns на 1 сервере) | линейный скан O(n), но только **чтение** `active`: он масштабируется, пока пул небольшой. На 1000 серверах это ~1 µs на соединение — осознанное ограничение (следующий шаг — heap) |
 | `LimiterAllowParallel` 116 ns против 36 ns в один поток, и **не зависит от ключей** (distinct_keys 124 ns) | вся таблица под одним `sync.Mutex`: ключ не важен, важно, что лок один. Приемлемо: под флудом это на два порядка дешевле записи в лог, которую он предотвращает |
 | `ConnectionSetup/through_proxy` = 38.5 KB и 80 allocs против 34.3 KB и 27 у `direct` | остаток — не буферы копирования, а сокеты: второй `netFD`, `sockaddr`, `accept`, `context.WithDeadline` на dial. Был бы там голый `io.Copy` (как на старом коде) — добавилось бы ~64 KiB на соединение (2×32 KiB на направления); plain-путь на не-Linux передаёт `io.CopyBuffer` буфер из пула. В профиле аллокаций ~80 % даёт **эхо-бэкенд теста** (`proxy.echo`), не прокси |
 | `Load` = 223 µs и 270 allocs | это YAML-декодер с `KnownFields`, и вызывается он на SIGHUP, а не на запрос. Если control plane будет дёргать `Load` на каждый запрос конфига — это станет проблемой, сейчас — нет |
@@ -96,7 +113,7 @@ internal/proxy/
   helpers_test.go          общие фикстуры: echo, прокси, dial, конфиг, sinks
   server_test.go           тесты server.go + BenchmarkConnectionSetup
   proxy_test.go            тесты proxy.go + BenchmarkConnHotPath
-  copy_test.go             тесты copy.go + Throughput / ThroughputScaling / RelayLatency
+  copy_test.go             тесты copy.go + Throughput / ThroughputScaling / RelayLatency / ProxyComparison
   snapshot_test.go         тесты snapshot.go + BenchmarkRuntimeLoad / Reload
   state_test.go            тесты state.go + BenchmarkConnLimiter
   upstream_test.go         тесты upstream.go + BenchmarkBalancer
@@ -106,9 +123,11 @@ internal/config/
   listener_config_test.go  тесты listener_config.go
   pool_config_test.go      тесты pool_config.go
 internal/plugin/
-  sandbox_test.go          тесты sandbox.go + BenchmarkOnAccept / OnAcceptParallel / OnData
+  sandbox_test.go          тесты sandbox.go + BenchmarkOnAccept / OnAcceptParallel / OnData / OnDataState
+  examples_test.go         e2e-тесты всех showcase-плагинов + BenchmarkExampleHTTPBodyGuard
 internal/ratelimit/
   window_test.go           тесты window.go + BenchmarkAllow / AllowParallel
+  guard_test.go            тесты guard.go (лимит одновременных соединений)
 internal/tlspeek/
   sni_test.go              тесты sni.go + BenchmarkParseClientHelloSNI, FuzzParseClientHello
 internal/observe/
