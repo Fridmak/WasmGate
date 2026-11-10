@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -699,5 +700,73 @@ func BenchmarkConnHotPathParallel(b *testing.B) {
 			l.limiter.release()
 			sinkListener = l
 		}
+	})
+}
+
+func TestProxyStatefulHTTPBodyGuardStream(t *testing.T) {
+	echoAddr := startEcho(t)
+	m := observe.NewMetrics()
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "web",
+			DialTimeout:  time.Second,
+			Plugin: config.PluginConfig{
+				Path:     "../../plugins/examples/http_body_guard/http_body_guard.wasm",
+				DataMode: "stream",
+			},
+		}},
+		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
+	})
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), m))
+
+	// 1. A request whose headers and JSON body are split across two writes is
+	// reassembled by the stateful plugin, forwarded to the echo backend, and
+	// scrubbed on the way back (dir == 1 masks "password":"secret" -> "******").
+	good := dial(t, addr)
+	defer good.Close()
+	part1 := []byte("POST /login HTTP/1.1\r\nHost: ex")
+	part2 := []byte("ample.com\r\nContent-Length: 21\r\n\r\n{\"password\":\"secret\"}")
+	if _, err := good.Write(part1); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	if _, err := good.Write(part2); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+	_ = good.SetReadDeadline(time.Now().Add(2 * time.Second))
+	echoed := make([]byte, len(part1)+len(part2))
+	if _, err := io.ReadFull(good, echoed); err != nil {
+		t.Fatalf("read echoed response: %v", err)
+	}
+	if !bytes.Contains(echoed, []byte(`{"password":"******"}`)) {
+		t.Fatalf("expected scrubbed password in echoed stream, got %q", echoed)
+	}
+
+	// 2. An attack signature ("union select") split across two TCP writes in the
+	// request body must be caught on the second write and close the connection.
+	bad := dial(t, addr)
+	defer bad.Close()
+	chunk1 := []byte("POST /q HTTP/1.1\r\nHost: example.com\r\nContent-Length: 20\r\n\r\nx=1 union ")
+	chunk2 := []byte("select 123")
+	if _, err := bad.Write(chunk1); err != nil {
+		t.Fatalf("write chunk1: %v", err)
+	}
+	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got1 := make([]byte, len(chunk1))
+	if _, err := io.ReadFull(bad, got1); err != nil {
+		t.Fatalf("read chunk1 echo: %v", err)
+	}
+	if _, err := bad.Write(chunk2); err != nil {
+		t.Fatalf("write chunk2: %v", err)
+	}
+	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := bad.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected connection to be closed when split body signature completed")
+	}
+	waitMetric(t, 2*time.Second, func() bool {
+		return m.Snapshot().ConnectionsPluginRejected >= 1
 	})
 }

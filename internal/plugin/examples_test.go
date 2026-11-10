@@ -26,21 +26,26 @@ func TestExamplePluginsLoad(t *testing.T) {
 		name   string
 		path   string
 		data   bool
+		state  bool
 		accept bool
 	}{
-		{"ipguard", "../../plugins/examples/ipguard/ipguard.wasm", false, true},
-		{"http_guard", "../../plugins/examples/http_guard/http_guard.wasm", true, false},
-		{"path_router", "../../plugins/examples/path_router/path_router.wasm", true, false},
-		{"sni_guard", "../../plugins/examples/sni_guard/sni_guard.wasm", true, false},
-		{"protocol_router", "../../plugins/examples/protocol_router/protocol_router.wasm", true, false},
-		{"redis_guard", "../../plugins/examples/redis_guard/redis_guard.wasm", true, false},
-		{"stream_guard", "../../plugins/examples/stream_guard/stream_guard.wasm", true, false},
+		{"ipguard", "../../plugins/examples/ipguard/ipguard.wasm", false, false, true},
+		{"http_guard", "../../plugins/examples/http_guard/http_guard.wasm", true, false, false},
+		{"http_body_guard", "../../plugins/examples/http_body_guard/http_body_guard.wasm", true, true, false},
+		{"path_router", "../../plugins/examples/path_router/path_router.wasm", true, false, false},
+		{"sni_guard", "../../plugins/examples/sni_guard/sni_guard.wasm", true, false, false},
+		{"protocol_router", "../../plugins/examples/protocol_router/protocol_router.wasm", true, false, false},
+		{"redis_guard", "../../plugins/examples/redis_guard/redis_guard.wasm", true, false, false},
+		{"stream_guard", "../../plugins/examples/stream_guard/stream_guard.wasm", true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := loadExample(t, tt.path)
 			if got := p.HasData(); got != tt.data {
 				t.Fatalf("HasData() = %v, want %v", got, tt.data)
+			}
+			if got := p.HasState(); got != tt.state {
+				t.Fatalf("HasState() = %v, want %v", got, tt.state)
 			}
 			// Modules without on_accept must be transparent on that hook.
 			if v, err := p.OnAccept(context.Background(), net.ParseIP("192.0.2.10"), 1234); err != nil || v != VerdictAllow {
@@ -311,6 +316,146 @@ func TestExampleStreamGuard(t *testing.T) {
 	}
 	if !bytes.Contains(resp, []byte(`"user":"alice"`)) {
 		t.Fatalf("non-secret JSON was modified: %q", resp)
+	}
+}
+
+func TestExampleHTTPBodyGuard(t *testing.T) {
+	p := loadExample(t, "../../plugins/examples/http_body_guard/http_body_guard.wasm")
+	ctx := context.Background()
+
+	t.Run("fragmented headers and body across chunks", func(t *testing.T) {
+		cs := AcquireConnState()
+		defer ReleaseConnState(cs)
+
+		chunks := []string{
+			"POST /api/items HTTP/1.1\r\nHost: ex",
+			"ample.com\r\nContent-Length: 11\r",
+			"\n\r\nhello ",
+			"world",
+		}
+		for i, ch := range chunks {
+			got, err := p.OnDataState(ctx, 10, 0, []byte(ch), cs.Dir(0))
+			if err != nil || got != VerdictAllow {
+				t.Fatalf("chunk %d: got (%d, %v), want (allow, nil)", i, got, err)
+			}
+		}
+		if len(cs.Dir(0).Bytes()) != 36 {
+			t.Fatalf("post-request state len = %d, want 36", len(cs.Dir(0).Bytes()))
+		}
+	})
+
+	t.Run("fragmented headers cannot bypass policy", func(t *testing.T) {
+		cs := AcquireConnState()
+		defer ReleaseConnState(cs)
+
+		if got, err := p.OnDataState(ctx, 11, 0, []byte("GET /adm"), cs.Dir(0)); err != nil || got != VerdictAllow {
+			t.Fatalf("chunk 0 = (%d, %v), want (allow, nil)", got, err)
+		}
+		if got, err := p.OnDataState(ctx, 11, 0, []byte("in/panel HTTP/1.1\r\nHost: example.com\r\n\r\n"), cs.Dir(0)); err != nil || got != VerdictDeny {
+			t.Fatalf("chunk 1 = (%d, %v), want (deny, nil)", got, err)
+		}
+	})
+
+	t.Run("cross-chunk body signature caught via rolling tail", func(t *testing.T) {
+		cs := AcquireConnState()
+		defer ReleaseConnState(cs)
+
+		c1 := "POST /search HTTP/1.1\r\nHost: example.com\r\nContent-Length: 27\r\n\r\nq=test union "
+		c2 := "select * from t"
+		if got, err := p.OnDataState(ctx, 12, 0, []byte(c1), cs.Dir(0)); err != nil || got != VerdictAllow {
+			t.Fatalf("chunk 1 = (%d, %v), want (allow, nil)", got, err)
+		}
+		if got, err := p.OnDataState(ctx, 12, 0, []byte(c2), cs.Dir(0)); err != nil || got != VerdictDeny {
+			t.Fatalf("chunk 2 = (%d, %v), want (deny, nil) on split signature", got, err)
+		}
+	})
+
+	t.Run("state preserved between keep-alive requests without cross-conn leak", func(t *testing.T) {
+		cs1 := AcquireConnState()
+		defer ReleaseConnState(cs1)
+		cs2 := AcquireConnState()
+		defer ReleaseConnState(cs2)
+
+		req := []byte("POST /echo HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\npong")
+		for i := 1; i <= 5; i++ {
+			got, err := p.OnDataState(ctx, 21, 0, req, cs1.Dir(0))
+			if err != nil || got != VerdictAllow {
+				t.Fatalf("conn1 request %d: got (%d, %v), want (allow, nil)", i, got, err)
+			}
+		}
+		// 6th request on conn1 exceeds MAX_REQUESTS_PER_CONN (5).
+		if got, err := p.OnDataState(ctx, 21, 0, req, cs1.Dir(0)); err != nil || got != VerdictDeny {
+			t.Fatalf("conn1 request 6: got (%d, %v), want (deny, nil)", got, err)
+		}
+
+		// Independent connection cs2 sharing the same pooled WASM instance must
+		// not inherit conn1's request counter.
+		if got, err := p.OnDataState(ctx, 22, 0, req, cs2.Dir(0)); err != nil || got != VerdictAllow {
+			t.Fatalf("conn2 request 1: got (%d, %v), want (allow, nil)", got, err)
+		}
+	})
+
+	t.Run("cumulative body budget enforced across requests", func(t *testing.T) {
+		cs := AcquireConnState()
+		defer ReleaseConnState(cs)
+
+		body60k := bytes.Repeat([]byte("a"), 30000)
+		hdr60k := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 60000\r\n\r\n")
+		for reqIdx := 1; reqIdx <= 2; reqIdx++ {
+			if got, err := p.OnDataState(ctx, 30, 0, hdr60k, cs.Dir(0)); err != nil || got != VerdictAllow {
+				t.Fatalf("req %d header: got (%d, %v)", reqIdx, got, err)
+			}
+			for part := 0; part < 2; part++ {
+				if got, err := p.OnDataState(ctx, 30, 0, body60k, cs.Dir(0)); err != nil || got != VerdictAllow {
+					t.Fatalf("req %d body part %d: got (%d, %v)", reqIdx, part, got, err)
+				}
+			}
+		}
+		// 3rd request declares another 20,000 bytes (total 140,000 > 128 KiB limit).
+		hdr20k := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 20000\r\n\r\n")
+		if got, err := p.OnDataState(ctx, 30, 0, hdr20k, cs.Dir(0)); err != nil || got != VerdictDeny {
+			t.Fatalf("req 3 exceeding conn body budget: got (%d, %v), want (deny, nil)", got, err)
+		}
+	})
+
+	t.Run("response scrubbing uses independent dir 1 state", func(t *testing.T) {
+		cs := AcquireConnState()
+		defer ReleaseConnState(cs)
+
+		resp := []byte("HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\nContent-Type: application/json\r\n\r\n" +
+			`{"user":"bob","password":"secret!","access_token":"tok123"}`)
+		got, err := p.OnDataState(ctx, 40, 1, resp, cs.Dir(1))
+		if err != nil || got != VerdictAllow {
+			t.Fatalf("OnDataState(dir=1) = (%d, %v), want (allow, nil)", got, err)
+		}
+		if !bytes.Contains(resp, []byte(`"password":"*******"`)) || !bytes.Contains(resp, []byte("Server: wasmgate")) {
+			t.Fatalf("response not scrubbed: %q", resp)
+		}
+		if len(cs.Dir(0).Bytes()) != 0 {
+			t.Fatalf("dir 0 state was modified by dir 1 call: len=%d", len(cs.Dir(0).Bytes()))
+		}
+	})
+}
+
+func BenchmarkExampleHTTPBodyGuard(b *testing.B) {
+	ctx := context.Background()
+	p, err := LoadFile(ctx, "../../plugins/examples/http_body_guard/http_body_guard.wasm", Options{})
+	if err != nil {
+		b.Fatalf("LoadFile: %v", err)
+	}
+	defer p.Close(ctx)
+
+	cs := AcquireConnState()
+	defer ReleaseConnState(cs)
+	payload := []byte("POST /api/login HTTP/1.1\r\nHost: example.com\r\nContent-Length: 16\r\n\r\n{\"user\":\"alice\"}")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cs.Dir(0).Reset()
+		v, err := p.OnDataState(ctx, 1, 0, payload, cs.Dir(0))
+		if err != nil || v != VerdictAllow {
+			b.Fatalf("OnDataState: %v, %v", v, err)
+		}
 	}
 }
 
