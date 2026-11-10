@@ -1,0 +1,141 @@
+# WasmGate — showcase configuration for the example WASM plugins.
+#
+# Every listener below maps one nginx feature set onto a WASM plugin. The
+# upstream addresses are examples; nothing needs to be running to validate the
+# file:
+#
+#   go run ./cmd/wasmgate -config configs/showcase.yaml -validate
+#
+# All plugins are committed as prebuilt .wasm files, so no Rust toolchain is
+# required to try this config. See plugins/examples/README.md for the ABI and
+# for the limits of stateless L7 inspection.
+version: 1
+
+admin_addr: "127.0.0.1:9098"
+admin_pprof: false
+admin_allow_remote: false
+
+listeners:
+  # nginx `allow`/`deny`/`geo` at L4: reject before the upstream dial.
+  # ipguard only exports on_accept, so this listener stays on the pure L4 path.
+  - name: showcase-ipguard
+    addr: "127.0.0.1:8100"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/ipguard/ipguard.wasm"
+      max_memory_pages: 16
+      timeout: 0s            # 0 = fastest; only for trusted plugins (WARN at load)
+      data_mode: "once"
+
+  # nginx `http` access rules + `proxy_hide_header`: auth, method/path policy,
+  # CL/TE smuggling checks, and Server/X-Powered-By masking. Needs both
+  # directions, so it runs in stream mode.
+  - name: showcase-http-guard
+    addr: "127.0.0.1:8101"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/http_guard/http_guard.wasm"
+      max_memory_pages: 16
+      timeout: 0s
+      data_mode: "stream"
+
+  # nginx `map $host/$uri $upstream`: route by Host and path after inspecting
+  # only the first packet, then return to splice(2) for the rest.
+  - name: showcase-path-router
+    addr: "127.0.0.1:8102"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/path_router/path_router.wasm"
+      timeout: 0s
+      data_mode: "once"
+      route_pools: ["api", "static", "ws"]   # verdict 2/3/4
+
+  # nginx `ssl_preread` + `map`: parse SNI without terminating TLS and select
+  # an upstream. The connection stays end-to-end encrypted.
+  - name: showcase-sni-guard
+    addr: "127.0.0.1:8103"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/sni_guard/sni_guard.wasm"
+      timeout: 0s
+      data_mode: "once"
+      route_pools: ["api", "static", "internal"]   # verdict 2/3/4
+
+  # nginx `stream` protocol dispatch: TLS/HTTP/SSH/PostgreSQL/Redis -> pool.
+  # Unknown first bytes are denied, which is the point of a protocol gateway.
+  - name: showcase-protocol-router
+    addr: "127.0.0.1:8104"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/protocol_router/protocol_router.wasm"
+      timeout: 0s
+      data_mode: "once"
+      route_pools: ["tls-backend", "http-backend", "ssh-backend", "postgres", "redis"]
+
+  # nginx `stream` ACL for Redis: parse RESP/inline commands and close the
+  # connection on CONFIG/FLUSHALL/EVAL/CLIENT KILL and friends.
+  - name: showcase-redis-guard
+    addr: "127.0.0.1:8105"
+    upstream_pool: redis
+    plugin:
+      path: "plugins/examples/redis_guard/redis_guard.wasm"
+      timeout: 0s
+      data_mode: "stream"
+
+  # nginx `sub_filter` + a body-scanning WAF: detect attack signatures in the
+  # client body and mask JSON secrets in the response body in place.
+  - name: showcase-stream-guard
+    addr: "127.0.0.1:8106"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/stream_guard/stream_guard.wasm"
+      timeout: 0s
+      data_mode: "stream"
+
+  # The same ssl_preread routing without any WASM: useful as a baseline when
+  # explaining what the plugin adds (arbitrary policy vs. a static map).
+  - name: showcase-native-sni
+    addr: "127.0.0.1:8107"
+    upstream_pool: web
+    sni_routes:
+      "api.example.com": api
+      "*.example.com": web
+
+  # TLS termination makes on_data see plaintext. Uncomment after generating
+  # certs (`openssl req -x509 -newkey rsa:2048 -nodes -days 1 ...`) to compare
+  # the encrypted and decrypted paths:
+  #
+  # - name: showcase-tls-termination
+  #   addr: "127.0.0.1:8108"
+  #   upstream_pool: web
+  #   tls:
+  #     cert_file: "certs/server.crt"
+  #     key_file: "certs/server.key"
+  #     min_version: "1.2"
+  #     handshake_timeout: 10s
+  #   plugin:
+  #     path: "plugins/examples/http_guard/http_guard.wasm"
+  #     timeout: 0s
+  #     data_mode: "stream"
+
+pools:
+  web:
+    servers: ["127.0.0.1:9000"]
+  api:
+    servers: ["127.0.0.1:9001", "127.0.0.1:9002"]
+  static:
+    servers: ["127.0.0.1:9010"]
+  ws:
+    servers: ["127.0.0.1:9020"]
+  internal:
+    servers: ["127.0.0.1:9030"]
+  tls-backend:
+    servers: ["127.0.0.1:9443"]
+  http-backend:
+    servers: ["127.0.0.1:9080"]
+  ssh-backend:
+    servers: ["127.0.0.1:22"]
+  postgres:
+    servers: ["127.0.0.1:5432"]
+  redis:
+    servers: ["127.0.0.1:6379"]

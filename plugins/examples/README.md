@@ -1,9 +1,27 @@
 # Примеры WASM-плагинов и ограничения песочницы (`internal/plugin`)
 
-В `plugins/examples/ipguard/` лежит эталонный плагин фильтрации соединений
-(**IP Guard**) в двух исходных вариантах — **Rust (`#![no_std]`)** и **TinyGo** —
-а также готовый скомпилированный бинарник `ipguard.wasm` (**75 байт**), который
-можно сразу подключить в конфиг без установки внешних компиляторов:
+В `plugins/examples/` лежат **семь** готовых плагинов: от L4-фильтра до L7-маршрутизации,
+разбора TLS ClientHello, RESP-политики и мутации тела HTTP. Исходники собираются одним
+workspace (`plugins/examples/Cargo.toml`), а скомпилированные `.wasm` уже закоммичены —
+Rust для запуска не нужен.
+
+| Плагин | Что демонстрирует | Режим | Вердикты |
+|--------|-------------------|-------|----------|
+| `ipguard` | `on_accept`: L4 allow/deny до `dial` (аналог `allow`/`deny`/`geo`) | L4 | `0` allow, `≠0` deny |
+| `http_guard` | `on_data_ex`: методы/пути, Basic auth, CL+TE-smuggling, маскировка `Server`/`X-Powered-By` | `stream` | `0` / `1` |
+| `path_router` | `route_pools` по `Host` и пути (аналог `map`/`location`) | `once` | `2..4` → пулы |
+| `sni_guard` | SNI из ClientHello без терминации TLS (аналог `ssl_preread` + `map`) | `once` | `2..4` → пулы |
+| `protocol_router` | определение TLS/HTTP/SSH/PostgreSQL/Redis по первым байтам | `once` | `2..6` → пулы |
+| `redis_guard` | разбор RESP и inline-команд, ACL на `CONFIG`/`FLUSHALL`/`EVAL` | `stream` | `0` / `1` |
+| `stream_guard` | сигнатуры атак в теле запроса + in-place маскировка JSON-секретов в ответе | `stream` | `0` / `1` |
+
+Готовый конфиг со всеми листенерами: `configs/showcase.yaml`.
+
+```bash
+go run ./cmd/wasmgate -config configs/showcase.yaml -validate
+```
+
+Минимальный пример подключения (`ipguard`, **89 байт**):
 
 ```yaml
 listeners:
@@ -34,7 +52,7 @@ WASM. Это даёт **0 B/op и 0 allocs/op** (Linux, AMD Ryzen 5 3550H:
 |---------|----------------|-----------|---------|
 | `on_accept` | `(i64, i64, i32) -> i32` | `ip_hi`, `ip_lo` (16-байтный канонический IP в big-endian; для IPv4 это `::ffff:a.b.c.d`), `port` (TCP-порт клиента) | `0` = `VerdictAllow`, любое ненулевое значение = `VerdictDeny` (сбросить до `dial`) |
 | `on_data` | `(i32, i32) -> i32` | `ptr`, `len` — указатель и длина массива байт пакета в линейной памяти плагина. **`on_data_ptr() -> i32` обязателен**. Буфер — до `32 KiB`, плагин может модифицировать байты на месте | `0` = `VerdictAllow`, `1` = `VerdictDeny`, `>= 2` = `route_pools[ret-2]` (только `once`) |
-| `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 = client→server, 1 = server→client), `ptr`, `len`. Опциональный ABI v2: позволяет плагину связывать чанки одного соединения и видеть оба направления | как `on_data` |
+| `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 = client→server, 1 = server→client), `ptr`, `len`. `conn_id` стабилен в пределах соединения: его можно писать в логи/метрики и передавать в `on_close_ex`. Гостевое состояние между чанками на него **не опирается** — инстансы берутся из пула, память у них разная (см. §2.3) | как `on_data` |
 | `on_close` | `(i64, i64, i64, i64) -> ()` | `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | пусто |
 | `on_close_ex` | `(i64, i64, i64, i64, i64) -> ()` | `conn_id`, `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | пусто |
 
@@ -84,7 +102,7 @@ snapshot'а (fail-fast).
 5. **Два режима L7-инспекции (`on_data` + `data_mode: "once" | "stream"`).**
    - Если плагин **не** экспортирует `on_data`, прокси идёт по чистому L4 fast path (`splice(2)` на Linux).
    - Если плагин экспортирует `on_data(ptr: i32, len: i32) -> i32`, по умолчанию включается режим `data_mode: "once"`: первый `Read()` клиента (читается не более 16 389 байт) проверяется в памяти WASM **до** `dial` к бэкенду, а после `VerdictAllow` сбрасывается через `DrainTo`, и остаток соединения возвращается на ядерный zero-copy `splice(2)`. `once` — это **подсказка для маршрутизации/мутации первого пакета, а не полноценный фильтр**: клиент может отправить 1 байт и обойти проверку остального payload. Для фильтрации используйте `stream`.
-   - При `data_mode: "stream"` через `on_data`/`on_data_ex` проверяется каждый чанк (также `0 allocs/op` за счёт `bufferPool` и scratch-памяти WASM, но без `splice`). `on_data_ex` получает `conn_id` и `dir`, поэтому плагин может связывать чанки и видеть оба направления; старый `on_data` вызывается только для `client → server`. `route_pools` в `stream` не применяется.
+   - При `data_mode: "stream"` через `on_data`/`on_data_ex` проверяется каждый чанк (также `0 allocs/op` за счёт `bufferPool` и scratch-памяти WASM, но без `splice`). `on_data_ex` получает `conn_id` и `dir`, поэтому видит оба направления и может коррелировать чанки в логах; старый `on_data` вызывается только для `client → server`. `conn_id` **не** даёт надёжного состояния между чанками: инстанс и его память выбираются из пула заново на каждый вызов. `route_pools` в `stream` не применяется.
    - Инстанс WASM берётся из пула **только на время CPU-вызова `on_data` (~76 нс)** и никогда не удерживается на время блокирующего `conn.Read`, поэтому медленные клиенты (Slowloris) не могут исчерпать пул WASM-инстансов.
    - **TLS-терминация** (`listeners[].tls`) расшифровывает поток до `on_data`, поэтому плагин видит открытый текст. **TLS passthrough** (`sni_routes`) оставляет поток зашифрованным: плагин увидит байты `ClientHello`/record'ов. На листенере с терминацией `sni_routes` игнорируется.
    - Инспектируется не более первого `Read()` в режиме `once` (фактический предел буфера — 16 389 байт) и не более `32 KiB` на чанк в `stream`. In-place мутация ограничена тем же окном и переписывает только уже прочитанный в буфер префикс.
@@ -95,8 +113,17 @@ snapshot'а (fail-fast).
 
 ### Вариант А — Rust (`#![no_std]`, рекомендуемый)
 ```bash
-cd plugins/examples/ipguard
+cd plugins/examples              # workspace со всеми примерами
 rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
+for p in ipguard http_guard path_router sni_guard protocol_router redis_guard stream_guard; do
+  cp "target/wasm32-unknown-unknown/release/$p.wasm" "$p/$p.wasm"
+done
+```
+
+Один плагин можно собрать так же, из его каталога:
+```bash
+cd plugins/examples/ipguard
 cargo build --release --target wasm32-unknown-unknown
 cp target/wasm32-unknown-unknown/release/ipguard.wasm ./ipguard.wasm
 ```
@@ -106,3 +133,37 @@ cp target/wasm32-unknown-unknown/release/ipguard.wasm ./ipguard.wasm
 cd plugins/examples/ipguard/tinygo
 tinygo build -o ../ipguard.wasm -target=wasm-unknown -no-debug .
 ```
+
+---
+
+## 4. Чего не хватает stateless-плагинам (и что даст ABI v3)
+
+Сейчас хост вызывает плагин на каждый чанк отдельно, а между вызовами не сохраняется
+ни позиция в потоке, ни накопленный буфер. Отсюда практические пределы:
+
+- заголовок, RESP-команда или сигнатура, разрезанные по границе TCP-чанка, видны
+  частично (в `once` — только первый `Read()`, ≤ 16 389 байт);
+- нельзя отличить «короткий запрос» от «начало длинного» и принять строгое решение;
+- нельзя накопить тело до `Content-Length` и проверить его целиком;
+- `conn_id` для этого не помогает: инстанс и его память выбираются из `sync.Pool`
+  заново на каждый вызов.
+
+Два возможных направления:
+
+1. **Sticky-инстанс на соединение.** Плагин получает один и тот же инстанс на всё
+   соединение и хранит состояние в глобальной памяти. Плюс — ABI не меняется.
+   Минусы — число инстансов равно числу соединений (1 MiB × N), пул перестаёт быть
+   пулом, состояние может утечь между соединениями, а время жизни инстанса
+   привязывается к блокирующему `Read`.
+2. **Host-managed bounded state (рекомендуемый ABI v3).** Хост держит на соединение
+   небольшой буфер (например, 4–8 KiB) и передаёт его плагину как
+   `(state_ptr, state_len, state_cap)`, а плагин возвращает новую длину и флаги.
+   Состояние живёт в памяти хоста, ограничено, освобождается на `close`, не зависит
+   от пула инстансов и не требует доверять гостю. Плагин остаётся функцией
+   `state' = f(state, chunk)`.
+
+Влияние на горячий путь: без плагина и в `once` — **ничего не меняется** (state не
+выделяется, `splice(2)` сохраняется). В `stream` появляется буфер состояния на
+соединение и одна лишняя копия `state` ↔ scratch. Это должно стоить единицы процентов
+на фоне уже существующего копирования чанка в WASM, но цифры нужно снимать отдельным
+бенчмарком до реализации.
