@@ -62,12 +62,18 @@ const (
 	ScratchOffset   = 32 * 1024
 	ScratchCapacity = 32 * 1024
 
-	hookOnAccept  = "on_accept"
-	hookOnData    = "on_data"
-	hookOnDataEx  = "on_data_ex"
-	hookOnDataPtr = "on_data_ptr"
-	hookOnClose   = "on_close"
-	hookOnCloseEx = "on_close_ex"
+	// StateCapacity is the per-direction byte capacity of the host-managed
+	// state buffer passed to on_data_state (4 KiB).
+	StateCapacity = 4 * 1024
+
+	hookOnAccept    = "on_accept"
+	hookOnData      = "on_data"
+	hookOnDataEx    = "on_data_ex"
+	hookOnDataState = "on_data_state"
+	hookOnDataPtr   = "on_data_ptr"
+	hookOnStatePtr  = "on_state_ptr"
+	hookOnClose     = "on_close"
+	hookOnCloseEx   = "on_close_ex"
 )
 
 // Options configures the sandbox limits for a compiled plugin.
@@ -85,19 +91,80 @@ type Options struct {
 // from the caller's perspective so it can sit inside a proxy Snapshot and be
 // closed once drained.
 type Plugin struct {
-	rt         wazero.Runtime
-	compiled   wazero.CompiledModule
-	timeout    time.Duration
-	hasAccept  bool
-	hasData    bool
-	hasDataEx  bool
-	hasClose   bool
-	hasCloseEx bool
-	nextID     atomic.Uint64
-	discarded  atomic.Int64
-	pool       sync.Pool
-	initErr    atomic.Pointer[error]
-	closeOnce  sync.Once
+	rt           wazero.Runtime
+	compiled     wazero.CompiledModule
+	timeout      time.Duration
+	hasAccept    bool
+	hasData      bool
+	hasDataEx    bool
+	hasDataState bool
+	hasClose     bool
+	hasCloseEx   bool
+	nextID       atomic.Uint64
+	discarded    atomic.Int64
+	pool         sync.Pool
+	initErr      atomic.Pointer[error]
+	closeOnce    sync.Once
+}
+
+// StateBuf holds the host-managed bounded state for one stream direction of a
+// single connection (up to StateCapacity bytes).
+type StateBuf struct {
+	len uint32
+	buf [StateCapacity]byte
+}
+
+// Bytes returns the currently active state slice.
+func (s *StateBuf) Bytes() []byte {
+	if s == nil {
+		return nil
+	}
+	return s.buf[:s.len]
+}
+
+// Reset zeroes the active bytes and resets the length to 0.
+func (s *StateBuf) Reset() {
+	if s == nil {
+		return
+	}
+	clear(s.buf[:s.len])
+	s.len = 0
+}
+
+// ConnState pairs the client->server (dir 0) and server->client (dir 1) state
+// buffers for a single proxied connection. Each direction is owned by its own
+// pipe goroutine, so no mutex is required on the hot path.
+type ConnState struct {
+	dir [2]StateBuf
+}
+
+var connStatePool = sync.Pool{
+	New: func() any {
+		return new(ConnState)
+	},
+}
+
+// AcquireConnState borrows a zeroed ConnState from the pool.
+func AcquireConnState() *ConnState {
+	return connStatePool.Get().(*ConnState)
+}
+
+// ReleaseConnState zeroes any active state bytes and returns s to the pool.
+func ReleaseConnState(s *ConnState) {
+	if s == nil {
+		return
+	}
+	s.dir[0].Reset()
+	s.dir[1].Reset()
+	connStatePool.Put(s)
+}
+
+// Dir returns the StateBuf for direction dir (0 = client->server, 1 = server->client).
+func (s *ConnState) Dir(dir int32) *StateBuf {
+	if s == nil || (dir != 0 && dir != 1) {
+		return nil
+	}
+	return &s.dir[dir]
 }
 
 // Discarded returns the total number of instances destroyed after a trap or timeout.
@@ -109,15 +176,18 @@ func (p *Plugin) Discarded() int64 {
 }
 
 type instance struct {
-	mod       api.Module
-	onAccept  api.Function
-	onData    api.Function
-	onDataEx  api.Function
-	onClose   api.Function
-	onCloseEx api.Function
-	dataPtr   uint32
-	dataCap   uint32
-	stack     [8]uint64
+	mod         api.Module
+	onAccept    api.Function
+	onData      api.Function
+	onDataEx    api.Function
+	onDataState api.Function
+	onClose     api.Function
+	onCloseEx   api.Function
+	dataPtr     uint32
+	dataCap     uint32
+	statePtr    uint32
+	stateCap    uint32
+	stack       [8]uint64
 }
 
 // LoadFile reads a .wasm binary from path and compiles it into a sandboxed Plugin.
@@ -152,25 +222,22 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		return nil, fmt.Errorf("plugin: compile: %w", err)
 	}
 
-	hasAccept, hasData, hasDataEx, hasClose, hasCloseEx, err := validateExports(compiled)
+	flags, err := validateExports(compiled)
 	if err != nil {
 		_ = rt.Close(ctx)
 		return nil, err
 	}
-	if !hasData && !hasDataEx && !hasAccept && !hasClose && !hasCloseEx {
-		_ = rt.Close(ctx)
-		return nil, fmt.Errorf("plugin: module must export at least one hook")
-	}
 
 	p := &Plugin{
-		rt:         rt,
-		compiled:   compiled,
-		timeout:    opts.Timeout,
-		hasAccept:  hasAccept,
-		hasData:    hasData,
-		hasDataEx:  hasDataEx,
-		hasClose:   hasClose,
-		hasCloseEx: hasCloseEx,
+		rt:           rt,
+		compiled:     compiled,
+		timeout:      opts.Timeout,
+		hasAccept:    flags.hasAccept,
+		hasData:      flags.hasData,
+		hasDataEx:    flags.hasDataEx,
+		hasDataState: flags.hasDataState,
+		hasClose:     flags.hasClose,
+		hasCloseEx:   flags.hasCloseEx,
 	}
 	if p.timeout == 0 {
 		// This is an accepted operator risk, not a silent default: a guest loop
@@ -201,66 +268,118 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 }
 
 // HasData reports whether the compiled module exports an L7 on_data hook
-// (either the legacy on_data or the connection-aware on_data_ex).
+// (on_data, on_data_ex, or the stateful on_data_state).
 func (p *Plugin) HasData() bool {
-	return p != nil && (p.hasData || p.hasDataEx)
+	return p != nil && (p.hasData || p.hasDataEx || p.hasDataState)
+}
+
+// HasState reports whether the compiled module exports the ABI v3 stateful
+// on_data_state hook.
+func (p *Plugin) HasState() bool {
+	return p != nil && p.hasDataState
 }
 
 // Timeout reports the per-call timeout (0 = disabled).
 func (p *Plugin) Timeout() time.Duration { return p.timeout }
 
+type exportFlags struct {
+	hasAccept    bool
+	hasData      bool
+	hasDataEx    bool
+	hasDataState bool
+	hasClose     bool
+	hasCloseEx   bool
+}
+
 // validateExports checks that the module exports at least one hook and that any
 // exported hook has the exact ABI signature expected by the host.
-func validateExports(compiled wazero.CompiledModule) (hasAccept, hasData, hasDataEx, hasClose, hasCloseEx bool, err error) {
+func validateExports(compiled wazero.CompiledModule) (exportFlags, error) {
+	var f exportFlags
 	exports := compiled.ExportedFunctions()
 	if fn, ok := exports[hookOnAccept]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI32}) ||
 			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i32) -> i32", hookOnAccept)
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i64, i32) -> i32", hookOnAccept)
 		}
-		hasAccept = true
+		f.hasAccept = true
 	}
 	if fn, ok := exports[hookOnData]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}) ||
 			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i32, i32) -> i32", hookOnData)
+			return f, fmt.Errorf("plugin: %s must have signature (i32, i32) -> i32", hookOnData)
 		}
-		hasData = true
+		f.hasData = true
 	}
 	if fn, ok := exports[hookOnDataEx]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32}) ||
 			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i32, i32, i32) -> i32", hookOnDataEx)
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i32, i32, i32) -> i32", hookOnDataEx)
 		}
-		hasDataEx = true
+		f.hasDataEx = true
+	}
+	if fn, ok := exports[hookOnDataState]; ok {
+		wantParams := []api.ValueType{
+			api.ValueTypeI64, api.ValueTypeI32,
+			api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32,
+			api.ValueTypeI32, api.ValueTypeI32,
+		}
+		if !slices.Equal(fn.ParamTypes(), wantParams) ||
+			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i32, i32, i32, i32, i32, i32) -> i64", hookOnDataState)
+		}
+		f.hasDataState = true
 	}
 	if fn, ok := exports[hookOnDataPtr]; ok {
 		if len(fn.ParamTypes()) != 0 || !slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature () -> i32", hookOnDataPtr)
+			return f, fmt.Errorf("plugin: %s must have signature () -> i32", hookOnDataPtr)
+		}
+	}
+	if fn, ok := exports[hookOnStatePtr]; ok {
+		if len(fn.ParamTypes()) != 0 || !slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return f, fmt.Errorf("plugin: %s must have signature () -> i32", hookOnStatePtr)
 		}
 	}
 	if fn, ok := exports[hookOnClose]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
 			len(fn.ResultTypes()) != 0 {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64) -> ()", hookOnClose)
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64) -> ()", hookOnClose)
 		}
-		hasClose = true
+		f.hasClose = true
 	}
 	if fn, ok := exports[hookOnCloseEx]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
 			len(fn.ResultTypes()) != 0 {
-			return false, false, false, false, false, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64, i64) -> ()", hookOnCloseEx)
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i64, i64, i64, i64) -> ()", hookOnCloseEx)
 		}
-		hasCloseEx = true
+		f.hasCloseEx = true
 	}
-	if (hasData || hasDataEx) && exports[hookOnDataPtr] == nil {
-		return false, false, false, false, false, fmt.Errorf("plugin: %s is required when on_data/on_data_ex is exported", hookOnDataPtr)
+	if (f.hasData || f.hasDataEx || f.hasDataState) && exports[hookOnDataPtr] == nil {
+		return f, fmt.Errorf("plugin: %s is required when on_data/on_data_ex/on_data_state is exported", hookOnDataPtr)
 	}
-	if !hasAccept && !hasData && !hasDataEx && !hasClose && !hasCloseEx {
-		return false, false, false, false, false, fmt.Errorf("plugin: module must export %s, %s, %s, %s or %s",
-			hookOnAccept, hookOnData, hookOnDataEx, hookOnClose, hookOnCloseEx)
+	if f.hasDataState && exports[hookOnStatePtr] == nil {
+		return f, fmt.Errorf("plugin: %s is required when %s is exported", hookOnStatePtr, hookOnDataState)
 	}
-	return hasAccept, hasData, hasDataEx, hasClose, hasCloseEx, nil
+	if !f.hasAccept && !f.hasData && !f.hasDataEx && !f.hasDataState && !f.hasClose && !f.hasCloseEx {
+		return f, fmt.Errorf("plugin: module must export %s, %s, %s, %s, %s or %s",
+			hookOnAccept, hookOnData, hookOnDataEx, hookOnDataState, hookOnClose, hookOnCloseEx)
+	}
+	return f, nil
+}
+
+func ensureMemoryRange(mem api.Memory, ptr, size uint32, label string) error {
+	end := uint64(ptr) + uint64(size)
+	if uint64(mem.Size()) >= end {
+		return nil
+	}
+	neededBytes := end - uint64(mem.Size())
+	neededPages := (neededBytes + 65535) / 65536
+	if neededPages > 65536 {
+		return fmt.Errorf("plugin: linear memory too small for %s buffer", label)
+	}
+	if _, ok := mem.Grow(uint32(neededPages)); !ok { // #nosec G115 -- bounded by <= 65536 above
+		return fmt.Errorf("plugin: linear memory too small for %s buffer", label)
+	}
+	return nil
 }
 
 func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
@@ -273,15 +392,17 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 		return nil, fmt.Errorf("plugin: instantiate: %w", err)
 	}
 	inst := &instance{
-		mod:       mod,
-		onAccept:  mod.ExportedFunction(hookOnAccept),
-		onData:    mod.ExportedFunction(hookOnData),
-		onDataEx:  mod.ExportedFunction(hookOnDataEx),
-		onClose:   mod.ExportedFunction(hookOnClose),
-		onCloseEx: mod.ExportedFunction(hookOnCloseEx),
-		dataCap:   ScratchCapacity,
+		mod:         mod,
+		onAccept:    mod.ExportedFunction(hookOnAccept),
+		onData:      mod.ExportedFunction(hookOnData),
+		onDataEx:    mod.ExportedFunction(hookOnDataEx),
+		onDataState: mod.ExportedFunction(hookOnDataState),
+		onClose:     mod.ExportedFunction(hookOnClose),
+		onCloseEx:   mod.ExportedFunction(hookOnCloseEx),
+		dataCap:     ScratchCapacity,
+		stateCap:    StateCapacity,
 	}
-	if p.hasData || p.hasDataEx {
+	if p.hasData || p.hasDataEx || p.hasDataState {
 		mem := mod.Memory()
 		if mem == nil {
 			_ = mod.Close(ctx)
@@ -297,17 +418,33 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 			return nil, fmt.Errorf("plugin: call %s: %w", hookOnDataPtr, err)
 		}
 		inst.dataPtr = uint32(inst.stack[0]) // #nosec G115 -- low 32 bits are the guest pointer
-		end := uint64(inst.dataPtr) + uint64(inst.dataCap)
-		if uint64(mem.Size()) < end {
-			neededBytes := end - uint64(mem.Size())
-			neededPages := (neededBytes + 65535) / 65536
-			if neededPages > 65536 {
+		if err := ensureMemoryRange(mem, inst.dataPtr, inst.dataCap, "on_data scratch"); err != nil {
+			_ = mod.Close(ctx)
+			return nil, err
+		}
+		if p.hasDataState {
+			statePtrFn := mod.ExportedFunction(hookOnStatePtr)
+			if statePtrFn == nil {
 				_ = mod.Close(ctx)
-				return nil, errors.New("plugin: linear memory too small for on_data scratch buffer")
+				return nil, fmt.Errorf("plugin: %s is required for %s", hookOnStatePtr, hookOnDataState)
 			}
-			if _, ok := mem.Grow(uint32(neededPages)); !ok {
+			if err := statePtrFn.CallWithStack(ctx, inst.stack[:1]); err != nil {
 				_ = mod.Close(ctx)
-				return nil, errors.New("plugin: linear memory too small for on_data scratch buffer")
+				return nil, fmt.Errorf("plugin: call %s: %w", hookOnStatePtr, err)
+			}
+			inst.statePtr = uint32(inst.stack[0]) // #nosec G115 -- low 32 bits are the guest pointer
+			if err := ensureMemoryRange(mem, inst.statePtr, inst.stateCap, "on_data_state"); err != nil {
+				_ = mod.Close(ctx)
+				return nil, err
+			}
+			dataEnd := uint64(inst.dataPtr) + uint64(inst.dataCap)
+			stateEnd := uint64(inst.statePtr) + uint64(inst.stateCap)
+			if uint64(inst.statePtr) < dataEnd && uint64(inst.dataPtr) < stateEnd {
+				_ = mod.Close(ctx)
+				return nil, errors.New("plugin: on_state_ptr and on_data_ptr buffers overlap")
+			}
+			if stateMem, ok := mem.Read(inst.statePtr, inst.stateCap); ok {
+				clear(stateMem)
 			}
 		}
 	}
@@ -369,6 +506,9 @@ func (p *Plugin) OnData(ctx context.Context, payload []byte) (Verdict, error) {
 // dir is 0 for client->server and 1 for server->client. The legacy on_data hook
 // is only called for dir==0; on_data_ex is called for both directions.
 func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, payload []byte) (Verdict, error) {
+	if p != nil && p.hasDataState {
+		return p.OnDataState(ctx, connID, dir, payload, nil)
+	}
 	if p == nil || (!p.hasData && !p.hasDataEx) || len(payload) == 0 {
 		return VerdictAllow, nil
 	}
@@ -434,6 +574,125 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 		}
 		copy(payload[:n], fresh)
 	}
+	p.pool.Put(inst)
+	return Verdict(v), nil
+}
+
+// OnDataState invokes the ABI v3 stateful hook
+// on_data_state(conn_id, dir, state_ptr, state_len, state_cap, data_ptr, data_len) -> i64
+// when the module exports it, falling back to OnDataConn otherwise.
+//
+// The low 32 bits of the return value carry the signed Verdict; the high 32
+// bits carry the new state length (0 <= new_len <= StateCapacity). The guest's
+// state region inside WASM linear memory is always wiped before the instance
+// returns to the pool, so state never leaks across connections.
+func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payload []byte, state *StateBuf) (Verdict, error) {
+	if p == nil {
+		return VerdictAllow, nil
+	}
+	if !p.hasDataState {
+		return p.OnDataConn(ctx, connID, dir, payload)
+	}
+	if len(payload) == 0 {
+		return VerdictAllow, nil
+	}
+	inst, ok := p.pool.Get().(*instance)
+	if !ok || inst == nil {
+		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initError())
+	}
+
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+
+	n := uint32(len(payload)) // #nosec G115 -- capped by inst.dataCap below
+	if n > inst.dataCap {
+		n = inst.dataCap
+	}
+	mem := inst.mod.Memory()
+	dst, ok := mem.Read(inst.dataPtr, n)
+	if !ok {
+		p.discarded.Add(1)
+		_ = inst.mod.Close(context.Background())
+		return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
+	}
+	copy(dst, payload[:n])
+
+	var stateLen uint32
+	if state != nil {
+		stateLen = state.len
+		if stateLen > inst.stateCap {
+			stateLen = inst.stateCap
+		}
+		if stateLen > 0 {
+			stateDst, ok := mem.Read(inst.statePtr, stateLen)
+			if !ok {
+				p.discarded.Add(1)
+				_ = inst.mod.Close(context.Background())
+				return VerdictDeny, errors.New("plugin: state memory out of bounds")
+			}
+			copy(stateDst, state.buf[:stateLen])
+		}
+	}
+
+	inst.stack[0] = connID
+	inst.stack[1] = uint64(uint32(dir)) // #nosec G115 -- dir is 0 or 1
+	inst.stack[2] = uint64(inst.statePtr)
+	inst.stack[3] = uint64(stateLen)
+	inst.stack[4] = uint64(inst.stateCap)
+	inst.stack[5] = uint64(inst.dataPtr)
+	inst.stack[6] = uint64(n)
+	if err := inst.onDataState.CallWithStack(ctx, inst.stack[:7]); err != nil {
+		p.discarded.Add(1)
+		_ = inst.mod.Close(context.Background())
+		return VerdictDeny, err
+	}
+
+	raw := inst.stack[0]
+	v := int32(uint32(raw))                 // #nosec G115 -- low 32 bits: signed verdict
+	newStateLen := int32(uint32(raw >> 32)) // #nosec G115 -- high 32 bits: new state_len
+
+	uMax := stateLen
+	if newStateLen > 0 && uint32(newStateLen) <= inst.stateCap && uint32(newStateLen) > uMax {
+		uMax = uint32(newStateLen)
+	}
+	freshState, ok := inst.mod.Memory().Read(inst.statePtr, inst.stateCap)
+	if !ok {
+		p.discarded.Add(1)
+		_ = inst.mod.Close(context.Background())
+		return VerdictDeny, errors.New("plugin: state memory out of bounds after hook")
+	}
+	if newStateLen < 0 || uint32(newStateLen) > inst.stateCap {
+		clear(freshState[:uMax])
+		p.pool.Put(inst)
+		return VerdictDeny, fmt.Errorf("plugin: on_data_state returned invalid state length %d (cap %d)", newStateLen, inst.stateCap)
+	}
+
+	if v < int32(VerdictAllow) {
+		clear(freshState[:uMax])
+		p.pool.Put(inst)
+		return VerdictDeny, nil
+	}
+	if v != int32(VerdictDeny) {
+		freshData, ok := inst.mod.Memory().Read(inst.dataPtr, n)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: scratch memory out of bounds after hook")
+		}
+		copy(payload[:n], freshData)
+		if state != nil {
+			uLen := uint32(newStateLen) // #nosec G115 -- validated 0 <= newStateLen <= stateCap
+			if uLen < state.len {
+				clear(state.buf[uLen:state.len])
+			}
+			copy(state.buf[:uLen], freshState[:uLen])
+			state.len = uLen
+		}
+	}
+	clear(freshState[:uMax])
 	p.pool.Put(inst)
 	return Verdict(v), nil
 }

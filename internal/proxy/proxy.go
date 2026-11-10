@@ -212,6 +212,12 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	defer targetPool.Release(up)
 	defer server.Close()
 
+	var connState *plugin.ConnState
+	if streamPlugin != nil && streamPlugin.HasState() {
+		connState = plugin.AcquireConnState()
+		defer plugin.ReleaseConnState(connState)
+	}
+
 	// Replay the peeked prefix synchronously, before join starts. This removes
 	// the only shared *tlspeek.Conn between the two copy goroutines: after this
 	// point both directions use raw net.Conns, so splice(2) is preserved and no
@@ -219,7 +225,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	var prefix int64
 	if pc, ok := client.(*tlspeek.Conn); ok {
 		if streamPlugin != nil && len(pc.Bytes()) > 0 {
-			verdict, err := streamPlugin.OnDataConn(ctx, connID, 0, pc.Bytes())
+			verdict, err := streamPlugin.OnDataState(ctx, connID, 0, pc.Bytes(), connState.Dir(0))
 			if err != nil {
 				p.metrics.PluginDiscard()
 			}
@@ -244,7 +250,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
-	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, p.metrics, connID)
+	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, connState, p.metrics, connID)
 	tx += prefix
 	p.metrics.AddBytes(rx + tx)
 	if rl.plugin != nil {

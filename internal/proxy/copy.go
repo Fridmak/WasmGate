@@ -59,7 +59,7 @@ var bufferPool = sync.Pool{
 // join returns the number of bytes relayed in each direction (a<-b, b<-a). The
 // totals come from io.Copy's own return value, so counting them costs nothing
 // per chunk — one atomic add per finished direction is the whole price.
-func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *plugin.Plugin, metrics *observe.Metrics, connID uint64) (int64, int64) {
+func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *plugin.Plugin, connState *plugin.ConnState, metrics *observe.Metrics, connID uint64) (int64, int64) {
 	// When ctx is cancelled (e.g. server shutdown), close both sides so the copy
 	// goroutines unblock and wg.Wait returns.
 	stop := context.AfterFunc(ctx, func() {
@@ -71,8 +71,8 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *
 	var fwd, rev atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(ctx, &wg, a, b, idle, streamPlugin, metrics, &fwd, connID, 1) // a <- b (client <- server response)
-	go pipe(ctx, &wg, b, a, idle, streamPlugin, metrics, &rev, connID, 0) // b <- a (server <- client request)
+	go pipe(ctx, &wg, a, b, idle, streamPlugin, connState.Dir(1), metrics, &fwd, connID, 1) // a <- b (client <- server response)
+	go pipe(ctx, &wg, b, a, idle, streamPlugin, connState.Dir(0), metrics, &rev, connID, 0) // b <- a (server <- client request)
 	wg.Wait()
 	return fwd.Load(), rev.Load()
 }
@@ -80,7 +80,7 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *
 // pipe copies src -> dst until EOF or error, then reports completion via wg.
 // A clean EOF half-closes dst's write side; any other outcome tears down both
 // connections so the peer direction cannot stay blocked.
-func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, metrics *observe.Metrics, total *atomic.Int64, connID uint64, dir int32) {
+func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, state *plugin.StateBuf, metrics *observe.Metrics, total *atomic.Int64, connID uint64, dir int32) {
 	defer wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -95,7 +95,7 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.
 		err error
 	)
 	if pl != nil {
-		n, err = copyInspected(ctx, dst, src, idle, pl, metrics, connID, dir)
+		n, err = copyInspected(ctx, dst, src, idle, pl, state, metrics, connID, dir)
 	} else {
 		n, err = copyConn(dst, src, idle)
 	}
@@ -113,7 +113,7 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.
 
 // copyInspected relays src -> dst through a pooled buffer while invoking the
 // WASM on_data hook on every chunk before forwarding it.
-func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, metrics *observe.Metrics, connID uint64, dir int32) (int64, error) {
+func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, state *plugin.StateBuf, metrics *observe.Metrics, connID uint64, dir int32) (int64, error) {
 	bufp := bufferPool.Get().(*[]byte)
 	defer bufferPool.Put(bufp)
 	buf := *bufp
@@ -127,7 +127,7 @@ func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, p
 	for {
 		nr, rerr := r.Read(buf)
 		if nr > 0 {
-			verdict, perr := pl.OnDataConn(ctx, connID, dir, buf[:nr])
+			verdict, perr := pl.OnDataState(ctx, connID, dir, buf[:nr], state)
 			if perr != nil {
 				metrics.PluginDiscard()
 			}
