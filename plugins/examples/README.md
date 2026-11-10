@@ -1,14 +1,15 @@
 # Примеры WASM-плагинов и ограничения песочницы (`internal/plugin`)
 
-В `plugins/examples/` лежат **семь** готовых плагинов: от L4-фильтра до L7-маршрутизации,
-разбора TLS ClientHello, RESP-политики и мутации тела HTTP. Исходники собираются одним
-workspace (`plugins/examples/Cargo.toml`), а скомпилированные `.wasm` уже закоммичены —
-Rust для запуска не нужен.
+В `plugins/examples/` лежат **восемь** готовых плагинов: от L4-фильтра до L7-маршрутизации,
+разбора TLS ClientHello, RESP-политики, мутации тела HTTP и stateful-инспекции тела
+по ABI v3 (`on_data_state`). Исходники собираются одним workspace (`plugins/examples/Cargo.toml`),
+а скомпилированные `.wasm` уже закоммичены — Rust для запуска не нужен.
 
 | Плагин | Что демонстрирует | Режим | Вердикты |
 |--------|-------------------|-------|----------|
 | `ipguard` | `on_accept`: L4 allow/deny до `dial` (аналог `allow`/`deny`/`geo`) | L4 | `0` allow, `≠0` deny |
 | `http_guard` | `on_data_ex`: методы/пути, Basic auth, CL+TE-smuggling, маскировка `Server`/`X-Powered-By` | `stream` | `0` / `1` |
+| `http_body_guard` | `on_data_state` (ABI v3): сборка разорванных HTTP-заголовков, контроль `Content-Length`, межчанковый поиск сигнатур в теле и счётчики между keep-alive запросами | `stream` | `0` / `1` |
 | `path_router` | `route_pools` по `Host` и пути (аналог `map`/`location`) | `once` | `2..4` → пулы |
 | `sni_guard` | SNI из ClientHello без терминации TLS (аналог `ssl_preread` + `map`) | `once` | `2..4` → пулы |
 | `protocol_router` | определение TLS/HTTP/SSH/PostgreSQL/Redis по первым байтам | `once` | `2..6` → пулы |
@@ -53,6 +54,7 @@ WASM. Это даёт **0 B/op и 0 allocs/op** (Linux, AMD Ryzen 5 3550H:
 | `on_accept` | `(i64, i64, i32) -> i32` | `ip_hi`, `ip_lo` (16-байтный канонический IP в big-endian; для IPv4 это `::ffff:a.b.c.d`), `port` (TCP-порт клиента) | `0` = `VerdictAllow`, любое ненулевое значение = `VerdictDeny` (сбросить до `dial`) |
 | `on_data` | `(i32, i32) -> i32` | `ptr`, `len` — указатель и длина массива байт пакета в линейной памяти плагина. **`on_data_ptr() -> i32` обязателен**. Буфер — до `32 KiB`, плагин может модифицировать байты на месте | `0` = `VerdictAllow`, `1` = `VerdictDeny`, `>= 2` = `route_pools[ret-2]` (только `once`) |
 | `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 = client→server, 1 = server→client), `ptr`, `len`. `conn_id` стабилен в пределах соединения: его можно писать в логи/метрики и передавать в `on_close_ex`. Гостевое состояние между чанками на него **не опирается** — инстансы берутся из пула, память у них разная (см. §2.3) | как `on_data` |
+| `on_data_state` | `(i64, i32, i32, i32, i32, i32, i32) -> i64` | `conn_id`, `dir`, `state_ptr`, `state_len`, `state_cap` (4 KiB), `data_ptr`, `data_len`. **Обязательны `on_data_ptr() -> i32` и `on_state_ptr() -> i32`** (непересекающиеся буферы в памяти гостя). Хост хранит по 4 KiB состояния на каждое направление соединения в `sync.Pool` | младшие 32 бита = `verdict` (`i32`), старшие 32 бита = `new_state_len` (`0..=4096`) |
 | `on_close` | `(i64, i64, i64, i64) -> ()` | `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | пусто |
 | `on_close_ex` | `(i64, i64, i64, i64, i64) -> ()` | `conn_id`, `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | пусто |
 
@@ -116,7 +118,7 @@ snapshot'а (fail-fast).
 cd plugins/examples              # workspace со всеми примерами
 rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown
-for p in ipguard http_guard path_router sni_guard protocol_router redis_guard stream_guard; do
+for p in ipguard http_guard http_body_guard path_router sni_guard protocol_router redis_guard stream_guard; do
   cp "target/wasm32-unknown-unknown/release/$p.wasm" "$p/$p.wasm"
 done
 ```
@@ -136,34 +138,23 @@ tinygo build -o ../ipguard.wasm -target=wasm-unknown -no-debug .
 
 ---
 
-## 4. Чего не хватает stateless-плагинам (и что даст ABI v3)
+## 4. Per-connection state: как устроен ABI v3 (`on_data_state`)
 
-Сейчас хост вызывает плагин на каждый чанк отдельно, а между вызовами не сохраняется
-ни позиция в потоке, ни накопленный буфер. Отсюда практические пределы:
+Stateless-плагины (`on_data` / `on_data_ex`) видят каждый TCP-чанк изолированно, потому что
+инстансы WASM берутся из `sync.Pool` заново на каждый вызов. Для полноценной работы с
+HTTP-телом, разорванными заголовками и keep-alive реализован **host-managed bounded state
+(ABI v3, opt-in)**:
 
-- заголовок, RESP-команда или сигнатура, разрезанные по границе TCP-чанка, видны
-  частично (в `once` — только первый `Read()`, ≤ 16 389 байт);
-- нельзя отличить «короткий запрос» от «начало длинного» и принять строгое решение;
-- нельзя накопить тело до `Content-Length` и проверить его целиком;
-- `conn_id` для этого не помогает: инстанс и его память выбираются из `sync.Pool`
-  заново на каждый вызов.
-
-Два возможных направления:
-
-1. **Sticky-инстанс на соединение.** Плагин получает один и тот же инстанс на всё
-   соединение и хранит состояние в глобальной памяти. Плюс — ABI не меняется.
-   Минусы — число инстансов равно числу соединений (1 MiB × N), пул перестаёт быть
-   пулом, состояние может утечь между соединениями, а время жизни инстанса
-   привязывается к блокирующему `Read`.
-2. **Host-managed bounded state (рекомендуемый ABI v3).** Хост держит на соединение
-   небольшой буфер (например, 4–8 KiB) и передаёт его плагину как
-   `(state_ptr, state_len, state_cap)`, а плагин возвращает новую длину и флаги.
-   Состояние живёт в памяти хоста, ограничено, освобождается на `close`, не зависит
-   от пула инстансов и не требует доверять гостю. Плагин остаётся функцией
-   `state' = f(state, chunk)`.
-
-Влияние на горячий путь: без плагина и в `once` — **ничего не меняется** (state не
-выделяется, `splice(2)` сохраняется). В `stream` появляется буфер состояния на
-соединение и одна лишняя копия `state` ↔ scratch. Это должно стоить единицы процентов
-на фоне уже существующего копирования чанка в WASM, но цифры нужно снимать отдельным
-бенчмарком до реализации.
+- Модуль экспортирует `on_data_state(conn_id, dir, state_ptr, state_len, state_cap, data_ptr, data_len) -> i64`,
+  `on_data_ptr() -> i32` (32 KiB) и `on_state_ptr() -> i32` (4 KiB). При инициализации хост
+  проверяет, что оба буфера помещаются в линейную память и **не пересекаются**.
+- На соединение с ABI v3-плагином в `stream`-режиме хост берёт из `sync.Pool` структуру
+  `ConnState` с двумя независимыми 4 KiB буферами (`dir = 0` и `dir = 1`). Мьютексов нет:
+  каждое направление принадлежит своей pipe-горутине.
+- Перед вызовом хост копирует только `state_len` активных байт в `state_ptr`, вызывает хук,
+  читает из старших 32 бит возврата `new_state_len` (`0 <= new_state_len <= 4096`), сохраняет
+  обновлённое состояние в `ConnState` и **зануляет** использованный участок `state_ptr` в
+  памяти WASM до возврата инстанса в пул (утечка состояния между соединениями исключена).
+- Горячий путь без плагина, `once`-режим (`splice(2)`) и плагины ABI v1/v2 не меняются
+  (`0 allocs/op`, ~85 нс на `on_data`, ~115 нс на минимальный `on_data_state`).
+- Эталонная реализация — `plugins/examples/http_body_guard`.

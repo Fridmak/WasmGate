@@ -92,6 +92,18 @@ listeners:
       timeout: 0s
       data_mode: "stream"
 
+  # Stateful ABI v3 (`on_data_state` + `on_state_ptr`): reassembles split HTTP
+  # headers across TCP reads, tracks Content-Length and per-connection request/
+  # body budgets across keep-alive requests, catches cross-chunk body attack
+  # signatures via a 64-byte rolling tail, and scrubs response secrets.
+  - name: showcase-http-body-guard
+    addr: "127.0.0.1:8109"
+    upstream_pool: web
+    plugin:
+      path: "plugins/examples/http_body_guard/http_body_guard.wasm"
+      timeout: 0s
+      data_mode: "stream"
+
   # The same ssl_preread routing without any WASM: useful as a baseline when
   # explaining what the plugin adds (arbitrary policy vs. a static map).
   - name: showcase-native-sni

@@ -3,6 +3,7 @@ members = [
     "common",
     "ipguard",
     "http_guard",
+    "http_body_guard",
     "path_router",
     "sni_guard",
     "protocol_router",

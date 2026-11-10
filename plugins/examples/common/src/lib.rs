@@ -13,12 +13,44 @@
 /// The host guarantees a 32 KiB scratch region behind `on_data_ptr()`.
 pub const SCRATCH_CAP: usize = 32 * 1024;
 
+/// The host guarantees a 4 KiB state scratch region behind `on_state_ptr()`
+/// for ABI v3 (`on_data_state`) plugins.
+pub const STATE_CAP: usize = 4 * 1024;
+
 static mut SCRATCH: [u8; SCRATCH_CAP] = [0; SCRATCH_CAP];
+static mut STATE_SCRATCH: [u8; STATE_CAP] = [0; STATE_CAP];
 
 /// Returns the guest address of the 32 KiB `on_data` scratch buffer.
 pub fn scratch_ptr() -> i32 {
     // `addr_of_mut!` avoids creating a reference to `static mut`.
     core::ptr::addr_of_mut!(SCRATCH) as i32
+}
+
+/// Returns the guest address of the 4 KiB `on_data_state` scratch buffer.
+pub fn state_ptr() -> i32 {
+    core::ptr::addr_of_mut!(STATE_SCRATCH) as i32
+}
+
+/// Packs a 32-bit verdict and the updated state byte length into the `i64`
+/// return value of `on_data_state`.
+pub const fn pack_state_verdict(verdict: i32, state_len: usize) -> i64 {
+    (((state_len as u32 as u64) << 32) | (verdict as u32 as u64)) as i64
+}
+
+/// Validates a host-provided `(state_ptr, state_cap)` pair and returns the
+/// mutable state buffer slice.
+///
+/// # Safety
+/// The caller must ensure the region is valid for the duration of the call.
+pub unsafe fn state_mut<'a>(ptr: i32, cap: i32) -> Option<&'a mut [u8]> {
+    if ptr < 0 || cap < 0 {
+        return None;
+    }
+    let n = cap as usize;
+    if n > STATE_CAP {
+        return None;
+    }
+    Some(core::slice::from_raw_parts_mut(ptr as usize as *mut u8, n))
 }
 
 /// Validates a host-provided (ptr, len) pair and returns a shared slice.
@@ -163,6 +195,20 @@ pub fn parse_u16(b: &[u8]) -> Option<u16> {
             return None;
         }
         v = v.checked_mul(10)?.checked_add((c - b'0') as u16)?;
+    }
+    Some(v)
+}
+
+pub fn parse_u64(b: &[u8]) -> Option<u64> {
+    let mut v: u64 = 0;
+    if b.is_empty() {
+        return None;
+    }
+    for &c in b {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add((c - b'0') as u64)?;
     }
     Some(v)
 }

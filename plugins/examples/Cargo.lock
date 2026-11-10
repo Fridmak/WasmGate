@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "http_body_guard"
+version = "0.1.0"
+dependencies = [
+ "wg-common",
+]
+
+[[package]]
 name = "http_guard"
 version = "0.1.0"
 dependencies = [
