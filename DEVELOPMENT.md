@@ -42,10 +42,25 @@ reload под нагрузкой и e2e-прогоны против nginx/HAProx
 JSON DPI в ядре, eBPF-фильтрация и контейнерная упаковка. Куда встраивать —
 §10 «Рецепты».
 
-**Следующий шаг:** отдельная ветка `feat/dotnet-control-plane` — C#/.NET 8
-control plane с gRPC/UDS, версиями конфигурации, публикацией и откатом.
+**Следующий шаг:** ветка `feat/dotnet-control-plane` — C#/.NET 10 control plane
+в `control-plane/`. Уже есть: gRPC-сессия агента с mTLS, встроенный агентский
+CA и автоматическая выдача сертификатов (`AgentEnrollment.Enroll` +
+`IAgentProvisioningService` + admin API `POST /api/v1/agents` и
+`/api/v1/registration-tokens`), сущности, интерфейсы, схема PostgreSQL и
+AOT-совместимый хост. Пока на in-memory-хранилищах; репозитории и оркестрация
+релизов — заглушки.
 
-**Milestones:** M0 ✅ · M1 ✅ · M2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ⏳ (см. `docs/05`).
+**Осталось на стороне data plane (Go, отдельная ветка):**
+
+- сгенерировать Go-код из общего proto;
+- реализовать клиент control plane: `Session`, `Hello`, heartbeat, приём
+  `ApplyRelease`, отправка `ApplyResult`;
+- генерация RSA-ключа и CSR с `CN=wasmgate-agent:<id>`, вызов `Enroll`,
+  сохранение `agent.key`/`agent.crt`/`agents-ca.crt` в state-каталоге;
+- подключение по mTLS и продление сертификата до истечения;
+- last-known-good релиз на диске на случай недоступности control plane.
+
+**Milestones:** M0 ✅ · M1 ✅ · M2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 🟡 skeleton (см. `docs/05`).
 
 ---
 
@@ -147,6 +162,8 @@ WasmGate/
 │       ├── metrics_test.go  тесты + бенчи метрик (цена на соединение)
 │       ├── admin_test.go    тесты эндпоинтов
 │       └── log_test.go      тесты разбора уровня логирования
+├── control-plane/            C#/.NET 10 control plane (skeleton): gRPC, entities,
+│                            PostgreSQL schema, AOT-compatible host
 ├── configs/
 │   ├── wasmgate.yaml        основной пример
 │   ├── showcase.yaml        все восемь плагинов + native SNI baseline

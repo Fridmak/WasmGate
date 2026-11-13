@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>WasmGate.Control.Infrastructure</RootNamespace>
+    <AssemblyName>WasmGate.Control.Infrastructure</AssemblyName>
+    <!-- Dapper.AOT generates interceptors at build time. -->
+    <InterceptorsNamespaces>$(InterceptorsNamespaces);Dapper.AOT</InterceptorsNamespaces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WasmGate.Control.Core\WasmGate.Control.Core.csproj" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Dapper" Version="2.1.89" />
+    <PackageReference Include="Dapper.AOT" Version="1.1.0" />
+  </ItemGroup>
+</Project>

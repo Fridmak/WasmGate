@@ -584,6 +584,7 @@ health checks, circuit breaker, hot reload, метрики, ABI v3 и восем
 | [`plugins/examples/README.md`](plugins/examples/README.md) | ABI v1–v3, ограничения песочницы, сборка плагинов |
 | [`benchmarks/README.md`](benchmarks/README.md) | Методика, сценарии, Linux-результаты, сравнение с nginx/HAProxy |
 | [`deployments/README.md`](deployments/README.md) | Production-сборка, systemd, рекомендации |
+| [`control-plane/README.md`](control-plane/README.md) | Каркас control plane: AOT-стек, схема, что реализовано |
 | [`docs/01-problem.md`](docs/01-problem.md) | Постановка задачи, пользователи, метрики |
 | [`docs/02-architecture-tech.md`](docs/02-architecture-tech.md) | Архитектура, стек, ADR, модель плагинов |
 | [`docs/03-mvp.md`](docs/03-mvp.md) | Границы MVP, Definition of Done, методика замеров |

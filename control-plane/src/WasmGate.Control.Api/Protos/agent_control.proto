@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package wasmgate.control.v1;
+
+option csharp_namespace = "WasmGate.Control.V1";
+
+// AgentControl is the long-lived session between one data plane and the
+// control plane. The data plane always dials out; the control plane pushes
+// commands over the same stream.
+service AgentControl {
+  rpc Session(stream AgentMessage) returns (stream ControlMessage);
+}
+
+// AgentEnrollment issues the first mTLS certificate to a data plane. It is a
+// unary call protected by a one-time enrollment token: at this point the agent
+// does not have a client certificate yet.
+service AgentEnrollment {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}
+
+message EnrollRequest {
+  string agent_id = 1;
+  string token = 2;
+  bytes csr_pem = 3;
+}
+
+message EnrollResponse {
+  bytes certificate_pem = 1;
+  bytes ca_pem = 2;
+  int64 expires_at_unix_ms = 3;
+}
+
+message AgentMessage {
+  oneof payload {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    ApplyResult apply_result = 3;
+    HealthReport health = 4;
+  }
+}
+
+message ControlMessage {
+  oneof payload {
+    ApplyRelease apply_release = 1;
+    Drain drain = 2;
+    SetLogLevel set_log_level = 3;
+    Ping ping = 4;
+    Rollback rollback = 5;
+  }
+}
+
+message Hello {
+  string agent_id = 1;
+  string name = 2;
+  string version = 3;
+  repeated string abi_versions = 4;
+  map<string, string> labels = 5;
+  string active_release_id = 6;
+  string active_config_sha256 = 7;
+}
+
+message Heartbeat {
+  string agent_id = 1;
+  int64 unix_ms = 2;
+  string active_release_id = 3;
+  int64 connections_active = 4;
+  int64 connections_accepted_total = 5;
+  int64 plugin_rejected_total = 6;
+  int64 dial_failures_total = 7;
+  int64 uptime_seconds = 8;
+}
+
+message ApplyRelease {
+  string release_id = 1;
+  string config_sha256 = 2;
+  bytes config_yaml = 3;
+  repeated ArtifactRef artifacts = 4;
+  int32 timeout_ms = 5;
+  string deployment_id = 6;
+}
+
+message ArtifactRef {
+  string id = 1;
+  string name = 2;
+  ArtifactKind kind = 3;
+  int64 size = 4;
+  string signature = 5;
+}
+
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_WASM = 1;
+  ARTIFACT_KIND_CERTIFICATE = 2;
+  ARTIFACT_KIND_KEY = 3;
+  ARTIFACT_KIND_OTHER = 4;
+}
+
+message ApplyResult {
+  string release_id = 1;
+  bool ok = 2;
+  string error = 3;
+  repeated ListenerStatus listeners = 4;
+  int64 applied_at_unix_ms = 5;
+  string deployment_id = 6;
+}
+
+message ListenerStatus {
+  string name = 1;
+  string address = 2;
+  bool bound = 3;
+  string error = 4;
+}
+
+message HealthReport {
+  string active_release_id = 1;
+  int64 connections_active = 2;
+  int64 connections_accepted_total = 3;
+  int64 plugin_rejected_total = 4;
+  int64 dial_failures_total = 5;
+  int64 uptime_seconds = 6;
+}
+
+message Drain {
+  int32 timeout_ms = 1;
+  string reason = 2;
+}
+
+message Rollback {
+  string release_id = 1;
+  string reason = 2;
+}
+
+message SetLogLevel {
+  string level = 1;
+}
+
+message Ping {
+  string nonce = 1;
+}

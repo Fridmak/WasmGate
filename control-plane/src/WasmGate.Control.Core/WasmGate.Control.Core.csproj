@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>WasmGate.Control.Core</RootNamespace>
+    <AssemblyName>WasmGate.Control.Core</AssemblyName>
+  </PropertyGroup>
+</Project>
