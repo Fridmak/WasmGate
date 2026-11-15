@@ -22,7 +22,10 @@ public interface IAgentRepository
     /// <returns>The agent, or null when it does not exist.</returns>
     Task<Agent?> FindByNameAsync(string name, CancellationToken cancellationToken);
 
-    /// <summary>Inserts a new agent or updates its static identity fields.</summary>
+    /// <summary>
+    /// Inserts a new agent or updates its identity and reported runtime fields
+    /// (version, ABI versions, labels, status and active release).
+    /// </summary>
     /// <param name="agent">Agent to persist.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     Task UpsertAsync(Agent agent, CancellationToken cancellationToken);
@@ -30,8 +33,14 @@ public interface IAgentRepository
     /// <summary>Updates the liveness and active-release fields of an agent.</summary>
     /// <param name="id">Agent identifier.</param>
     /// <param name="seenAt">Time of the last heartbeat or control message.</param>
-    /// <param name="activeReleaseId">Release currently applied by the agent, if known.</param>
-    /// <param name="activeConfigSha256">SHA-256 of the active configuration, if known.</param>
+    /// <param name="activeReleaseId">
+    /// Release currently applied by the agent. Null keeps the stored value;
+    /// an empty string clears it.
+    /// </param>
+    /// <param name="activeConfigSha256">
+    /// SHA-256 of the active configuration. Null keeps the stored value; an
+    /// empty string clears it.
+    /// </param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     Task TouchAsync(
         Guid id,

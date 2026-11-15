@@ -33,15 +33,16 @@ public sealed class Deployment
 }
 
 /// <summary>
-/// One rollout step. <see cref="Selector"/> is a raw JSON label selector;
-/// interpreting it belongs to the deployment service.
+/// One rollout step. <see cref="Selector"/> is either <c>*</c> (all agents) or
+/// a raw JSON object whose string properties must match the agent labels.
+/// Interpreting it belongs to the deployment service.
 /// </summary>
 public sealed class DeploymentWave
 {
     /// <summary>0-based wave index; lower waves are applied first.</summary>
     public required int Index { get; init; }
 
-    /// <summary>Raw JSON label selector that chooses the agents in this wave.</summary>
+    /// <summary>Either <c>*</c> or a JSON object used as a label selector.</summary>
     public required string Selector { get; init; }
 
     /// <summary>Current wave status.</summary>

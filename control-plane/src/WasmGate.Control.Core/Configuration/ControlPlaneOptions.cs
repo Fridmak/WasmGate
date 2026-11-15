@@ -14,9 +14,11 @@ public sealed class ControlPlaneOptions
 {
     /// <summary>
     /// Connection string used when <see cref="PostgresConnectionString"/> is not set.
+    /// Port 6767 is used instead of the default 5432 so that a locally installed
+    /// PostgreSQL service cannot shadow the development container.
     /// </summary>
     public const string DefaultPostgresConnectionString =
-        "Host=127.0.0.1;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate";
+        "Host=127.0.0.1;Port=6767;Database=wasmgate;Username=wasmgate;Password=wasmgate";
 
     /// <summary>
     /// Npgsql connection string for the control-plane database.
@@ -63,12 +65,21 @@ public sealed class ControlPlaneOptions
     /// </remarks>
     public string WasmgateBinary { get; init; } = "wasmgate";
 
-    /// <summary>Optional path to the Ed25519 private key used to sign release manifests.</summary>
+    /// <summary>Optional path to the ECDSA P-256 private key used to sign release manifests.</summary>
     /// <remarks>
     /// Absolute path, or relative to the control-plane process working directory.
-    /// Null means no signing key is configured.
+    /// When the file is missing, a new P-256 key is generated at this path and
+    /// the matching public key is written next to it as <c>&lt;path&gt;.pub</c>.
+    /// The private key is written with owner-only permissions on Unix.
     /// </remarks>
     public string? SigningKeyPath { get; init; }
+
+    /// <summary>Maximum time allowed for one <c>wasmgate -validate</c> invocation.</summary>
+    /// <remarks>
+    /// A hung validator must not keep an admin request open forever. The
+    /// validator process is killed when the timeout elapses.
+    /// </remarks>
+    public TimeSpan ValidationTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>PEM certificate of the agent CA used to sign data-plane certificates.</summary>
     public string AgentCaCertPath { get; init; } = "data/ca/agents-ca.crt";

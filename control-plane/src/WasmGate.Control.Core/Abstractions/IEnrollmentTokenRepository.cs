@@ -16,8 +16,20 @@ public interface IEnrollmentTokenRepository
     /// <returns>The token, or null when it does not exist.</returns>
     Task<EnrollmentToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken);
 
-    /// <summary>Increments the token usage counter.</summary>
+    /// <summary>
+    /// Atomically increments the token usage counter if the token still has a
+    /// free use.
+    /// </summary>
     /// <param name="id">Token identifier.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    Task ConsumeAsync(Guid id, CancellationToken cancellationToken);
+    /// <remarks>
+    /// A PostgreSQL implementation must use a single conditional update, for
+    /// example:
+    /// <c>UPDATE enrollment_tokens SET used_count = used_count + 1
+    /// WHERE id = @id AND used_count &lt; max_uses RETURNING true</c>.
+    /// Read-then-write is not sufficient because two agents may enroll at the
+    /// same time with the same registration token.
+    /// </remarks>
+    /// <returns>True when a use was reserved; false when the token is missing or exhausted.</returns>
+    Task<bool> ConsumeAsync(Guid id, CancellationToken cancellationToken);
 }

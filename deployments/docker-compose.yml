@@ -1,0 +1,53 @@
+# Local/cloud bring-up of the control plane and its database.
+#
+#   docker compose -f deployments/docker-compose.yml up --build
+#
+# The data plane is not started automatically: it needs an enrollment token and
+# an agent id created through the admin API. See AGENT-PROTOCOL.md or run:
+#
+#   docker run --rm -it --network wasmgate_default \
+#     -e WASMGATE_ENROLL_TOKEN=<token> \
+#     -v wasmgate_dpstate:/data \
+#     wasmgate-dp -config /data/wasmgate.yaml \
+#       -cp http://control-plane:9096 -cp-insecure \
+#       -cp-agent-id <agent-id> -cp-name dp-01 -cp-state /data/agent
+#
+name: wasmgate
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: wasmgate
+      POSTGRES_PASSWORD: wasmgate
+      POSTGRES_DB: wasmgate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 001 → 002 → 003, applied once when the volume is initialized.
+      - ../control-plane/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wasmgate -d wasmgate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  control-plane:
+    build:
+      context: ..
+      dockerfile: deployments/docker/control-plane.Dockerfile
+    environment:
+      WASMGATE_CP_POSTGRES: "Host=postgres;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate"
+      WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
+      WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"
+    ports:
+      - "9096:9096"
+      - "9097:9097"
+    volumes:
+      - cpdata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  cpdata:

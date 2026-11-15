@@ -1,11 +1,10 @@
-# WasmGate Control Plane (skeleton)
+# WasmGate Control Plane
 
-C# control plane for WasmGate. The MVP is functional end-to-end on in-memory
-stores: mTLS agent sessions, automatic certificate enrollment, artifact upload,
-configuration versions, validated/signed releases, deployments and rollback.
-The PostgreSQL repository adapters are intentionally left as
-`NotImplementedException` practice stubs; the rest of the service works without
-a database.
+C# control plane for WasmGate. Automatic certificate enrollment, artifact
+upload, configuration versions, validated/signed releases, deployments,
+rollback and audit work end-to-end on PostgreSQL. The Go data plane enrolls
+itself, keeps a control session open and applies pushed releases; the wire
+contract is documented in [`AGENT-PROTOCOL.md`](AGENT-PROTOCOL.md).
 
 The control plane is optional. A standalone WasmGate data plane keeps working
 from a local YAML file and `SIGHUP`; the CP adds versioning, validation,
@@ -18,7 +17,7 @@ distribution, rollback and audit for a fleet.
 | Runtime | .NET 10 LTS | .NET 8 LTS is out of support since 10 Nov 2026 |
 | API | ASP.NET Core gRPC + Minimal API | gRPC is officially supported with Native AOT |
 | Serialization | protobuf + `System.Text.Json` source generation where needed | no reflection at runtime |
-| Database | PostgreSQL for production; in-memory adapters for the MVP | real transactions, JSONB in PostgreSQL; fast local bring-up |
+| Database | PostgreSQL 17 | real transactions, JSONB and concurrent writers |
 | Data access | Dapper.AOT + Npgsql | Dapper.AOT generates mapping code at build time (AOT-safe); Npgsql is Native AOT compatible since 8.0; EF Core is not AOT-compatible |
 | AOT | `PublishAot=true` | small, fast-starting native executable |
 | Artifacts | content-addressed SHA-256 storage | immutable releases and verifiable distribution |
@@ -43,23 +42,25 @@ Dapper.AOT restrictions to keep in mind:
 
 ```
 control-plane/
+├── AGENT-PROTOCOL.md              CP ↔ DP contract and operational notes
 ├── Directory.Build.props
 ├── global.json
-├── migrations/001_init.sql        PostgreSQL schema
+├── migrations/                    PostgreSQL schema, apply 001 → 003 in order
 └── src/
     ├── WasmGate.Control.Core/     entities + interfaces (no infrastructure)
     │   ├── Entities/
     │   ├── Abstractions/
     │   └── Configuration/
     ├── WasmGate.Control.Infrastructure/
-    │   ├── Postgres/              Npgsql repository stubs (practice area)
+    │   ├── Postgres/              Npgsql + Dapper.AOT repositories
     │   ├── Artifacts/             local content-addressed store
     │   ├── Validation/            Go validator adapter
     │   ├── Security/              ECDSA signer and agent CA
-    │   └── Agents/                in-memory stores + session registry
+    │   └── Agents/                provisioning, release workflow, session registry
     └── WasmGate.Control.Api/
-        ├── Protos/agent_control.proto
+        ├── Protos/agent_control.proto   source of the Go bindings (`make proto`)
         ├── Services/AgentControlService.cs
+        ├── Services/ArtifactDownloadService.cs
         ├── Endpoints/AdminEndpoints.cs
         └── Program.cs
 ```
@@ -70,9 +71,12 @@ control-plane/
 - `http://`, `https://` and `unix:///absolute/path.sock` listen addresses.
   Ports are explicit; URI paths, queries and fragments are rejected. `https://`
   supports mutual TLS with a custom agent CA.
-- The gRPC `Session` accepts `Hello`, validates the mTLS certificate identity,
-  handles session takeover, reads `Heartbeat`/`ApplyResult`/`Health` and closes
-  displaced sessions.
+- The gRPC `AgentControl.Session` loop: Hello validation, mTLS identity check,
+  agent persistence, session takeover, heartbeat handling, apply results and
+  offline marking on disconnect.
+- `AgentArtifacts.Download`: streams content-addressed artifacts to enrolled
+  agents over the same mTLS identity, so releases with WASM plugins apply
+  without a shared filesystem.
 - An agent certificate authority (`PkiCertificateAuthority`) generates or loads
   the agent CA and signs data-plane certificate requests.
 - The `AgentEnrollment.Enroll` gRPC service issues the first certificate from a
@@ -82,16 +86,16 @@ control-plane/
 - Admin HTTP endpoints: `POST /api/v1/agents`, `POST /api/v1/registration-tokens`,
   `POST /api/v1/artifacts`, `POST/GET /api/v1/configs`, `POST/GET /api/v1/releases`,
   `POST /api/v1/deployments`, `POST /api/v1/deployments/{id}/rollback`,
-  `GET /api/v1/agents`, `GET /api/v1/audit`.
+  `GET /api/v1/agents`, `GET /api/v1/audit`, plus `/healthz` (liveness) and
+  `/readyz` (PostgreSQL probe).
 - Artifact store, Go validator adapter, ECDSA release signer and the complete
   release/deploy/rollback workflow.
 - Domain entities for agents, config versions, artifacts, releases, deployments,
   waves, audit events, certificates and enrollment tokens.
 - Repository, artifact store, validator, signer and session-registry interfaces.
-- Dapper.AOT + Npgsql wiring. PostgreSQL adapters are the practice area; the MVP
-  runs on in-memory stores.
-- PostgreSQL schema with content-addressed artifacts and audit log.
-- Remaining admin routes return `501`.
+- Dapper.AOT + Npgsql wiring. `NpgsqlDataSource` is registered in `Program.cs`,
+  and every repository is PostgreSQL-backed (`Postgres*` in
+  `Infrastructure/Postgres`). Apply the migrations before the first request.
 
 ## Dapper.AOT query pattern
 
@@ -100,30 +104,39 @@ control-plane/
 [module: DapperAot]
 
 // repository
-private sealed class Row
+internal sealed class Row
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
 }
 
-const string sql = """SELECT id AS "Id", name AS "Name" FROM agents WHERE id = @id""";
+const string sql = """SELECT id, name FROM agents WHERE id = @id""";
 await using var connection = await dataSource.OpenConnectionAsync(ct);
 var row = await connection.QuerySingleOrDefaultAsync<Row>(sql, new { id });
 ```
 
 Use the SQL-string overload, not `CommandDefinition`: the generator must see the
-SQL at build time.
+SQL at build time. Column names are matched to properties with underscores
+ignored, so `registered_at` fills `RegisteredAt`.
+
+Two rules that are easy to get wrong:
+
+- The row type must be at least `internal`. A `private` nested type compiles but
+  is silently left unpopulated.
+- Read `timestamptz` into `DateTime`, not `DateTimeOffset`: Dapper.AOT cannot
+  convert the value and throws `InvalidCastException` at runtime.
+  `PostgresTimestamps` in `Infrastructure/Postgres` does the conversion.
 
 ## What is intentionally not implemented
 
-- SQL in the `Postgres*Repository` adapters (the control plane runs on in-memory
-  stores for the MVP)
-- `GoConfigValidator` requires a built `wasmgate` binary; it delegates validation
-  to the Go data plane and does not duplicate the schema in C#
-- Deployment health gates, approvals, OIDC/RBAC
-- Heartbeat timeout/reaper and certificate renewal/revocation checks at `Session`
-- PostgreSQL persistence for agents, enrollment tokens, certificates, configs,
-  releases, deployments and audit
+Future work, not accidental gaps:
+
+- Deployment health gates, approvals, OIDC/RBAC.
+- Heartbeat timeout/reaper: an agent is marked `Offline` when its session ends,
+  but a half-open connection keeps it `Online` until the transport fails.
+- Certificate renewal and revocation checks when a session starts.
+- `GoConfigValidator` needs a built `wasmgate` binary. Validation stays in the Go
+  data plane; the C# service never duplicates the schema.
 
 ## Run
 
@@ -136,33 +149,45 @@ If SDK 10 is installed outside `C:\Program Files\dotnet` (for example with
 to `PATH`, set `DOTNET_ROOT`, or point Rider's .NET CLI path at it.
 
 ```bash
-# 1. PostgreSQL
+# 1. PostgreSQL. Host port 6767, not 5432: a local PostgreSQL service often
+#    already owns 5432, and psql then talks to the wrong server.
 docker run --rm \
   -e POSTGRES_USER=wasmgate \
   -e POSTGRES_PASSWORD=wasmgate \
   -e POSTGRES_DB=wasmgate \
-  -p 5432:5432 postgres:17
+  -p 127.0.0.1:6767:5432 postgres:17
 
-# 2. Schema (from the repository root)
-psql "postgresql://wasmgate:wasmgate@127.0.0.1:5432/wasmgate" \
+# 2. Schema (from the repository root, in this order)
+psql "postgresql://wasmgate:wasmgate@127.0.0.1:6767/wasmgate" \
   -f control-plane/migrations/001_init.sql
-psql "postgresql://wasmgate:wasmgate@127.0.0.1:5432/wasmgate" \
+psql "postgresql://wasmgate:wasmgate@127.0.0.1:6767/wasmgate" \
   -f control-plane/migrations/002_enrollment.sql
+psql "postgresql://wasmgate:wasmgate@127.0.0.1:6767/wasmgate" \
+  -f control-plane/migrations/003_schema_fixes.sql
 
 # 3. Build and run (global.json lives in control-plane/)
 cd control-plane
 dotnet build WasmGate.Control.sln
 dotnet run --project src/WasmGate.Control.Api
 
-# 4. Health (from another terminal)
-curl http://127.0.0.1:9097/healthz
+# 4. Health and readiness (from another terminal)
+curl http://127.0.0.1:9097/healthz   # liveness
+curl http://127.0.0.1:9097/readyz    # 503 until PostgreSQL answers
+
+# 5. Data plane (from the repository root; see AGENT-PROTOCOL.md)
+make build
+./bin/wasmgate -config state/dp.yaml \
+  -cp http://127.0.0.1:9096 -cp-insecure \
+  -cp-token <enroll-token> -cp-agent-id <agent-id> \
+  -cp-name dp-01 -cp-labels region=eu,role=edge \
+  -cp-state state/agent
 ```
 
 Environment variables:
 
 | Variable | Default |
 |---|---|
-| `WASMGATE_CP_POSTGRES` | `Host=127.0.0.1;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate` |
+| `WASMGATE_CP_POSTGRES` | `Host=127.0.0.1;Port=6767;Database=wasmgate;Username=wasmgate;Password=wasmgate` |
 | `WASMGATE_CP_GRPC_LISTEN` | `http://127.0.0.1:9096` — HTTP/2; `http://<ip\|localhost\|*>:<port>`, `https://<ip\|localhost\|*>:<port>` or `unix:///absolute/path.sock` |
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` — HTTP/1.1; `http://<ip\|localhost\|*>:<port>` or `unix:///absolute/path.sock` |
 | `WASMGATE_CP_GRPC_TLS_CERT` | unset — PEM server certificate for `https://` |
@@ -174,6 +199,7 @@ Environment variables:
 | `WASMGATE_CP_AGENT_CERT_TTL` | `30.00:00:00` — lifetime of issued agent certificates |
 | `WASMGATE_CP_ARTIFACT_ROOT` | `data/artifacts` — absolute, or relative to the CP working directory |
 | `WASMGATE_CP_WASMGATE_BIN` | `wasmgate` — absolute, relative to the CP working directory, or a bare command resolved via `PATH` |
+| `WASMGATE_CP_VALIDATE_TIMEOUT` | `00:01:00` — maximum time for one `wasmgate -validate` run; invariant `TimeSpan` format |
 | `WASMGATE_CP_SIGNING_KEY` | unset — absolute, or relative to the CP working directory |
 
 Listen addresses are validated strictly:
@@ -406,17 +432,16 @@ needs the MSVC build tools.
 
 ## Suggested next steps
 
-Control plane:
+The control plane and the data-plane client are wired end to end. Remaining
+hardening:
 
-1. Replace the in-memory agent/token/certificate stores with `Postgres*Repository`.
-2. Implement `FileSystemArtifactStore` and `PostgresArtifactRepository`.
-3. Implement `GoConfigValidator` by materializing a temporary release tree and
-   running `wasmgate -config <file> -validate`.
-4. Implement `IReleaseService`: config → validate → release → deployment waves.
-5. Add `ApplyRelease` dispatch through `IAgentSession` and collect `ApplyResult`.
-6. Add `Renew` RPC, certificate revocation check at `Session`, heartbeat
-   timeout/reaper.
-7. Add health-gated promotion and rollback, OIDC/RBAC, audit writes.
+1. Add a heartbeat timeout/reaper that marks agents `Offline` without a socket
+   close, and certificate renewal/revocation checks on reconnect.
+2. Add health-gated wave promotion and approvals; today the first apply result
+   closes the deployment.
+3. Add OIDC/RBAC in front of the admin API and request-scoped audit details.
+4. Implement `Drain` and `SetLogLevel` on the data plane (they are logged and
+   ignored today).
 
 Data plane (Go, not in this branch yet):
 

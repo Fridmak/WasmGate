@@ -11,6 +11,11 @@ namespace WasmGate.Control.Infrastructure.Security;
 /// control plane; the derived public key can be shipped to data planes for
 /// verification.
 /// </summary>
+/// <remarks>
+/// The key is stored as an unencrypted PKCS#8 PEM file. On Unix it is written
+/// with owner-only permissions. The public key is written next to it as
+/// <c>&lt;path&gt;.pub</c> in SubjectPublicKeyInfo PEM format.
+/// </remarks>
 public sealed class EcdsaReleaseSigner : IReleaseSigner
 {
     private readonly ECDsa _key;
@@ -69,7 +74,7 @@ public sealed class EcdsaReleaseSigner : IReleaseSigner
                 HashAlgorithmName.SHA256,
                 DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
         }
-        catch (FormatException)
+        catch (Exception ex) when (ex is FormatException or CryptographicException)
         {
             return Task.FromResult(false);
         }

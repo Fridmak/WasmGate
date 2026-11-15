@@ -20,6 +20,9 @@ public enum EnrollmentFailure
 
     /// <summary>An agent with the same name already exists.</summary>
     AlreadyExists = 5,
+
+    /// <summary>The request contains an invalid identifier, name, lifetime or use count.</summary>
+    InvalidRequest = 6,
 }
 
 /// <summary>Thrown when enrollment or agent provisioning fails.</summary>

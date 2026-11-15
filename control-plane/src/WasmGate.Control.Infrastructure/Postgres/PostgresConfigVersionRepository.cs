@@ -1,29 +1,138 @@
+using Dapper;
 using Npgsql;
 using WasmGate.Control.Core.Abstractions;
 using WasmGate.Control.Core.Entities;
 
 namespace WasmGate.Control.Infrastructure.Postgres;
 
-/// <summary>PostgreSQL implementation of the configuration-version store.</summary>
+/// <summary>
+/// PostgreSQL implementation of the configuration-version store.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A configuration version is immutable. <see cref="ConfigVersion.CreatedAt"/>
+/// is set by the service and written explicitly.
+/// </para>
+/// <para>
+/// The unique index is <c>(environment, sha256)</c>, so the same YAML may exist
+/// in several environments. A duplicate upload is ignored instead of failing:
+/// the caller reads the stored row with <see cref="FindByHashAsync"/>.
+/// </para>
+/// </remarks>
 public sealed class PostgresConfigVersionRepository(NpgsqlDataSource dataSource) : IConfigVersionRepository
 {
+    /// <summary>Connection pool for the control-plane database.</summary>
     private NpgsqlDataSource DataSource { get; } = dataSource;
 
     /// <inheritdoc />
-    public Task AddAsync(ConfigVersion version, CancellationToken cancellationToken) =>
-        throw new NotImplementedException("TODO: INSERT INTO config_versions (...) VALUES (...)");
+    public async Task AddAsync(ConfigVersion version, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO config_versions (id, environment, sha256, yaml, message, created_by, created_at)
+            VALUES (@Id, @Environment, @Sha256, @Yaml, @Message, @CreatedBy, @CreatedAt)
+            ON CONFLICT (environment, sha256) DO NOTHING
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        await connection.ExecuteAsync(sql, new
+        {
+            version.Id,
+            version.Environment,
+            version.Sha256,
+            version.Yaml,
+            version.Message,
+            version.CreatedBy,
+            CreatedAt = PostgresTimestamps.ToParameter(version.CreatedAt),
+        });
+    }
 
     /// <inheritdoc />
-    public Task<ConfigVersion?> FindAsync(Guid id, CancellationToken cancellationToken) =>
-        throw new NotImplementedException(
-            "TODO: SELECT ... FROM config_versions WHERE id = @id. " +
-            "With Dapper.AOT use the SQL-string overload (not CommandDefinition).");
+    public async Task<ConfigVersion?> FindAsync(Guid id, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id, environment, sha256, yaml, message, created_by, created_at
+            FROM config_versions
+            WHERE id = @id
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        var row = await connection.QuerySingleOrDefaultAsync<ConfigVersionRow>(sql, new { id });
+        return row is null ? null : ToConfigVersion(row);
+    }
 
     /// <inheritdoc />
-    public Task<ConfigVersion?> FindByHashAsync(string sha256, CancellationToken cancellationToken) =>
-        throw new NotImplementedException("TODO: SELECT ... FROM config_versions WHERE sha256 = @sha256");
+    public async Task<ConfigVersion?> FindByHashAsync(
+        string environment,
+        string sha256,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id, environment, sha256, yaml, message, created_by, created_at
+            FROM config_versions
+            WHERE environment = @environment AND sha256 = @sha256
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        var row = await connection.QuerySingleOrDefaultAsync<ConfigVersionRow>(
+            sql,
+            new { environment, sha256 });
+
+        return row is null ? null : ToConfigVersion(row);
+    }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<ConfigVersion>> ListAsync(string environment, CancellationToken cancellationToken) =>
-        throw new NotImplementedException("TODO: SELECT ... FROM config_versions WHERE environment = @env ORDER BY created_at DESC");
+    public async Task<IReadOnlyList<ConfigVersion>> ListAsync(
+        string environment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id, environment, sha256, yaml, message, created_by, created_at
+            FROM config_versions
+            WHERE environment = @environment
+            ORDER BY created_at DESC, id DESC
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        var rows = await connection.QueryAsync<ConfigVersionRow>(sql, new { environment });
+        return rows.Select(ToConfigVersion).ToList();
+    }
+
+    /// <summary>Maps one row of <c>config_versions</c> to a domain version.</summary>
+    /// <param name="row">Row read from the database.</param>
+    /// <returns>The mapped configuration version.</returns>
+    private static ConfigVersion ToConfigVersion(ConfigVersionRow row) => new()
+    {
+        Id = row.Id,
+        Environment = row.Environment,
+        Sha256 = row.Sha256,
+        Yaml = row.Yaml,
+        Message = row.Message,
+        CreatedBy = row.CreatedBy,
+        CreatedAt = PostgresTimestamps.FromColumn(row.CreatedAt),
+    };
+}
+
+/// <summary>Row shape of <c>config_versions</c> as read by Dapper.AOT.</summary>
+internal sealed class ConfigVersionRow
+{
+    /// <summary>Configuration-version identifier.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>Logical environment.</summary>
+    public string Environment { get; set; } = string.Empty;
+
+    /// <summary>SHA-256 of the YAML document.</summary>
+    public string Sha256 { get; set; } = string.Empty;
+
+    /// <summary>Raw YAML document.</summary>
+    public string Yaml { get; set; } = string.Empty;
+
+    /// <summary>Optional change description, or null.</summary>
+    public string? Message { get; set; }
+
+    /// <summary>Principal that created the version.</summary>
+    public string CreatedBy { get; set; } = string.Empty;
+
+    /// <summary>Creation time, in UTC.</summary>
+    public DateTime CreatedAt { get; set; }
 }

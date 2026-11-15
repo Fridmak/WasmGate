@@ -19,7 +19,7 @@
 | **S5** | **F2 rate limiting** ✅ | sliding window, 64 шарда, per-IP/subnet, allow-list, backoff-бан | Фильтр в fast path + замеры |
 | **S6** | **WASM host + L7-плагины** ✅ | wazero без WASI, ABI v1/v2/v3, `on_data`/`on_data_ex`/`on_data_state` once/stream, mutation, `route_pools`, ConnState, sandbox-лимиты, 8 плагинов | Плагин на Rust/TinyGo работает без рестарта |
 | **S7** | **TLS + отказоустойчивость** ✅ | TLS passthrough/termination, SNI-routes, circuit breaker, `dial_retries` | TLS-листенеры и failover |
-| **S8** | **F1 Control Plane** 🟡 | C#/.NET 10 LTS + gRPC, версии, валидация, rollback, аудит; mTLS + встроенный агентский CA и авто-enrollment (`Enroll` + tokens) в `control-plane/`; DP-клиент — отдельной веткой | Hot-reload из CP без простоя, агенты получают сертификаты автоматически |
+| **S8** | **F1 Control Plane** ✅ | C#/.NET 10 LTS + gRPC, версии, валидация, подписанные релизы, волны, rollback, аудит; mTLS + встроенный агентский CA и авто-enrollment (`Enroll` + tokens); PostgreSQL + Dapper.AOT; gRPC `Session`; DP сам enroll'ится, держит сессию и применяет релизы (`control-plane/AGENT-PROTOCOL.md`) | Hot-reload из CP без простоя, агенты получают сертификаты автоматически |
 | **S9** | Эксперименты ✅ | прогоны S0–S5, `benchstat`, сравнение с nginx/HAProxy | Глава «Эксперименты» |
 | **S10** | F3 (опц.) ⏳ | zero-alloc JSON DPI в ядре | Дифференциатор №1 (опц.) |
 | **S11** | Текст + защита ⏳ | написание ВКР, слайды, демо-стенд | Документ + защита |
@@ -39,7 +39,7 @@
 | **M3** Baseline | метрики/pprof/health-checks/CLI + числа S0–S5 против nginx/HAProxy — ✅ |
 | **M4** Rate limiting (F2) | купирование flood'а, 0 allocs/op в fast path (≈65 нс) — ✅ |
 | **M5** WASM + L7 + TLS | плагин на Rust/TinyGo, sandbox-лимиты, `on_data`/`on_data_ex`/`on_data_state`, `route_pools`, TLS/SNI, ABI v3 — ✅ |
-| **M6** Hot Reload CP (F1) | apply/rollback из C# без разрыва, < 100 мс — 🟡 skeleton |
+| **M6** Hot Reload CP (F1) | apply/rollback из C# без разрыва, < 100 мс — ✅ CP + DP-клиент (`control-plane/AGENT-PROTOCOL.md`) |
 
 ---
 
@@ -82,7 +82,7 @@
 
 ГЛАВА 3. РЕАЛИЗАЦИЯ
   3.1. MVP: L4-TCP-прокси (ядро, проксирование, балансировка, drain).   ← см. 03
-  3.2. Реализация Hot Reload; C# Control Plane — план (M6).
+  3.2. Реализация Hot Reload; C# Control Plane и Go-клиент сессии (M6).
   3.3. Реализация rate limiting соединений.
   3.4. Реализация WASM-рантайма и ABI (без host functions).
   3.5. Реализация TLS/SNI, health-checks и circuit breaker.
@@ -152,4 +152,6 @@
   breaker, 8 showcase-плагинов) — см. [`DEVELOPMENT.md`](../DEVELOPMENT.md).
 - [x] Внешний baseline S0–S5 снят и задокументирован (M3).
 - [x] Демо reload / plugin / rate limiting готовы (M5).
-- [ ] C# Control Plane (M6) и защита ВКР.
+- [x] C# Control Plane (M6): PostgreSQL + Dapper.AOT, gRPC `Session`, enrollment,
+  артефакты, деплой/rollback; DP-клиент применяет релизы.
+- [ ] Защита ВКР.

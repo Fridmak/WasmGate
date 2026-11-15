@@ -23,9 +23,16 @@ public sealed class AgentEnrollmentService(
         {
             var result = await provisioning.EnrollAsync(
                 request.AgentId,
+                request.Name,
                 request.Token,
                 request.CsrPem.ToStringUtf8(),
                 context.CancellationToken);
+
+            logger.LogInformation(
+                "agent enrolled: {AgentId} name={Name} expires={ExpiresAt}",
+                request.AgentId,
+                request.Name,
+                result.NotAfter);
 
             return new EnrollResponse
             {
@@ -39,6 +46,7 @@ public sealed class AgentEnrollmentService(
             var status = ex.Failure switch
             {
                 EnrollmentFailure.CsrInvalid => StatusCode.InvalidArgument,
+                EnrollmentFailure.InvalidRequest => StatusCode.InvalidArgument,
                 EnrollmentFailure.AlreadyExists => StatusCode.AlreadyExists,
                 EnrollmentFailure.InvalidToken => StatusCode.Unauthenticated,
                 EnrollmentFailure.Expired => StatusCode.PermissionDenied,
@@ -47,7 +55,11 @@ public sealed class AgentEnrollmentService(
                 _ => StatusCode.Internal,
             };
 
-            logger.LogWarning("enrollment rejected: {Failure} agent={AgentId}", ex.Failure, request.AgentId);
+            logger.LogWarning(
+                "enrollment rejected: {Failure} agent={AgentId} name={Name}",
+                ex.Failure,
+                request.AgentId,
+                request.Name);
             throw new RpcException(new Status(status, ex.Message));
         }
     }

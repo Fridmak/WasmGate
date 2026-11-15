@@ -16,11 +16,15 @@ public interface IConfigVersionRepository
     /// <returns>The version, or null when it does not exist.</returns>
     Task<ConfigVersion?> FindAsync(Guid id, CancellationToken cancellationToken);
 
-    /// <summary>Finds a configuration version by its SHA-256.</summary>
+    /// <summary>Finds a configuration version by its environment and SHA-256.</summary>
+    /// <param name="environment">Logical environment name.</param>
     /// <param name="sha256">Lower-case hex SHA-256 of the YAML document.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The version, or null when it does not exist.</returns>
-    Task<ConfigVersion?> FindByHashAsync(string sha256, CancellationToken cancellationToken);
+    Task<ConfigVersion?> FindByHashAsync(
+        string environment,
+        string sha256,
+        CancellationToken cancellationToken);
 
     /// <summary>Lists configuration versions for an environment, newest first.</summary>
     /// <param name="environment">Logical environment name.</param>

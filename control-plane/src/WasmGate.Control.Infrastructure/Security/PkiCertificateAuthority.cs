@@ -56,6 +56,15 @@ public sealed class PkiCertificateAuthority : ICertificateAuthority
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
+        if (notAfter <= notBefore)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(notAfter),
+                notAfter,
+                "The certificate expiry must be in the future.");
+        }
+
         CertificateRequest csr;
         try
         {
@@ -89,8 +98,6 @@ public sealed class PkiCertificateAuthority : ICertificateAuthority
                 new OidCollection { new Oid("1.3.6.1.5.5.7.3.2") },
                 critical: false));
 
-        var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
-
         X509Certificate2 issued;
         lock (_gate)
         {
@@ -116,18 +123,41 @@ public sealed class PkiCertificateAuthority : ICertificateAuthority
 
     /// <summary>Loads the CA key pair or generates it when the files are missing.</summary>
     /// <returns>A certificate usable for signing agent certificates.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Only one of the certificate/key files exists, or the pair cannot be loaded.
+    /// </exception>
     private X509Certificate2 LoadOrCreate()
     {
         var certPath = _options.AgentCaCertPath;
         var keyPath = _options.AgentCaKeyPath;
 
-        if (File.Exists(certPath) && File.Exists(keyPath))
+        var hasCertificate = File.Exists(certPath);
+        var hasKey = File.Exists(keyPath);
+        if (hasCertificate != hasKey)
         {
-            using var pem = X509Certificate2.CreateFromPemFile(certPath, keyPath);
-            return X509CertificateLoader.LoadPkcs12(
-                pem.Export(X509ContentType.Pkcs12),
-                password: null,
-                X509KeyStorageFlags.DefaultKeySet);
+            throw new InvalidOperationException(
+                "The agent CA is incomplete: " +
+                $"certificate '{certPath}' exists={hasCertificate}, key '{keyPath}' exists={hasKey}. " +
+                "Restore the missing file or remove both files to generate a new CA. " +
+                "Generating a new CA invalidates every issued agent certificate.");
+        }
+
+        if (hasCertificate)
+        {
+            try
+            {
+                using var pem = X509Certificate2.CreateFromPemFile(certPath, keyPath);
+                return X509CertificateLoader.LoadPkcs12(
+                    pem.Export(X509ContentType.Pkcs12),
+                    password: null,
+                    X509KeyStorageFlags.DefaultKeySet);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot load the agent CA from '{certPath}' and '{keyPath}': {ex.Message}",
+                    ex);
+            }
         }
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(certPath));

@@ -8,8 +8,9 @@ namespace WasmGate.Control.Infrastructure.Agents;
 
 /// <summary>
 /// Minimal release workflow: immutable configs, validated and signed releases,
-/// wave-based deployment and rollback. Deployment progress is updated by the
-/// agent apply results (not yet wired to the gRPC session) and by the operator.
+/// wave-based deployment and rollback. Apply results reported by agents move a
+/// deployment to its terminal state; there is no health gate or approval step
+/// yet, so the first successful or failed result wins.
 /// </summary>
 public sealed class ReleaseService(
     IConfigVersionRepository configs,
@@ -39,8 +40,9 @@ public sealed class ReleaseService(
             throw new ArgumentException("Configuration body is required.", nameof(yaml));
         }
 
+        var normalizedEnvironment = environment.Trim();
         var sha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(yaml))).ToLowerInvariant();
-        var existing = await configs.FindByHashAsync(sha, cancellationToken);
+        var existing = await configs.FindByHashAsync(normalizedEnvironment, sha, cancellationToken);
         if (existing is not null)
         {
             return existing;
@@ -48,22 +50,14 @@ public sealed class ReleaseService(
 
         var version = new ConfigVersion
         {
-            Environment = environment,
+            Environment = normalizedEnvironment,
             Sha256 = sha,
             Yaml = yaml,
             Message = message,
             CreatedBy = actor,
         };
         await configs.AddAsync(version, cancellationToken);
-        await audit.AppendAsync(
-            new AuditEvent
-            {
-                Actor = actor,
-                Action = "config.create",
-                Target = version.Id.ToString("D"),
-                DetailsJson = null,
-            },
-            cancellationToken);
+        await AuditAsync(actor, "config.create", version.Id.ToString("D"), cancellationToken);
         return version;
     }
 
@@ -75,11 +69,30 @@ public sealed class ReleaseService(
         string actor,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(artifacts);
+
         var config = await configs.FindAsync(configVersionId, cancellationToken)
                      ?? throw new InvalidOperationException("Configuration version not found.");
 
+        if (!string.Equals(config.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Configuration version belongs to environment '{config.Environment}', not '{environment}'.");
+        }
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var artifact in artifacts)
         {
+            if (string.IsNullOrWhiteSpace(artifact.Name))
+            {
+                throw new InvalidOperationException("Artifact install path is required.");
+            }
+
+            if (!names.Add(artifact.Name))
+            {
+                throw new InvalidOperationException($"Artifact path '{artifact.Name}' is listed more than once.");
+            }
+
             if (await artifactRepository.FindAsync(artifact.ArtifactId, cancellationToken) is null)
             {
                 throw new InvalidOperationException($"Artifact '{artifact.ArtifactId}' not found.");
@@ -105,15 +118,7 @@ public sealed class ReleaseService(
         };
         release.Signature = await signer.SignAsync(release, cancellationToken);
         await releases.AddAsync(release, cancellationToken);
-        await audit.AppendAsync(
-            new AuditEvent
-            {
-                Actor = actor,
-                Action = "release.create",
-                Target = release.Id.ToString("D"),
-                DetailsJson = null,
-            },
-            cancellationToken);
+        await AuditAsync(actor, "release.create", release.Id.ToString("D"), cancellationToken);
         return release;
     }
 
@@ -125,11 +130,24 @@ public sealed class ReleaseService(
         string actor,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(waveSelectors);
+
         var release = await releases.FindAsync(releaseId, cancellationToken)
                       ?? throw new InvalidOperationException("Release not found.");
         if (release.Status == ReleaseStatus.Revoked)
         {
             throw new InvalidOperationException("Release is revoked.");
+        }
+
+        if (!string.Equals(release.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Release belongs to environment '{release.Environment}', not '{environment}'.");
+        }
+
+        foreach (var selector in waveSelectors)
+        {
+            ValidateSelector(selector);
         }
 
         var config = await configs.FindAsync(release.ConfigVersionId, cancellationToken)
@@ -165,10 +183,18 @@ public sealed class ReleaseService(
             }
         }
 
+        var commandsSent = 0;
+
         foreach (var wave in deployment.Waves)
         {
             var targets = allAgents.Where(agent => Matches(agent, wave.Selector)).ToList();
-            wave.Status = targets.Count == 0 ? DeploymentWaveStatus.Skipped : DeploymentWaveStatus.Running;
+            if (targets.Count == 0)
+            {
+                wave.Status = DeploymentWaveStatus.Skipped;
+                continue;
+            }
+
+            wave.Status = DeploymentWaveStatus.Running;
             wave.StartedAt = DateTimeOffset.UtcNow;
 
             foreach (var agent in targets)
@@ -191,23 +217,33 @@ public sealed class ReleaseService(
                             Artifacts: artifactRefs,
                             DeploymentId: deployment.Id.ToString("D")),
                         cancellationToken);
+                    commandsSent++;
                 }
                 catch (Exception)
                 {
-                    // A failed send is left for the heartbeat reaper / next deployment.
+                    // The agent will reconnect and the next deployment can
+                    // retry. A failed send is not a failed apply: the agent may
+                    // never receive the command.
                 }
             }
         }
 
-        await deployments.UpdateAsync(deployment, cancellationToken);
-        await audit.AppendAsync(
-            new AuditEvent
+        if (commandsSent == 0)
+        {
+            deployment.Status = DeploymentStatus.Failed;
+            deployment.CompletedAt = DateTimeOffset.UtcNow;
+            foreach (var wave in deployment.Waves.Where(w => w.Status == DeploymentWaveStatus.Running))
             {
-                Actor = actor,
-                Action = "deployment.start",
-                Target = deployment.Id.ToString("D"),
-                DetailsJson = null,
-            },
+                wave.Status = DeploymentWaveStatus.Failed;
+                wave.CompletedAt = deployment.CompletedAt;
+            }
+        }
+
+        await deployments.UpdateAsync(deployment, cancellationToken);
+        await AuditAsync(
+            actor,
+            deployment.Status == DeploymentStatus.Failed ? "deployment.failed" : "deployment.start",
+            deployment.Id.ToString("D"),
             cancellationToken);
         return deployment;
     }
@@ -221,6 +257,17 @@ public sealed class ReleaseService(
     {
         var deployment = await deployments.FindAsync(deploymentId, cancellationToken)
                          ?? throw new InvalidOperationException("Deployment not found.");
+
+        if (!string.Equals(deployment.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Deployment belongs to environment '{deployment.Environment}', not '{environment}'.");
+        }
+
+        if (deployment.Status == DeploymentStatus.RolledBack)
+        {
+            throw new InvalidOperationException("Deployment was already rolled back.");
+        }
 
         var releaseList = await releases.ListAsync(environment, cancellationToken);
         var currentIndex = releaseList.ToList().FindIndex(r => r.Id == deployment.ReleaseId);
@@ -241,17 +288,15 @@ public sealed class ReleaseService(
             actor,
             cancellationToken);
 
-        await audit.AppendAsync(
-            new AuditEvent
-            {
-                Actor = actor,
-                Action = "deployment.rollback",
-                Target = deploymentId.ToString("D"),
-                DetailsJson = null,
-            },
-            cancellationToken);
+        await AuditAsync(actor, "deployment.rollback", deploymentId.ToString("D"), cancellationToken);
     }
 
+    /// <summary>
+    /// Returns true when an agent matches one wave selector.
+    /// </summary>
+    /// <param name="agent">Agent to test.</param>
+    /// <param name="selector"><c>*</c> or a JSON label selector.</param>
+    /// <returns>True when the agent belongs to the wave.</returns>
     private static bool Matches(Agent agent, string selector)
     {
         if (string.IsNullOrWhiteSpace(selector) || selector == "*")
@@ -270,6 +315,7 @@ public sealed class ReleaseService(
             foreach (var property in document.RootElement.EnumerateObject())
             {
                 if (!agent.Labels.TryGetValue(property.Name, out var value) ||
+                    property.Value.ValueKind != JsonValueKind.String ||
                     !string.Equals(value, property.Value.GetString(), StringComparison.Ordinal))
                 {
                     return false;
@@ -283,5 +329,65 @@ public sealed class ReleaseService(
             return false;
         }
     }
-}
 
+    /// <summary>Validates one wave selector before any command is sent.</summary>
+    /// <param name="selector"><c>*</c> or a JSON object with string values.</param>
+    /// <exception cref="InvalidOperationException">The selector is empty or not a JSON object.</exception>
+    private static void ValidateSelector(string selector)
+    {
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            throw new InvalidOperationException("Wave selector is empty.");
+        }
+
+        if (selector == "*")
+        {
+            return;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(selector);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Wave selector '{selector}' is not valid JSON: {ex.Message}",
+                ex);
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException(
+                    $"Wave selector '{selector}' must be '*' or a JSON object.");
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    throw new InvalidOperationException(
+                        $"Wave selector '{selector}' must contain only string label values.");
+                }
+            }
+        }
+    }
+
+    /// <summary>Appends one audit event for a release-workflow operation.</summary>
+    /// <param name="actor">Principal that performed the operation.</param>
+    /// <param name="action">Stable action name.</param>
+    /// <param name="target">Entity the action applies to.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    private Task AuditAsync(string actor, string action, string target, CancellationToken cancellationToken) =>
+        audit.AppendAsync(
+            new AuditEvent
+            {
+                Actor = actor,
+                Action = action,
+                Target = target,
+            },
+            cancellationToken);
+}

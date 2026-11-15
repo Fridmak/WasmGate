@@ -43,12 +43,14 @@ JSON DPI в ядре, eBPF-фильтрация и контейнерная уп
 §10 «Рецепты».
 
 **Следующий шаг:** ветка `feat/dotnet-control-plane` — C#/.NET 10 control plane
-в `control-plane/`. Уже есть: gRPC-сессия агента с mTLS, встроенный агентский
-CA и автоматическая выдача сертификатов (`AgentEnrollment.Enroll` +
-`IAgentProvisioningService` + admin API `POST /api/v1/agents` и
-`/api/v1/registration-tokens`), сущности, интерфейсы, схема PostgreSQL и
-AOT-совместимый хост. Пока на in-memory-хранилищах; репозитории и оркестрация
-релизов — заглушки.
+в `control-plane/`. Готово: встроенный агентский CA и автоматическая выдача
+сертификатов (`AgentEnrollment.Enroll` + `IAgentProvisioningService` + admin API
+`POST /api/v1/agents` и `/api/v1/registration-tokens`), артефакты, версии
+конфигураций, валидация через Go-бинарник, подписанные релизы, деплой волнами,
+rollback, аудит, PostgreSQL-репозитории на Dapper.AOT и gRPC `Session`.
+Data plane подключается сам: enrollment по токену, `Hello`, heartbeat,
+приём `ApplyRelease` с артефактами и `ApplyResult`. Контракт —
+`control-plane/AGENT-PROTOCOL.md`.
 
 **Осталось на стороне data plane (Go, отдельная ветка):**
 
@@ -81,6 +83,8 @@ AOT-совместимый хост. Пока на in-memory-хранилища�
 | Линтер               | `golangci-lint run` или `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...` |
 | Зависимости          | `go mod tidy`                                                                                            |
 | Кросс-сборка (Linux) | `$env:CGO_ENABLED=0;$env:GOOS="linux";$env:GOARCH="amd64";go build -o bin/wasmgate-linux ./cmd/wasmgate` |
+| Запуск с CP      | `go run ./cmd/wasmgate -config state/dp.yaml -cp http://127.0.0.1:9096 -cp-insecure -cp-token <token> -cp-name dp-01 -cp-state state/agent` |
+| Proto → Go       | `make proto` (нужны `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`) |
 
 > В репозитории есть `Makefile` (`make build`, `make test`, `make bench`, …), но
 > на Windows `make` обычно не установлен — используй команды `go` напрямую.
@@ -89,7 +93,7 @@ AOT-совместимый хост. Пока на in-memory-хранилища�
 
 ## 1. Требования
 
-- **Go 1.25+** (проверено на 1.27). `go version`.
+- **Go 1.26+** (проверено на 1.27; версия зафиксирована в `go.mod`). `go version`.
 - **C-компилятор** — только для `-race` на Windows (CGO). Варианты:
   - mingw-w64 / MSYS2, либо запускать race-тесты в WSL/Linux;
   - либо пропускать `-race` локально (в CI гоняем на Linux).
@@ -113,7 +117,7 @@ WasmGate/
 │   └── signals_windows.go   только Ctrl+C                    [//go:build windows]
 ├── internal/
 │   ├── config/
-│   │   ├── config.go           корень Config, Load(), кросс-полевой Validate()
+│   │   ├── config.go           корень Config, Load()/Parse(), Dir для путей, кросс-полевой Validate()
 │   │   ├── listener_config.go  ListenerConfig + Validate: таймауты, rate_limit,
 │   │   │                      plugin, sni_routes, tls
 │   │   ├── pool_config.go      PoolConfig + Validate: balance, dial_retries,
@@ -121,6 +125,13 @@ WasmGate/
 │   │   ├── config_test.go      тесты Load + бенчи Load/Validate
 │   │   ├── listener_config_test.go  тесты listener'а и его дефолтов
 │   │   └── pool_config_test.go      тесты пула
+│   ├── controlplane/        клиент control plane
+│   │   ├── options.go       Options + дефолты (heartbeat, backoff, ABI)
+│   │   ├── identity.go      agent.id/key/crt, CSR с CN=wasmgate-agent:<id>
+│   │   ├── client.go        Run-loop, enrollment, Session, heartbeat, dispatch
+│   │   ├── apply.go         приём ApplyRelease: артефакты, атомарная запись, Reload
+│   │   ├── controlplane_test.go  тесты путей, конфига, состояния, CSR
+│   │   └── wasmgatepb/      сгенерированные gRPC-биндинги (`make proto`)
 │   ├── proxy/               ← СЕРДЦЕ data plane
 │   │   ├── doc.go           обзор пакета (архитектура, швы расширения)
 │   │   ├── server.go        Server: листенеры, accept-loop, reload, shutdown

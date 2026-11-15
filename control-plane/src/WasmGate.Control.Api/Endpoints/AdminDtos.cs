@@ -14,9 +14,12 @@ public sealed record CreateAgentRequest(string Name, Dictionary<string, string>?
 public sealed record CreateAgentResponse(Guid AgentId, string EnrollToken);
 
 /// <summary>Request to create a shared registration token.</summary>
-/// <param name="NamePrefix">Optional agent-name prefix the token is scoped to.</param>
+/// <param name="NamePrefix">
+/// Optional prefix that every enrolling agent name must start with; null or
+/// empty means the token is not scoped.
+/// </param>
 /// <param name="MaxUses">Maximum number of enrollments.</param>
-/// <param name="TtlSeconds">How long the token stays valid.</param>
+/// <param name="TtlSeconds">How long the token stays valid, in seconds.</param>
 public sealed record CreateRegistrationTokenRequest(string? NamePrefix, int MaxUses, int TtlSeconds);
 
 /// <summary>Result of creating a registration token.</summary>
@@ -55,11 +58,11 @@ public sealed record CreateReleaseArtifact(string ArtifactId, string Name);
 /// <summary>Request to create a release.</summary>
 /// <param name="Environment">Logical environment.</param>
 /// <param name="ConfigVersionId">Configuration version to include.</param>
-/// <param name="Artifacts">Artifacts to include.</param>
+/// <param name="Artifacts">Artifacts to include; null is treated as an empty list.</param>
 public sealed record CreateReleaseRequest(
     string Environment,
     Guid ConfigVersionId,
-    List<CreateReleaseArtifact> Artifacts);
+    List<CreateReleaseArtifact>? Artifacts);
 
 /// <summary>Result of creating a release.</summary>
 /// <param name="Id">Release identifier.</param>

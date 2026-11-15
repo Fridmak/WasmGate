@@ -17,6 +17,10 @@ public sealed class EnrollmentToken
     public Guid? AgentId { get; init; }
 
     /// <summary>Optional agent-name prefix a registration token is scoped to.</summary>
+    /// <remarks>
+    /// The prefix is compared with the final agent name, not with the agent
+    /// identifier. A null value means that the token is not scoped.
+    /// </remarks>
     public string? NamePrefix { get; init; }
 
     /// <summary>How many times the token may be used before it expires.</summary>

@@ -33,8 +33,8 @@ builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.PostgresConnectionString).Build());
 
 builder.Services.AddSingleton<ICertificateAuthority>(new PkiCertificateAuthority(options));
-builder.Services.AddSingleton<IEnrollmentTokenRepository, InMemoryEnrollmentTokenRepository>();
-builder.Services.AddSingleton<IAgentCertificateRepository, InMemoryAgentCertificateRepository>();
+builder.Services.AddSingleton<IEnrollmentTokenRepository, PostgresEnrollmentTokenRepository>();
+builder.Services.AddSingleton<IAgentCertificateRepository, PostgresAgentCertificateRepository>();
 builder.Services.AddSingleton<IAgentProvisioningService, AgentProvisioningService>();
 builder.Services.AddSingleton<IReleaseService, ReleaseService>();
 
@@ -46,6 +46,7 @@ var app = builder.Build();
 
 app.MapGrpcService<AgentControlService>();
 app.MapGrpcService<AgentEnrollmentService>();
+app.MapGrpcService<ArtifactDownloadService>();
 app.MapAdminEndpoints();
 
 app.Run();

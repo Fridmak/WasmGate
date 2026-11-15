@@ -68,14 +68,10 @@ public sealed class FileSystemArtifactStore(ControlPlaneOptions options) : IArti
             var destination = PathFor(id);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 
-            if (File.Exists(destination))
-            {
-                File.Delete(tempPath);
-            }
-            else
-            {
-                File.Move(tempPath, destination);
-            }
+            // Content-addressed files are immutable, so overwriting an existing
+            // file is safe. Overwrite also closes the race between the
+            // File.Exists check and the move when two uploads finish at once.
+            File.Move(tempPath, destination, overwrite: true);
 
             return new Artifact
             {

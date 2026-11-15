@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using WasmGate.Control.Core.Abstractions;
 using WasmGate.Control.Core.Configuration;
@@ -10,17 +11,16 @@ using WasmGate.Control.Infrastructure.Validation;
 namespace WasmGate.Control.Api;
 
 /// <summary>
-/// ????????????? ???? ????????????, ??????????? ??? ?????? ??????????.
-/// ??? ?????????? ?????? ???????????? AOT.
+/// Builds runtime options and registers the control-plane services. Kept as an
+/// extension block so <c>Program.cs</c> stays a short composition root and the
+/// dependency graph remains explicit and AOT-friendly.
 /// </summary>
 public static class StartUp
 {
-    /// <param name="builder">??????????? ??????????, ? ???????? ????????????? ???????????.</param>
+    /// <param name="builder">Application builder whose host and services are configured.</param>
     extension(IHostApplicationBuilder builder)
     {
-        /// <summary>
-        /// ????????? ??????????? ? ?????? ??????????.
-        /// </summary>
+        /// <summary>Replaces the default logging with structured JSON to stdout.</summary>
         public void SetupLogging()
         {
             builder.Logging.ClearProviders();
@@ -36,9 +36,8 @@ public static class StartUp
             });
         }
 
-        /// <summary>
-        /// Get all oprions
-        /// </summary>
+        /// <summary>Reads control-plane options from environment variables.</summary>
+        /// <returns>Options with defaults applied for every unset variable.</returns>
         public ControlPlaneOptions GetCPOptions()
         {
             return new ControlPlaneOptions
@@ -49,6 +48,7 @@ public static class StartUp
                 ArtifactRoot = Env("WASMGATE_CP_ARTIFACT_ROOT") ?? "data/artifacts",
                 WasmgateBinary = Env("WASMGATE_CP_WASMGATE_BIN") ?? "wasmgate",
                 SigningKeyPath = Env("WASMGATE_CP_SIGNING_KEY"),
+                ValidationTimeout = EnvDuration("WASMGATE_CP_VALIDATE_TIMEOUT", TimeSpan.FromSeconds(60)),
                 AgentCaCertPath = Env("WASMGATE_CP_AGENT_CA_CERT") ?? "data/ca/agents-ca.crt",
                 AgentCaKeyPath = Env("WASMGATE_CP_AGENT_CA_KEY") ?? "data/ca/agents-ca.key",
                 AgentCertificateLifetime = EnvDuration("WASMGATE_CP_AGENT_CERT_TTL", TimeSpan.FromDays(30)),
@@ -63,18 +63,23 @@ public static class StartUp
         }
 
         /// <summary>
-        /// Persistence and infrastructure are registered now, but their PostgreSQL
-        /// implementations are intentionally TODO stubs.
+        /// Registers persistence, security and release-workflow services.
         /// </summary>
+        /// <remarks>
+        /// Every repository is backed by PostgreSQL. The connection string comes
+        /// from <see cref="ControlPlaneOptions.PostgresConnectionString"/>, and
+        /// the schema from <c>control-plane/migrations</c> must be applied before
+        /// the first request (see <c>control-plane/README.md</c>).
+        /// </remarks>
         public void RegisterServices()
         {
-            // In-memory implementations for the MVP; swap to PostgreSQL later.
-            builder.Services.AddSingleton<IAgentRepository, InMemoryAgentRepository>();
-            builder.Services.AddSingleton<IConfigVersionRepository, InMemoryConfigVersionRepository>();
-            builder.Services.AddSingleton<IArtifactRepository, InMemoryArtifactRepository>();
-            builder.Services.AddSingleton<IReleaseRepository, InMemoryReleaseRepository>();
-            builder.Services.AddSingleton<IDeploymentRepository, InMemoryDeploymentRepository>();
-            builder.Services.AddSingleton<IAuditLog, InMemoryAuditLog>();
+            builder.Services.AddSingleton<IAgentRepository, PostgresAgentRepository>();
+            builder.Services.AddSingleton<IConfigVersionRepository, PostgresConfigVersionRepository>();
+            builder.Services.AddSingleton<IArtifactRepository, PostgresArtifactRepository>();
+            builder.Services.AddSingleton<IReleaseRepository, PostgresReleaseRepository>();
+            builder.Services.AddSingleton<IDeploymentRepository, PostgresDeploymentRepository>();
+            builder.Services.AddSingleton<IAuditLog, PostgresAuditLog>();
+
             builder.Services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
             builder.Services.AddSingleton<IConfigValidator, GoConfigValidator>();
             builder.Services.AddSingleton<IReleaseSigner, EcdsaReleaseSigner>();
@@ -104,11 +109,14 @@ public static class StartUp
     /// <summary>Reads a duration environment variable, falling back to a default.</summary>
     /// <param name="name">Environment variable name.</param>
     /// <param name="defaultValue">Value used when the variable is unset or invalid.</param>
+    /// <remarks>
+    /// Accepts the invariant <see cref="TimeSpan"/> format, for example
+    /// <c>30.00:00:00</c> for 30 days or <c>00:05:00</c> for five minutes.
+    /// </remarks>
     /// <returns>Parsed duration or <paramref name="defaultValue"/>.</returns>
     private static TimeSpan EnvDuration(string name, TimeSpan defaultValue)
     {
         var value = Env(name);
-        return TimeSpan.TryParse(value, out var parsed) ? parsed : defaultValue;
+        return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed) ? parsed : defaultValue;
     }
 }
-

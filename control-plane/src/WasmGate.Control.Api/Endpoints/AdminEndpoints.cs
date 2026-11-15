@@ -1,3 +1,4 @@
+using Npgsql;
 using WasmGate.Control.Core.Abstractions;
 using WasmGate.Control.Core.Entities;
 
@@ -16,6 +17,7 @@ public static class AdminEndpoints
     public static IEndpointRouteBuilder MapAdminEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/healthz", () => Results.Text("ok"));
+        app.MapGet("/readyz", CheckReady);
 
         app.MapPost("/api/v1/artifacts", UploadArtifact);
         app.MapPost("/api/v1/configs", CreateConfig);
@@ -113,7 +115,7 @@ public static class AdminEndpoints
             var release = await service.CreateReleaseAsync(
                 request.Environment,
                 request.ConfigVersionId,
-                request.Artifacts
+                (request.Artifacts ?? [])
                     .Select(a => new ReleaseArtifact { ArtifactId = a.ArtifactId, Name = a.Name })
                     .ToList(),
                 actor: "admin-api",
@@ -268,4 +270,29 @@ public static class AdminEndpoints
         IAuditLog audit,
         CancellationToken cancellationToken) =>
         Results.Ok(await audit.ListAsync(100, cancellationToken));
+
+    /// <summary>Reports readiness: the process answers and PostgreSQL is reachable.</summary>
+    /// <param name="dataSource">Connection pool for the control-plane database.</param>
+    /// <param name="cancellationToken">Cancels the probe.</param>
+    /// <returns><c>ok</c> when a trivial query succeeds, otherwise HTTP 503.</returns>
+    private static async Task<IResult> CheckReady(
+        NpgsqlDataSource dataSource,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1";
+            command.CommandTimeout = 2;
+            await command.ExecuteScalarAsync(cancellationToken);
+            return Results.Text("ok");
+        }
+        catch (NpgsqlException)
+        {
+            return Results.Text(
+                "unavailable",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
 }

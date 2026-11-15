@@ -1,0 +1,24 @@
+# Build artifacts and local state never go into a build context.
+.git
+.github
+.obsidian
+.idea
+.vscode
+docs
+benchmarks
+
+bin
+dist
+*.exe
+*.prof
+*.out
+*.test
+
+# Control-plane build output and runtime state
+control-plane/**/bin
+control-plane/**/obj
+control-plane/data
+control-plane/.vs
+
+# Go data-plane local state created by the control-plane client
+state

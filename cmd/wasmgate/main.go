@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wasmgate/internal/config"
+	"wasmgate/internal/controlplane"
 	"wasmgate/internal/observe"
 	"wasmgate/internal/proxy"
 )
@@ -34,6 +35,16 @@ func run() error {
 		logLevel      = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		shutdownGrace = flag.Duration("shutdown-grace", 15*time.Second, "graceful shutdown timeout")
 		validateOnly  = flag.Bool("validate", false, "validate the configuration (and any WASM plugins) and exit")
+
+		cpEndpoint  = flag.String("cp", "", "control-plane gRPC endpoint (https:// for mTLS); empty = standalone")
+		cpToken     = flag.String("cp-token", os.Getenv("WASMGATE_ENROLL_TOKEN"), "one-time enrollment token used when no agent certificate exists")
+		cpState     = flag.String("cp-state", "state", "directory for the agent identity and applied-release state")
+		cpName      = flag.String("cp-name", "", "agent name reported to the control plane (default: host name)")
+		cpAgentID   = flag.String("cp-agent-id", "", "agent id assigned by the control plane (per-agent enrollment tokens)")
+		cpLabels    = flag.String("cp-labels", "", "comma-separated k=v labels used by deployment selectors")
+		cpServerCA  = flag.String("cp-server-ca", "", "PEM file with the CA that signed the control-plane server certificate")
+		cpHeartbeat = flag.Duration("cp-heartbeat", controlplane.DefaultHeartbeat, "heartbeat interval")
+		cpInsecure  = flag.Bool("cp-insecure", false, "allow a plaintext http:// control-plane endpoint (local development)")
 	)
 	flag.Parse()
 
@@ -135,6 +146,42 @@ func run() error {
 		)
 	}
 
+	// The control-plane client is optional. When -cp is set the data plane
+	// enrolls (once, if it has no certificate), opens Session and applies the
+	// releases the control plane pushes. The configuration file becomes
+	// control-plane managed: every applied release is written there.
+	cpCtx, cpCancel := context.WithCancel(context.Background())
+	defer cpCancel()
+	if *cpEndpoint != "" {
+		labels, err := parseLabels(*cpLabels)
+		if err != nil {
+			return err
+		}
+
+		client, err := controlplane.NewAgent(controlplane.Options{
+			Endpoint:    *cpEndpoint,
+			EnrollToken: *cpToken,
+			StateDir:    *cpState,
+			ConfigPath:  *configPath,
+			Name:        *cpName,
+			AgentID:     *cpAgentID,
+			Labels:      labels,
+			Heartbeat:   *cpHeartbeat,
+			ServerCA:    *cpServerCA,
+			Insecure:    *cpInsecure,
+		}, srv, log)
+		if err != nil {
+			return err
+		}
+
+		go func() {
+			if err := client.Run(cpCtx); err != nil {
+				log.Error("control-plane client stopped", "err", err)
+			}
+		}()
+		log.Info("control-plane client started", "endpoint", *cpEndpoint, "state_dir", *cpState)
+	}
+
 	// Build the set of signals: shutdown signals plus (on Unix) SIGHUP for reload.
 	reload := reloadSignal()
 	sigs := shutdownSignals()
@@ -154,6 +201,7 @@ func run() error {
 		}
 
 		log.Info("shutting down", "signal", s.String())
+		cpCancel()
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), *shutdownGrace)
 		err := srv.Shutdown(shutCtx)
 		if admin != nil {
@@ -166,4 +214,27 @@ func run() error {
 		return nil
 	}
 	return nil
+}
+
+// parseLabels parses "region=eu,role=edge" into a map. Empty input yields nil.
+func parseLabels(raw string) (map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+
+	labels := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid label %q (want key=value)", pair)
+		}
+		labels[key] = strings.TrimSpace(value)
+	}
+	return labels, nil
 }
