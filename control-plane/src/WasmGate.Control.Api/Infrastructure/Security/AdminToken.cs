@@ -15,7 +15,7 @@ internal static class AdminToken
 {
     private const string Scheme = "Bearer ";
 
-    /// <summary>Adds the token check to every <c>/api</c> request when a token is configured.</summary>
+    /// <summary>Adds the token check to every <c>/api</c> and <c>/metrics</c> request when a token is configured.</summary>
     /// <param name="app">Application whose pipeline is extended.</param>
     /// <param name="token">Configured token, or null/empty to disable authentication.</param>
     public static void UseAdminToken(this IApplicationBuilder app, string? token)
@@ -26,9 +26,11 @@ internal static class AdminToken
         }
 
         var expected = Encoding.UTF8.GetBytes(token);
+        var metricsPath = new PathString("/metrics");
 
         app.UseWhen(
-            context => context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
+            context => context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) ||
+                       context.Request.Path.Equals(metricsPath),
             branch => branch.Use(async (context, next) =>
             {
                 if (IsAuthorized(context.Request.Headers.Authorization, expected))

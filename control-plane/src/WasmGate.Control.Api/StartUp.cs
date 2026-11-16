@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using WasmGate.Control.Api.Observability;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
@@ -90,6 +91,7 @@ public static class StartUp
             builder.Services.AddSingleton<IEnvironmentRepository, PostgresEnvironmentRepository>();
             builder.Services.AddSingleton<IEnvironmentOperationLock, PostgresEnvironmentOperationLock>();
             builder.Services.AddSingleton<IConfigVersionRepository, PostgresConfigVersionRepository>();
+            builder.Services.AddSingleton<ControlMetrics>();
             builder.Services.AddSingleton<IArtifactRepository, PostgresArtifactRepository>();
             builder.Services.AddSingleton<IReleaseRepository, PostgresReleaseRepository>();
             builder.Services.AddSingleton<IDeploymentRepository, PostgresDeploymentRepository>();

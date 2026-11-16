@@ -7,6 +7,7 @@ using WasmGate.Control.Api.Grpc;
 using WasmGate.Control.Api.Hosting;
 using WasmGate.Control.Api.Infrastructure.Networking;
 using WasmGate.Control.Api.Infrastructure.Security;
+using WasmGate.Control.Api.Observability;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
@@ -68,6 +69,19 @@ var app = builder.Build();
 // bearer token.
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+var controlMetrics = app.Services.GetRequiredService<ControlMetrics>();
+var metricsPath = new PathString("/metrics");
+app.Use(async (context, next) =>
+{
+    await next(context);
+    if (context.Request.Path.StartsWithSegments("/api") ||
+        context.Request.Path.Equals(metricsPath))
+    {
+        controlMetrics.RecordHttp(context.Request.Method, context.Response.StatusCode);
+    }
+});
+
 app.UseAdminToken(options.AdminToken);
 
 app.MapGrpcService<AgentControlService>();

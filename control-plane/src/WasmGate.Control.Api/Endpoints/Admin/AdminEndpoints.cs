@@ -3,6 +3,7 @@ using WasmGate.Control.Api.Endpoints.Artifacts;
 using WasmGate.Control.Api.Endpoints.Audit;
 using WasmGate.Control.Api.Endpoints.Environments;
 using WasmGate.Control.Api.Endpoints.Health;
+using WasmGate.Control.Api.Endpoints.Metrics;
 using WasmGate.Control.Api.Endpoints.Releases;
 
 namespace WasmGate.Control.Api.Endpoints.Admin;
@@ -10,7 +11,8 @@ namespace WasmGate.Control.Api.Endpoints.Admin;
 /// <summary>
 /// Composition of the admin HTTP API: health probes, artifact upload,
 /// configuration versions, releases, deployments and rollback, agent
-/// provisioning, environment catalog, registration tokens and the audit trail.
+/// provisioning, environment catalog, registration tokens, Prometheus metrics
+/// and the audit trail.
 /// </summary>
 /// <remarks>
 /// The API has no authentication yet. It is meant to stay on a loopback or
@@ -30,5 +32,6 @@ internal static class AdminEndpoints
             .MapReleaseEndpoints()
             .MapAgentEndpoints()
             .MapEnvironmentEndpoints()
+            .MapMetricsEndpoints()
             .MapAuditEndpoints();
 }
