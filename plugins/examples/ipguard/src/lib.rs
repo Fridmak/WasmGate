@@ -18,9 +18,11 @@ fn panic(_info: &PanicInfo) -> ! {
 //   port         — client source TCP port
 //   return       — 0 (VerdictAllow) or 1 (VerdictDeny)
 #[no_mangle]
-pub extern "C" fn on_accept(_ip_hi: i64, ip_lo: i64, _port: i32) -> i32 {
-    // Reject any IPv4 host ending in .99 (e.g. 192.0.2.99 or 127.0.0.99).
-    if (ip_lo & 0xff) == 99 {
+pub extern "C" fn on_accept(ip_hi: i64, ip_lo: i64, _port: i32) -> i32 {
+    // IPv4 is represented as ::ffff:a.b.c.d: the high word is zero and the
+    // upper 32 bits of the low word are 0x0000ffff.
+    let ipv4_mapped = ip_hi == 0 && (ip_lo >> 32) == 0x0000_ffff;
+    if ipv4_mapped && (ip_lo & 0xff) == 99 {
         return 1;
     }
     0
@@ -29,19 +31,5 @@ pub extern "C" fn on_accept(_ip_hi: i64, ip_lo: i64, _port: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn on_close(_ip_hi: i64, _ip_lo: i64, _rx_bytes: i64, _tx_bytes: i64) {}
 
-// Optional L7 payload inspection hook:
-//   ptr, len — slice inside the plugin's linear memory containing the packet bytes
-//   return   — 0 (VerdictAllow) or 1 (VerdictDeny)
-//
-// Uncomment to enable L7 inspection ("once" mode inspects the first request
-// packet and then restores Linux splice zero-copy; "stream" mode inspects every chunk):
-//
-// #[no_mangle]
-// pub unsafe extern "C" fn on_data(ptr: *const u8, len: usize) -> i32 {
-//     let payload = core::slice::from_raw_parts(ptr, len);
-//     if !payload.is_empty() && payload[0] == b'X' {
-//         return 1;
-//     }
-//     0
-// }
-
+// This example intentionally exports only the L4 hooks. For L7 inspection see
+// http_guard, stream_guard and http_body_guard.

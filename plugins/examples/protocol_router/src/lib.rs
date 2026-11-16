@@ -50,7 +50,11 @@ pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
         return VERDICT_DENY;
     };
     if payload.is_empty() {
-        return if DENY_UNKNOWN { VERDICT_DENY } else { VERDICT_DEFAULT };
+        return if DENY_UNKNOWN {
+            VERDICT_DENY
+        } else {
+            VERDICT_DEFAULT
+        };
     }
 
     if is_tls(payload) {
@@ -92,7 +96,7 @@ fn is_postgres(b: &[u8]) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let sane_len = len >= 8 && len <= 1 << 20;
+    let sane_len = (8..=1 << 20).contains(&len);
     sane_len && (code == PG_PROTOCOL_V3 || code == PG_SSL_REQUEST || code == PG_GSSENC_REQUEST)
 }
 
@@ -101,15 +105,7 @@ fn is_redis(b: &[u8]) -> bool {
         return true; // RESP array (the normal client wire format)
     }
     const INLINE: &[&[u8]] = &[
-        b"PING",
-        b"AUTH ",
-        b"HELLO ",
-        b"GET ",
-        b"SET ",
-        b"MGET ",
-        b"INFO",
-        b"COMMAND",
-        b"SELECT ",
+        b"PING", b"AUTH ", b"HELLO ", b"GET ", b"SET ", b"MGET ", b"INFO", b"COMMAND", b"SELECT ",
     ];
     INLINE.iter().any(|cmd| wg::starts_with_ci(b, cmd))
 }

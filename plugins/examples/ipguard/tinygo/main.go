@@ -9,10 +9,11 @@ package main
 
 //go:wasmexport on_accept
 func onAccept(ipHi int64, ipLo int64, port int32) int32 {
-	_ = ipHi
 	_ = port
-	// Deny any IPv4 address whose last octet is 99.
-	if (ipLo & 0xff) == 99 {
+	// IPv4 is represented as ::ffff:a.b.c.d: high word zero, upper 32 bits of
+	// the low word 0x0000ffff. Deny any IPv4 address whose last octet is 99.
+	const ipv4MappedMask = int64(0x0000ffff)
+	if ipHi == 0 && (ipLo>>32) == ipv4MappedMask && (ipLo&0xff) == 99 {
 		return 1
 	}
 	return 0

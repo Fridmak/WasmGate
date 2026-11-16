@@ -79,23 +79,25 @@ pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
     if wg::starts_with_ci(req.target, b"/api/") || wg::eq_ci(req.target, b"/api") {
         return ROUTE_API;
     }
-    if wg::starts_with_ci(req.target, b"/static/")
-        || wg::starts_with_ci(req.target, b"/assets/")
-    {
+    if wg::starts_with_ci(req.target, b"/static/") || wg::starts_with_ci(req.target, b"/assets/") {
         return ROUTE_STATIC;
     }
-    if wg::starts_with_ci(req.target, b"/ws")
-        || wg::starts_with_ci(req.target, b"/socket")
-    {
+    if wg::starts_with_ci(req.target, b"/ws") || wg::starts_with_ci(req.target, b"/socket") {
         return ROUTE_WS;
     }
 
     VERDICT_DEFAULT
 }
 
-/// `example.com:8080` -> `example.com`, without allocating.
+/// `example.com:8080` → `example.com` and `[2001:db8::1]:8080` → `[2001:db8::1]`,
+/// without allocating.
 fn strip_port(host: &[u8]) -> &[u8] {
-    match host.iter().position(|&b| b == b':') {
+    if host.first() == Some(&b'[') {
+        if let Some(end) = host.iter().position(|&b| b == b']') {
+            return &host[..=end];
+        }
+    }
+    match host.iter().rposition(|&b| b == b':') {
         Some(i) => &host[..i],
         None => host,
     }

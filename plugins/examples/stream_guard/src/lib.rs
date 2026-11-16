@@ -113,29 +113,28 @@ fn scrub(payload: &mut [u8]) {
     let _ = wg::mask_header(payload, b"X-AspNet-Version", b"hidden");
 }
 
-/// Finds `"key"` followed by `:` and a JSON string, and replaces the string
-/// body with `*`. Values are found anywhere in the chunk, including inside a
-/// body that was split from its response headers.
+/// Finds every `"key"` followed by `:` and a JSON string, and replaces each
+/// string body with `*`. Values are found anywhere in the chunk, including
+/// inside a body that was split from its response headers.
 fn mask_json_value(buf: &mut [u8], key: &[u8]) -> bool {
+    let mut masked = false;
     let mut from = 0;
     while from < buf.len() {
         let quote = match wg::find(&buf[from..], b"\"") {
             Some(off) => from + off,
-            None => return false,
+            None => return masked,
         };
         let name_start = quote + 1;
         let name_end = match wg::find(&buf[name_start..], b"\"") {
             Some(off) => name_start + off,
-            None => return false,
+            None => return masked,
         };
-        if wg::eq_ci(&buf[name_start..name_end], key) {
-            if mask_after_key(buf, name_end + 1) {
-                return true;
-            }
+        if wg::eq_ci(&buf[name_start..name_end], key) && mask_after_key(buf, name_end + 1) {
+            masked = true;
         }
         from = name_end + 1;
     }
-    false
+    masked
 }
 
 fn mask_after_key(buf: &mut [u8], mut i: usize) -> bool {

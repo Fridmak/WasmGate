@@ -7,7 +7,7 @@
 #   go run ./cmd/wasmgate -config configs/showcase.yaml -validate
 #
 # All plugins are committed as prebuilt .wasm files, so no Rust toolchain is
-# required to try this config. See plugins/examples/README.md for the ABI,
+# required to try this config. See ../plugins/examples/README.md for the ABI,
 # stateless L7 limits, and the ABI v3 host-managed state used by
 # http_body_guard.
 version: 1
@@ -23,7 +23,7 @@ listeners:
     addr: "127.0.0.1:8100"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/ipguard/ipguard.wasm"
+      path: "../plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16
       timeout: 0s            # 0 = fastest; only for trusted plugins (WARN at load)
       data_mode: "once"
@@ -35,7 +35,7 @@ listeners:
     addr: "127.0.0.1:8101"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/http_guard/http_guard.wasm"
+      path: "../plugins/examples/http_guard/http_guard.wasm"
       max_memory_pages: 16
       timeout: 0s
       data_mode: "stream"
@@ -46,7 +46,7 @@ listeners:
     addr: "127.0.0.1:8102"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/path_router/path_router.wasm"
+      path: "../plugins/examples/path_router/path_router.wasm"
       timeout: 0s
       data_mode: "once"
       route_pools: ["api", "static", "ws"]   # verdict 2/3/4
@@ -57,7 +57,7 @@ listeners:
     addr: "127.0.0.1:8103"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/sni_guard/sni_guard.wasm"
+      path: "../plugins/examples/sni_guard/sni_guard.wasm"
       timeout: 0s
       data_mode: "once"
       route_pools: ["api", "static", "internal"]   # verdict 2/3/4
@@ -68,7 +68,7 @@ listeners:
     addr: "127.0.0.1:8104"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/protocol_router/protocol_router.wasm"
+      path: "../plugins/examples/protocol_router/protocol_router.wasm"
       timeout: 0s
       data_mode: "once"
       route_pools: ["tls-backend", "http-backend", "ssh-backend", "postgres", "redis"]
@@ -79,7 +79,7 @@ listeners:
     addr: "127.0.0.1:8105"
     upstream_pool: redis
     plugin:
-      path: "plugins/examples/redis_guard/redis_guard.wasm"
+      path: "../plugins/examples/redis_guard/redis_guard.wasm"
       timeout: 0s
       data_mode: "stream"
 
@@ -89,7 +89,7 @@ listeners:
     addr: "127.0.0.1:8106"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/stream_guard/stream_guard.wasm"
+      path: "../plugins/examples/stream_guard/stream_guard.wasm"
       timeout: 0s
       data_mode: "stream"
 
@@ -101,7 +101,7 @@ listeners:
     addr: "127.0.0.1:8109"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/http_body_guard/http_body_guard.wasm"
+      path: "../plugins/examples/http_body_guard/http_body_guard.wasm"
       timeout: 0s
       data_mode: "stream"
 
@@ -122,12 +122,12 @@ listeners:
   #   addr: "127.0.0.1:8108"
   #   upstream_pool: web
   #   tls:
-  #     cert_file: "certs/server.crt"
-  #     key_file: "certs/server.key"
+  #     cert_file: "../certs/server.crt"
+  #     key_file: "../certs/server.key"
   #     min_version: "1.2"
   #     handshake_timeout: 10s
   #   plugin:
-  #     path: "plugins/examples/http_guard/http_guard.wasm"
+  #     path: "../plugins/examples/http_guard/http_guard.wasm"
   #     timeout: 0s
   #     data_mode: "stream"
 

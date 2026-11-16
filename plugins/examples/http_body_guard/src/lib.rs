@@ -40,22 +40,10 @@ const MAX_CONN_BODY_BYTES: u64 = 128 * 1024;
 const MAX_REQUESTS_PER_CONN: u64 = 5;
 
 const ALLOWED_METHODS: &[&[u8]] = &[
-    b"GET",
-    b"HEAD",
-    b"POST",
-    b"PUT",
-    b"PATCH",
-    b"DELETE",
-    b"OPTIONS",
+    b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS",
 ];
 
-const BLOCKED_PREFIXES: &[&[u8]] = &[
-    b"/admin",
-    b"/.git",
-    b"/.env",
-    b"/wp-admin",
-    b"/actuator",
-];
+const BLOCKED_PREFIXES: &[&[u8]] = &[b"/admin", b"/.git", b"/.env", b"/wp-admin", b"/actuator"];
 
 const SECRET_KEYS: &[&[u8]] = &[
     b"password",
@@ -192,8 +180,7 @@ fn process_client_chunk(payload: &[u8], st: &mut ReqState, state_buf: &mut [u8])
                 if rem > MAX_HDR_ACCUM {
                     return false;
                 }
-                state_buf[HDR_ACCUM_OFF..HDR_ACCUM_OFF + rem]
-                    .copy_from_slice(&payload[cursor..]);
+                state_buf[HDR_ACCUM_OFF..HDR_ACCUM_OFF + rem].copy_from_slice(&payload[cursor..]);
                 st.hdr_len = rem;
                 return true;
             }
@@ -223,7 +210,11 @@ fn process_client_chunk(payload: &[u8], st: &mut ReqState, state_buf: &mut [u8])
             let take = (avail as u64).min(st.body_remaining) as usize;
             let body_slice = &payload[cursor..cursor + take];
 
-            if !inspect_body_slice(body_slice, st, &mut state_buf[HEADER_FIXED..HEADER_FIXED + TAIL_CAP]) {
+            if !inspect_body_slice(
+                body_slice,
+                st,
+                &mut state_buf[HEADER_FIXED..HEADER_FIXED + TAIL_CAP],
+            ) {
                 return false;
             }
             cursor += take;
@@ -246,7 +237,9 @@ fn validate_headers(hdr_block: &[u8], st: &mut ReqState) -> bool {
     }
     if wg::contains(req.target, b"../")
         || wg::contains_ci(req.target, b"%2e%2e")
-        || BLOCKED_PREFIXES.iter().any(|p| wg::starts_with_ci(req.target, p))
+        || BLOCKED_PREFIXES
+            .iter()
+            .any(|p| wg::starts_with_ci(req.target, p))
     {
         return false;
     }

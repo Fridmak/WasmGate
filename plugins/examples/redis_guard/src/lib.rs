@@ -131,10 +131,7 @@ fn parse_resp_array(buf: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
         return None;
     }
     let sub = if count > 1 {
-        match read_bulk(buf, pos) {
-            Some((arg, _)) => Some(arg),
-            None => None,
-        }
+        read_bulk(buf, pos).map(|(arg, _)| arg)
     } else {
         None
     };
@@ -192,7 +189,9 @@ fn expect_crlf(buf: &[u8], pos: usize) -> Option<usize> {
 fn parse_inline(buf: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
     let end = wg::find(buf, b"\n")?;
     let line = wg::trim_ascii(&buf[..end]);
-    let mut parts = line.split(|&b| b == b' ' || b == b'\t').filter(|p| !p.is_empty());
+    let mut parts = line
+        .split(|&b| b == b' ' || b == b'\t')
+        .filter(|p| !p.is_empty());
     let command = parts.next()?;
     let sub = parts.next();
     Some((command, sub))

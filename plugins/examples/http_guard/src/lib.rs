@@ -20,6 +20,7 @@
 //!   * at most 32 KiB per call, no stream reassembly;
 //!   * a header block split across TCP reads is only partly visible;
 //!   * a denial closes the connection; the guest cannot synthesise HTTP 403.
+//!
 //! These are exactly the limits that per-connection state (ABI v3) would fix.
 
 #![no_std]
@@ -34,13 +35,7 @@ fn panic(_: &PanicInfo) -> ! {
 
 /// Methods accepted by the policy. TRACE/CONNECT are deliberately absent.
 const ALLOWED_METHODS: &[&[u8]] = &[
-    b"GET",
-    b"HEAD",
-    b"POST",
-    b"PUT",
-    b"PATCH",
-    b"DELETE",
-    b"OPTIONS",
+    b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS",
 ];
 
 /// Path prefixes blocked before the request reaches the upstream.
@@ -57,12 +52,7 @@ const BLOCKED_PREFIXES: &[&[u8]] = &[
 
 /// User-Agent substrings blocked case-insensitively.
 const BLOCKED_UA: &[&[u8]] = &[
-    b"sqlmap",
-    b"nikto",
-    b"nmap",
-    b"masscan",
-    b"zgrab",
-    b"nuclei",
+    b"sqlmap", b"nikto", b"nmap", b"masscan", b"zgrab", b"nuclei",
 ];
 
 /// Set to `None` to disable Basic auth, or change the expected value.
@@ -181,6 +171,12 @@ fn bad_target(target: &[u8]) -> bool {
 fn headers_sane(headers: &[u8]) -> bool {
     let mut count = 0;
     for line in headers.split(|&b| b == b'\n') {
+        let line = wg::trim_ascii(line);
+        // The blank line ends the header block. Body bytes are not headers and
+        // may legitimately contain control characters.
+        if line.is_empty() {
+            break;
+        }
         count += 1;
         if count > MAX_HEADER_LINES || line.len() > MAX_HEADER_LINE {
             return false;

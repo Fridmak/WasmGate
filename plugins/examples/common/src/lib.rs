@@ -3,10 +3,11 @@
 //! Every plugin is a `#![no_std]` cdylib with no WASI imports. This crate is
 //! linked into each plugin; it performs no I/O and allocates nothing.
 //!
-//! The host copies an `on_data` chunk into the plugin's 32 KiB scratch region
-//! before every hook call and copies it back afterwards, so the helpers below
-//! operate directly on that buffer. In-place mutation is limited to the chunk:
-//! bytes cannot be inserted or removed.
+//! The host copies the `on_data`, `on_data_ex` or `on_data_state` payload into
+//! this module's 32 KiB scratch region before the hook call and copies it back
+//! afterwards, so the helpers below operate directly on that buffer. In-place
+//! mutation is limited to the chunk: bytes cannot be inserted or removed.
+//! `on_data_state` additionally receives the separate 4 KiB state buffer below.
 
 #![no_std]
 
@@ -165,20 +166,16 @@ pub fn trim_ascii(mut b: &[u8]) -> &[u8] {
 }
 
 pub fn be16(b: &[u8]) -> Option<u16> {
-    Some(((*b.get(0)? as u16) << 8) | (*b.get(1)? as u16))
+    Some(((*b.first()? as u16) << 8) | (*b.get(1)? as u16))
 }
 
 pub fn be24(b: &[u8]) -> Option<usize> {
-    Some(
-        ((*b.get(0)? as usize) << 16)
-            | ((*b.get(1)? as usize) << 8)
-            | (*b.get(2)? as usize),
-    )
+    Some(((*b.first()? as usize) << 16) | ((*b.get(1)? as usize) << 8) | (*b.get(2)? as usize))
 }
 
 pub fn be32(b: &[u8]) -> Option<u32> {
     Some(
-        ((*b.get(0)? as u32) << 24)
+        ((*b.first()? as u32) << 24)
             | ((*b.get(1)? as u32) << 16)
             | ((*b.get(2)? as u32) << 8)
             | (*b.get(3)? as u32),
@@ -240,8 +237,7 @@ pub fn parse_request(payload: &[u8]) -> Option<Request<'_>> {
     if method.is_empty() || target.is_empty() {
         return None;
     }
-    let skip = if payload.get(line_end) == Some(&b'\r')
-        && payload.get(line_end + 1) == Some(&b'\n')
+    let skip = if payload.get(line_end) == Some(&b'\r') && payload.get(line_end + 1) == Some(&b'\n')
     {
         2
     } else {
@@ -344,36 +340,20 @@ pub fn parse_status(payload: &[u8]) -> Option<u16> {
     parse_u16(code)
 }
 
+/// HTTP methods recognised by [`is_http_method`] and [`looks_like_http`].
+/// Policy plugins may allow a narrower subset.
+pub const HTTP_METHODS: &[&[u8]] = &[
+    b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS", b"TRACE", b"CONNECT",
+];
+
 pub fn is_http_method(m: &[u8]) -> bool {
-    m == b"GET"
-        || m == b"HEAD"
-        || m == b"POST"
-        || m == b"PUT"
-        || m == b"PATCH"
-        || m == b"DELETE"
-        || m == b"OPTIONS"
-        || m == b"TRACE"
-        || m == b"CONNECT"
+    HTTP_METHODS.iter().any(|candidate| *candidate == m)
 }
 
 pub fn looks_like_http(payload: &[u8]) -> bool {
-    const METHODS: &[&[u8]] = &[
-        b"GET",
-        b"HEAD",
-        b"POST",
-        b"PUT",
-        b"PATCH",
-        b"DELETE",
-        b"OPTIONS",
-        b"TRACE",
-        b"CONNECT",
-    ];
-    for m in METHODS {
-        if payload.starts_with(m) && payload.get(m.len()) == Some(&b' ') {
-            return true;
-        }
-    }
-    false
+    HTTP_METHODS
+        .iter()
+        .any(|method| payload.starts_with(method) && payload.get(method.len()) == Some(&b' '))
 }
 
 /// Extracts the SNI host name from one TLS ClientHello record.
@@ -402,7 +382,7 @@ pub fn parse_sni(rec: &[u8]) -> Option<&[u8]> {
     let cs_len = be16(ch.get(0..2)?)? as usize;
     let ch = ch.get(2 + cs_len..)?;
 
-    let comp_len = *ch.get(0)? as usize;
+    let comp_len = *ch.first()? as usize;
     let ch = ch.get(1 + comp_len..)?;
 
     let ext_total = be16(ch.get(0..2)?)? as usize;

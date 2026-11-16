@@ -42,7 +42,7 @@ listeners:
     # Optional WASM plugin (L4 on_accept / on_close + L7 on_data inspection, mutation & routing).
     # The module must export at least one of on_accept / on_data / on_close.
     # plugin:
-    #   path: "plugins/examples/ipguard/ipguard.wasm"
+    #   path: "../plugins/examples/ipguard/ipguard.wasm"
     #   max_memory_pages: 16   # 16 pages = 1 MiB linear-memory cap per instance
     #   timeout: 0s            # per-hook timeout; 0 = no timer (trusted plugin only; WARN)
     #   data_mode: "once"      # "once" (first packet, preserves Linux splice) | "stream" (every chunk)
@@ -59,8 +59,8 @@ listeners:
     # the client socket becomes *tls.Conn, so `splice(2)` is disabled for the
     # connection; in exchange WASM `on_data` sees plaintext.
     # tls:
-    #   cert_file: "certs/server.crt"
-    #   key_file: "certs/server.key"
+    #   cert_file: "../certs/server.crt"
+    #   key_file: "../certs/server.key"
     #   min_version: "1.2"     # "1.2" | "1.3"
     #   handshake_timeout: 10s # TLS handshake deadline (default 10s)
 
