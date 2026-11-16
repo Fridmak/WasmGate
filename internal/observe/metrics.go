@@ -30,7 +30,8 @@ type UpstreamStat struct {
 // (WritePrometheus, Snapshot) is a cold path used by the admin endpoint and may
 // allocate.
 type Metrics struct {
-	startedAt time.Time
+	startedAt    time.Time
+	buildVersion string
 
 	accepted        atomic.Int64 // total client connections accepted
 	closed          atomic.Int64 // total connection handlers finished
@@ -49,7 +50,19 @@ type Metrics struct {
 
 // NewMetrics returns an empty Metrics with its uptime clock started.
 func NewMetrics() *Metrics {
-	return &Metrics{startedAt: time.Now()}
+	return &Metrics{startedAt: time.Now(), buildVersion: "dev"}
+}
+
+// SetBuildVersion records the build version shown in wasmgate_build_info.
+// It is optional: NewMetrics defaults to "dev", and a nil Metrics ignores it.
+func (m *Metrics) SetBuildVersion(version string) {
+	if m == nil {
+		return
+	}
+	if version == "" {
+		version = "dev"
+	}
+	m.buildVersion = version
 }
 
 // Accept records an accepted client connection.
@@ -193,6 +206,10 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 // Cold path; allocates freely. A nil Metrics renders all zeros.
 func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	s := m.Snapshot()
+	buildVersion := "dev"
+	if m != nil && m.buildVersion != "" {
+		buildVersion = m.buildVersion
+	}
 
 	// The helpers take the value as `any` so counters (int64) and gauges built
 	// from uint64 fields render without a narrowing conversion gosec would
@@ -204,6 +221,8 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %v\n", name, help, name, name, v)
 	}
 
+	fmt.Fprintf(w, "# HELP wasmgate_build_info Build information.\n# TYPE wasmgate_build_info gauge\nwasmgate_build_info{version=\"%s\",go_version=\"%s\"} 1\n",
+		escapeLabel(buildVersion), escapeLabel(runtime.Version()))
 	counter("wasmgate_connections_accepted_total", "Client connections accepted.", s.ConnectionsAccepted)
 	counter("wasmgate_connections_closed_total", "Connection handlers finished.", s.ConnectionsClosed)
 	gauge("wasmgate_connections_active", "Connections currently being proxied.", s.ConnectionsActive)

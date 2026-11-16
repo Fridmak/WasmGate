@@ -2,11 +2,12 @@ BINARY := bin/wasmgate
 PKG    := ./cmd/wasmgate
 PROTO  := control-plane/src/WasmGate.Control.Api/Protos/agent_control.proto
 PROTO_INC := control-plane/src/WasmGate.Control.Api/Protos
+VERSION ?= dev
 
 .PHONY: build run test race bench tidy lint clean proto
 
 build:
-	go build -o $(BINARY) $(PKG)
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY) $(PKG)
 
 # Regenerate the Go gRPC bindings from the C# project's proto. Requires protoc,
 # protoc-gen-go and protoc-gen-go-grpc on PATH.

@@ -19,6 +19,10 @@ import (
 	"wasmgate/internal/proxy"
 )
 
+// version is overridden at build time with
+// -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
@@ -35,6 +39,7 @@ func run() error {
 		logLevel      = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		shutdownGrace = flag.Duration("shutdown-grace", 15*time.Second, "graceful shutdown timeout")
 		validateOnly  = flag.Bool("validate", false, "validate the configuration (and any WASM plugins) and exit")
+		versionOnly   = flag.Bool("version", false, "print the build version and exit")
 
 		cpEndpoint   = flag.String("cp", "", "control-plane gRPC endpoint (https:// for mTLS); empty = standalone")
 		cpToken      = flag.String("cp-token", os.Getenv("WASMGATE_ENROLL_TOKEN"), "one-time enrollment token used when no agent certificate exists")
@@ -55,6 +60,11 @@ func run() error {
 			"renew the agent certificate this long before it expires")
 	)
 	flag.Parse()
+
+	if *versionOnly {
+		fmt.Println(version)
+		return nil
+	}
 
 	level, err := observe.ParseLevel(*logLevel)
 	if err != nil {
@@ -77,6 +87,7 @@ func run() error {
 	}
 
 	metrics := observe.NewMetrics()
+	metrics.SetBuildVersion(version)
 	rt, err := proxy.NewRuntimeChecked(cfg)
 	if err != nil {
 		return err

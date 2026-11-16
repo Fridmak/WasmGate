@@ -108,6 +108,17 @@ func TestWritePrometheusEscapesLabel(t *testing.T) {
 	}
 }
 
+func TestWritePrometheusBuildInfo(t *testing.T) {
+	m := NewMetrics()
+	m.SetBuildVersion("1.2.3")
+	var buf bytes.Buffer
+	m.WritePrometheus(&buf, nil)
+	out := buf.String()
+	if !strings.Contains(out, `wasmgate_build_info{version="1.2.3",go_version="`) {
+		t.Fatalf("build info missing from\n%s", out)
+	}
+}
+
 // BenchmarkMetricsConnection measures exactly what the data path adds per
 // connection: accept bookkeeping, one bytes add per finished relay direction
 // (two here), and close bookkeeping. Everything else in Metrics is cold path.
