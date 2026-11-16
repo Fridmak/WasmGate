@@ -3,7 +3,8 @@
 # Why manual and not on every push: benchmark numbers on shared GitHub runners
 # are noisy, so an automatic per-commit comparison would mostly measure the
 # neighbour workloads. The intended use is deliberate measurement points:
-# before/after a hot-path change, or the Linux numbers for the thesis, with
+# before/after a hot-path change, or publish the Linux record for the release,
+# with
 # benchstat comparing two downloaded artifacts.
 #
 # The result file uses the standard `go test -bench` text format accepted by

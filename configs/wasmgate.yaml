@@ -12,7 +12,7 @@ version: 1
 # Optional observability endpoint: /metrics (Prometheus text), /healthz,
 # /reload (POST) and optionally /debug/pprof/. Keep it on loopback unless you
 # really want it exposed. Empty or omitted = disabled.
-# Non-loopback admin_addr requires admin_allow_remote: true and a token.
+# Non-loopback admin_addr requires admin_allow_remote: true; configure a token to require bearer auth.
 admin_addr: "127.0.0.1:9099"
 # admin_token_file: "/etc/wasmgate/admin.token"  # or WASMGATE_ADMIN_TOKEN
 admin_pprof: false        # pprof is dangerous: enable only for local debugging
