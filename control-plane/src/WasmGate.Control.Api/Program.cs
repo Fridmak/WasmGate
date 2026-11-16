@@ -64,6 +64,12 @@ builder.Services.AddHostedService<DeploymentReaper>();
 
 var app = builder.Build();
 
+// Create the release-signing key before serving: agents read the matching
+// public key when they start, and enrollment can precede the first release.
+// Leaving it to the first release would make a fresh control plane unusable
+// for every agent that verifies release signatures at startup.
+app.Services.GetRequiredService<IReleaseSigner>();
+
 // The admin UI is a static SPA served from wwwroot. It uses the admin API on the
 // same origin, so no CORS is involved; the API itself stays protected by the
 // bearer token.
