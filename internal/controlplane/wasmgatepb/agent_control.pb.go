@@ -146,6 +146,60 @@ func (x *EnrollRequest) GetName() string {
 	return ""
 }
 
+type RenewRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Must match the agent id in the client certificate CN.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// PEM certificate signing request for the new key.
+	CsrPem        []byte `protobuf:"bytes,2,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewRequest) Reset() {
+	*x = RenewRequest{}
+	mi := &file_agent_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewRequest) ProtoMessage() {}
+
+func (x *RenewRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_control_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewRequest.ProtoReflect.Descriptor instead.
+func (*RenewRequest) Descriptor() ([]byte, []int) {
+	return file_agent_control_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RenewRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *RenewRequest) GetCsrPem() []byte {
+	if x != nil {
+		return x.CsrPem
+	}
+	return nil
+}
+
 type EnrollResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	CertificatePem  []byte                 `protobuf:"bytes,1,opt,name=certificate_pem,json=certificatePem,proto3" json:"certificate_pem,omitempty"`
@@ -157,7 +211,7 @@ type EnrollResponse struct {
 
 func (x *EnrollResponse) Reset() {
 	*x = EnrollResponse{}
-	mi := &file_agent_control_proto_msgTypes[1]
+	mi := &file_agent_control_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -169,7 +223,7 @@ func (x *EnrollResponse) String() string {
 func (*EnrollResponse) ProtoMessage() {}
 
 func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[1]
+	mi := &file_agent_control_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -182,7 +236,7 @@ func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollResponse.ProtoReflect.Descriptor instead.
 func (*EnrollResponse) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{1}
+	return file_agent_control_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *EnrollResponse) GetCertificatePem() []byte {
@@ -217,7 +271,7 @@ type ArtifactDownloadRequest struct {
 
 func (x *ArtifactDownloadRequest) Reset() {
 	*x = ArtifactDownloadRequest{}
-	mi := &file_agent_control_proto_msgTypes[2]
+	mi := &file_agent_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -229,7 +283,7 @@ func (x *ArtifactDownloadRequest) String() string {
 func (*ArtifactDownloadRequest) ProtoMessage() {}
 
 func (x *ArtifactDownloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[2]
+	mi := &file_agent_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -242,7 +296,7 @@ func (x *ArtifactDownloadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactDownloadRequest.ProtoReflect.Descriptor instead.
 func (*ArtifactDownloadRequest) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{2}
+	return file_agent_control_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ArtifactDownloadRequest) GetId() string {
@@ -263,7 +317,7 @@ type ArtifactChunk struct {
 
 func (x *ArtifactChunk) Reset() {
 	*x = ArtifactChunk{}
-	mi := &file_agent_control_proto_msgTypes[3]
+	mi := &file_agent_control_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -275,7 +329,7 @@ func (x *ArtifactChunk) String() string {
 func (*ArtifactChunk) ProtoMessage() {}
 
 func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[3]
+	mi := &file_agent_control_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -288,7 +342,7 @@ func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactChunk.ProtoReflect.Descriptor instead.
 func (*ArtifactChunk) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{3}
+	return file_agent_control_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ArtifactChunk) GetData() []byte {
@@ -313,7 +367,7 @@ type AgentMessage struct {
 
 func (x *AgentMessage) Reset() {
 	*x = AgentMessage{}
-	mi := &file_agent_control_proto_msgTypes[4]
+	mi := &file_agent_control_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -325,7 +379,7 @@ func (x *AgentMessage) String() string {
 func (*AgentMessage) ProtoMessage() {}
 
 func (x *AgentMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[4]
+	mi := &file_agent_control_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -338,7 +392,7 @@ func (x *AgentMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentMessage.ProtoReflect.Descriptor instead.
 func (*AgentMessage) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{4}
+	return file_agent_control_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AgentMessage) GetPayload() isAgentMessage_Payload {
@@ -428,7 +482,7 @@ type ControlMessage struct {
 
 func (x *ControlMessage) Reset() {
 	*x = ControlMessage{}
-	mi := &file_agent_control_proto_msgTypes[5]
+	mi := &file_agent_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -440,7 +494,7 @@ func (x *ControlMessage) String() string {
 func (*ControlMessage) ProtoMessage() {}
 
 func (x *ControlMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[5]
+	mi := &file_agent_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -453,7 +507,7 @@ func (x *ControlMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlMessage.ProtoReflect.Descriptor instead.
 func (*ControlMessage) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{5}
+	return file_agent_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ControlMessage) GetPayload() isControlMessage_Payload {
@@ -557,7 +611,7 @@ type Hello struct {
 
 func (x *Hello) Reset() {
 	*x = Hello{}
-	mi := &file_agent_control_proto_msgTypes[6]
+	mi := &file_agent_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -569,7 +623,7 @@ func (x *Hello) String() string {
 func (*Hello) ProtoMessage() {}
 
 func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[6]
+	mi := &file_agent_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -582,7 +636,7 @@ func (x *Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hello.ProtoReflect.Descriptor instead.
 func (*Hello) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{6}
+	return file_agent_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Hello) GetAgentId() string {
@@ -651,7 +705,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_agent_control_proto_msgTypes[7]
+	mi := &file_agent_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -663,7 +717,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[7]
+	mi := &file_agent_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -676,7 +730,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{7}
+	return file_agent_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Heartbeat) GetAgentId() string {
@@ -743,20 +797,26 @@ func (x *Heartbeat) GetActiveConfigSha256() string {
 }
 
 type ApplyRelease struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReleaseId     string                 `protobuf:"bytes,1,opt,name=release_id,json=releaseId,proto3" json:"release_id,omitempty"`
-	ConfigSha256  string                 `protobuf:"bytes,2,opt,name=config_sha256,json=configSha256,proto3" json:"config_sha256,omitempty"`
-	ConfigYaml    []byte                 `protobuf:"bytes,3,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
-	Artifacts     []*ArtifactRef         `protobuf:"bytes,4,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
-	TimeoutMs     int32                  `protobuf:"varint,5,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	DeploymentId  string                 `protobuf:"bytes,6,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ReleaseId    string                 `protobuf:"bytes,1,opt,name=release_id,json=releaseId,proto3" json:"release_id,omitempty"`
+	ConfigSha256 string                 `protobuf:"bytes,2,opt,name=config_sha256,json=configSha256,proto3" json:"config_sha256,omitempty"`
+	ConfigYaml   []byte                 `protobuf:"bytes,3,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
+	Artifacts    []*ArtifactRef         `protobuf:"bytes,4,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
+	TimeoutMs    int32                  `protobuf:"varint,5,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	DeploymentId string                 `protobuf:"bytes,6,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	// Canonical release manifest covered by manifest_signature. The agent parses
+	// it and must find the same release id, configuration hash and artifact set in
+	// this message.
+	Manifest []byte `protobuf:"bytes,7,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	// Detached ECDSA P-256 signature over manifest, IEEE P1363 format.
+	ManifestSignature []byte `protobuf:"bytes,8,opt,name=manifest_signature,json=manifestSignature,proto3" json:"manifest_signature,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ApplyRelease) Reset() {
 	*x = ApplyRelease{}
-	mi := &file_agent_control_proto_msgTypes[8]
+	mi := &file_agent_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -768,7 +828,7 @@ func (x *ApplyRelease) String() string {
 func (*ApplyRelease) ProtoMessage() {}
 
 func (x *ApplyRelease) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[8]
+	mi := &file_agent_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -781,7 +841,7 @@ func (x *ApplyRelease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyRelease.ProtoReflect.Descriptor instead.
 func (*ApplyRelease) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{8}
+	return file_agent_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ApplyRelease) GetReleaseId() string {
@@ -826,6 +886,20 @@ func (x *ApplyRelease) GetDeploymentId() string {
 	return ""
 }
 
+func (x *ApplyRelease) GetManifest() []byte {
+	if x != nil {
+		return x.Manifest
+	}
+	return nil
+}
+
+func (x *ApplyRelease) GetManifestSignature() []byte {
+	if x != nil {
+		return x.ManifestSignature
+	}
+	return nil
+}
+
 type ArtifactRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -839,7 +913,7 @@ type ArtifactRef struct {
 
 func (x *ArtifactRef) Reset() {
 	*x = ArtifactRef{}
-	mi := &file_agent_control_proto_msgTypes[9]
+	mi := &file_agent_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +925,7 @@ func (x *ArtifactRef) String() string {
 func (*ArtifactRef) ProtoMessage() {}
 
 func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[9]
+	mi := &file_agent_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +938,7 @@ func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactRef.ProtoReflect.Descriptor instead.
 func (*ArtifactRef) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{9}
+	return file_agent_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ArtifactRef) GetId() string {
@@ -916,7 +990,7 @@ type ApplyResult struct {
 
 func (x *ApplyResult) Reset() {
 	*x = ApplyResult{}
-	mi := &file_agent_control_proto_msgTypes[10]
+	mi := &file_agent_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -928,7 +1002,7 @@ func (x *ApplyResult) String() string {
 func (*ApplyResult) ProtoMessage() {}
 
 func (x *ApplyResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[10]
+	mi := &file_agent_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -941,7 +1015,7 @@ func (x *ApplyResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyResult.ProtoReflect.Descriptor instead.
 func (*ApplyResult) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{10}
+	return file_agent_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ApplyResult) GetReleaseId() string {
@@ -998,7 +1072,7 @@ type ListenerStatus struct {
 
 func (x *ListenerStatus) Reset() {
 	*x = ListenerStatus{}
-	mi := &file_agent_control_proto_msgTypes[11]
+	mi := &file_agent_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1010,7 +1084,7 @@ func (x *ListenerStatus) String() string {
 func (*ListenerStatus) ProtoMessage() {}
 
 func (x *ListenerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[11]
+	mi := &file_agent_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1023,7 +1097,7 @@ func (x *ListenerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerStatus.ProtoReflect.Descriptor instead.
 func (*ListenerStatus) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{11}
+	return file_agent_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListenerStatus) GetName() string {
@@ -1068,7 +1142,7 @@ type HealthReport struct {
 
 func (x *HealthReport) Reset() {
 	*x = HealthReport{}
-	mi := &file_agent_control_proto_msgTypes[12]
+	mi := &file_agent_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1080,7 +1154,7 @@ func (x *HealthReport) String() string {
 func (*HealthReport) ProtoMessage() {}
 
 func (x *HealthReport) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[12]
+	mi := &file_agent_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1093,7 +1167,7 @@ func (x *HealthReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthReport.ProtoReflect.Descriptor instead.
 func (*HealthReport) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{12}
+	return file_agent_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *HealthReport) GetActiveReleaseId() string {
@@ -1148,7 +1222,7 @@ type Drain struct {
 
 func (x *Drain) Reset() {
 	*x = Drain{}
-	mi := &file_agent_control_proto_msgTypes[13]
+	mi := &file_agent_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1160,7 +1234,7 @@ func (x *Drain) String() string {
 func (*Drain) ProtoMessage() {}
 
 func (x *Drain) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[13]
+	mi := &file_agent_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1173,7 +1247,7 @@ func (x *Drain) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Drain.ProtoReflect.Descriptor instead.
 func (*Drain) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{13}
+	return file_agent_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Drain) GetTimeoutMs() int32 {
@@ -1200,7 +1274,7 @@ type Rollback struct {
 
 func (x *Rollback) Reset() {
 	*x = Rollback{}
-	mi := &file_agent_control_proto_msgTypes[14]
+	mi := &file_agent_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1212,7 +1286,7 @@ func (x *Rollback) String() string {
 func (*Rollback) ProtoMessage() {}
 
 func (x *Rollback) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[14]
+	mi := &file_agent_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1225,7 +1299,7 @@ func (x *Rollback) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Rollback.ProtoReflect.Descriptor instead.
 func (*Rollback) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{14}
+	return file_agent_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Rollback) GetReleaseId() string {
@@ -1251,7 +1325,7 @@ type SetLogLevel struct {
 
 func (x *SetLogLevel) Reset() {
 	*x = SetLogLevel{}
-	mi := &file_agent_control_proto_msgTypes[15]
+	mi := &file_agent_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1263,7 +1337,7 @@ func (x *SetLogLevel) String() string {
 func (*SetLogLevel) ProtoMessage() {}
 
 func (x *SetLogLevel) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[15]
+	mi := &file_agent_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1276,7 +1350,7 @@ func (x *SetLogLevel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLogLevel.ProtoReflect.Descriptor instead.
 func (*SetLogLevel) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{15}
+	return file_agent_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SetLogLevel) GetLevel() string {
@@ -1295,7 +1369,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_agent_control_proto_msgTypes[16]
+	mi := &file_agent_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1307,7 +1381,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_control_proto_msgTypes[16]
+	mi := &file_agent_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1320,7 +1394,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_agent_control_proto_rawDescGZIP(), []int{16}
+	return file_agent_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Ping) GetNonce() string {
@@ -1339,7 +1413,10 @@ const file_agent_control_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x12\x17\n" +
 	"\acsr_pem\x18\x03 \x01(\fR\x06csrPem\x12\x12\n" +
-	"\x04name\x18\x04 \x01(\tR\x04name\"}\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"B\n" +
+	"\fRenewRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x17\n" +
+	"\acsr_pem\x18\x02 \x01(\fR\x06csrPem\"}\n" +
 	"\x0eEnrollResponse\x12'\n" +
 	"\x0fcertificate_pem\x18\x01 \x01(\fR\x0ecertificatePem\x12\x15\n" +
 	"\x06ca_pem\x18\x02 \x01(\fR\x05caPem\x12+\n" +
@@ -1381,7 +1458,7 @@ const file_agent_control_proto_rawDesc = "" +
 	"\x15plugin_rejected_total\x18\x06 \x01(\x03R\x13pluginRejectedTotal\x12.\n" +
 	"\x13dial_failures_total\x18\a \x01(\x03R\x11dialFailuresTotal\x12%\n" +
 	"\x0euptime_seconds\x18\b \x01(\x03R\ruptimeSeconds\x120\n" +
-	"\x14active_config_sha256\x18\t \x01(\tR\x12activeConfigSha256\"\xf7\x01\n" +
+	"\x14active_config_sha256\x18\t \x01(\tR\x12activeConfigSha256\"\xc2\x02\n" +
 	"\fApplyRelease\x12\x1d\n" +
 	"\n" +
 	"release_id\x18\x01 \x01(\tR\treleaseId\x12#\n" +
@@ -1391,7 +1468,9 @@ const file_agent_control_proto_rawDesc = "" +
 	"\tartifacts\x18\x04 \x03(\v2 .wasmgate.control.v1.ArtifactRefR\tartifacts\x12\x1d\n" +
 	"\n" +
 	"timeout_ms\x18\x05 \x01(\x05R\ttimeoutMs\x12#\n" +
-	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\"\x9a\x01\n" +
+	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\x12\x1a\n" +
+	"\bmanifest\x18\a \x01(\fR\bmanifest\x12-\n" +
+	"\x12manifest_signature\x18\b \x01(\fR\x11manifestSignature\"\x9a\x01\n" +
 	"\vArtifactRef\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x125\n" +
@@ -1439,9 +1518,10 @@ const file_agent_control_proto_rawDesc = "" +
 	"\fAgentControl\x12U\n" +
 	"\aSession\x12!.wasmgate.control.v1.AgentMessage\x1a#.wasmgate.control.v1.ControlMessage(\x010\x012p\n" +
 	"\x0eAgentArtifacts\x12^\n" +
-	"\bDownload\x12,.wasmgate.control.v1.ArtifactDownloadRequest\x1a\".wasmgate.control.v1.ArtifactChunk0\x012d\n" +
+	"\bDownload\x12,.wasmgate.control.v1.ArtifactDownloadRequest\x1a\".wasmgate.control.v1.ArtifactChunk0\x012\xb5\x01\n" +
 	"\x0fAgentEnrollment\x12Q\n" +
-	"\x06Enroll\x12\".wasmgate.control.v1.EnrollRequest\x1a#.wasmgate.control.v1.EnrollResponseBLZ4wasmgate/internal/controlplane/wasmgatepb;wasmgatepb\xaa\x02\x13WasmGate.Control.V1b\x06proto3"
+	"\x06Enroll\x12\".wasmgate.control.v1.EnrollRequest\x1a#.wasmgate.control.v1.EnrollResponse\x12O\n" +
+	"\x05Renew\x12!.wasmgate.control.v1.RenewRequest\x1a#.wasmgate.control.v1.EnrollResponseBLZ4wasmgate/internal/controlplane/wasmgatepb;wasmgatepb\xaa\x02\x13WasmGate.Control.V1b\x06proto3"
 
 var (
 	file_agent_control_proto_rawDescOnce sync.Once
@@ -1456,50 +1536,53 @@ func file_agent_control_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_agent_control_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_agent_control_proto_goTypes = []any{
 	(ArtifactKind)(0),               // 0: wasmgate.control.v1.ArtifactKind
 	(*EnrollRequest)(nil),           // 1: wasmgate.control.v1.EnrollRequest
-	(*EnrollResponse)(nil),          // 2: wasmgate.control.v1.EnrollResponse
-	(*ArtifactDownloadRequest)(nil), // 3: wasmgate.control.v1.ArtifactDownloadRequest
-	(*ArtifactChunk)(nil),           // 4: wasmgate.control.v1.ArtifactChunk
-	(*AgentMessage)(nil),            // 5: wasmgate.control.v1.AgentMessage
-	(*ControlMessage)(nil),          // 6: wasmgate.control.v1.ControlMessage
-	(*Hello)(nil),                   // 7: wasmgate.control.v1.Hello
-	(*Heartbeat)(nil),               // 8: wasmgate.control.v1.Heartbeat
-	(*ApplyRelease)(nil),            // 9: wasmgate.control.v1.ApplyRelease
-	(*ArtifactRef)(nil),             // 10: wasmgate.control.v1.ArtifactRef
-	(*ApplyResult)(nil),             // 11: wasmgate.control.v1.ApplyResult
-	(*ListenerStatus)(nil),          // 12: wasmgate.control.v1.ListenerStatus
-	(*HealthReport)(nil),            // 13: wasmgate.control.v1.HealthReport
-	(*Drain)(nil),                   // 14: wasmgate.control.v1.Drain
-	(*Rollback)(nil),                // 15: wasmgate.control.v1.Rollback
-	(*SetLogLevel)(nil),             // 16: wasmgate.control.v1.SetLogLevel
-	(*Ping)(nil),                    // 17: wasmgate.control.v1.Ping
-	nil,                             // 18: wasmgate.control.v1.Hello.LabelsEntry
+	(*RenewRequest)(nil),            // 2: wasmgate.control.v1.RenewRequest
+	(*EnrollResponse)(nil),          // 3: wasmgate.control.v1.EnrollResponse
+	(*ArtifactDownloadRequest)(nil), // 4: wasmgate.control.v1.ArtifactDownloadRequest
+	(*ArtifactChunk)(nil),           // 5: wasmgate.control.v1.ArtifactChunk
+	(*AgentMessage)(nil),            // 6: wasmgate.control.v1.AgentMessage
+	(*ControlMessage)(nil),          // 7: wasmgate.control.v1.ControlMessage
+	(*Hello)(nil),                   // 8: wasmgate.control.v1.Hello
+	(*Heartbeat)(nil),               // 9: wasmgate.control.v1.Heartbeat
+	(*ApplyRelease)(nil),            // 10: wasmgate.control.v1.ApplyRelease
+	(*ArtifactRef)(nil),             // 11: wasmgate.control.v1.ArtifactRef
+	(*ApplyResult)(nil),             // 12: wasmgate.control.v1.ApplyResult
+	(*ListenerStatus)(nil),          // 13: wasmgate.control.v1.ListenerStatus
+	(*HealthReport)(nil),            // 14: wasmgate.control.v1.HealthReport
+	(*Drain)(nil),                   // 15: wasmgate.control.v1.Drain
+	(*Rollback)(nil),                // 16: wasmgate.control.v1.Rollback
+	(*SetLogLevel)(nil),             // 17: wasmgate.control.v1.SetLogLevel
+	(*Ping)(nil),                    // 18: wasmgate.control.v1.Ping
+	nil,                             // 19: wasmgate.control.v1.Hello.LabelsEntry
 }
 var file_agent_control_proto_depIdxs = []int32{
-	7,  // 0: wasmgate.control.v1.AgentMessage.hello:type_name -> wasmgate.control.v1.Hello
-	8,  // 1: wasmgate.control.v1.AgentMessage.heartbeat:type_name -> wasmgate.control.v1.Heartbeat
-	11, // 2: wasmgate.control.v1.AgentMessage.apply_result:type_name -> wasmgate.control.v1.ApplyResult
-	13, // 3: wasmgate.control.v1.AgentMessage.health:type_name -> wasmgate.control.v1.HealthReport
-	9,  // 4: wasmgate.control.v1.ControlMessage.apply_release:type_name -> wasmgate.control.v1.ApplyRelease
-	14, // 5: wasmgate.control.v1.ControlMessage.drain:type_name -> wasmgate.control.v1.Drain
-	16, // 6: wasmgate.control.v1.ControlMessage.set_log_level:type_name -> wasmgate.control.v1.SetLogLevel
-	17, // 7: wasmgate.control.v1.ControlMessage.ping:type_name -> wasmgate.control.v1.Ping
-	15, // 8: wasmgate.control.v1.ControlMessage.rollback:type_name -> wasmgate.control.v1.Rollback
-	18, // 9: wasmgate.control.v1.Hello.labels:type_name -> wasmgate.control.v1.Hello.LabelsEntry
-	10, // 10: wasmgate.control.v1.ApplyRelease.artifacts:type_name -> wasmgate.control.v1.ArtifactRef
+	8,  // 0: wasmgate.control.v1.AgentMessage.hello:type_name -> wasmgate.control.v1.Hello
+	9,  // 1: wasmgate.control.v1.AgentMessage.heartbeat:type_name -> wasmgate.control.v1.Heartbeat
+	12, // 2: wasmgate.control.v1.AgentMessage.apply_result:type_name -> wasmgate.control.v1.ApplyResult
+	14, // 3: wasmgate.control.v1.AgentMessage.health:type_name -> wasmgate.control.v1.HealthReport
+	10, // 4: wasmgate.control.v1.ControlMessage.apply_release:type_name -> wasmgate.control.v1.ApplyRelease
+	15, // 5: wasmgate.control.v1.ControlMessage.drain:type_name -> wasmgate.control.v1.Drain
+	17, // 6: wasmgate.control.v1.ControlMessage.set_log_level:type_name -> wasmgate.control.v1.SetLogLevel
+	18, // 7: wasmgate.control.v1.ControlMessage.ping:type_name -> wasmgate.control.v1.Ping
+	16, // 8: wasmgate.control.v1.ControlMessage.rollback:type_name -> wasmgate.control.v1.Rollback
+	19, // 9: wasmgate.control.v1.Hello.labels:type_name -> wasmgate.control.v1.Hello.LabelsEntry
+	11, // 10: wasmgate.control.v1.ApplyRelease.artifacts:type_name -> wasmgate.control.v1.ArtifactRef
 	0,  // 11: wasmgate.control.v1.ArtifactRef.kind:type_name -> wasmgate.control.v1.ArtifactKind
-	12, // 12: wasmgate.control.v1.ApplyResult.listeners:type_name -> wasmgate.control.v1.ListenerStatus
-	5,  // 13: wasmgate.control.v1.AgentControl.Session:input_type -> wasmgate.control.v1.AgentMessage
-	3,  // 14: wasmgate.control.v1.AgentArtifacts.Download:input_type -> wasmgate.control.v1.ArtifactDownloadRequest
+	13, // 12: wasmgate.control.v1.ApplyResult.listeners:type_name -> wasmgate.control.v1.ListenerStatus
+	6,  // 13: wasmgate.control.v1.AgentControl.Session:input_type -> wasmgate.control.v1.AgentMessage
+	4,  // 14: wasmgate.control.v1.AgentArtifacts.Download:input_type -> wasmgate.control.v1.ArtifactDownloadRequest
 	1,  // 15: wasmgate.control.v1.AgentEnrollment.Enroll:input_type -> wasmgate.control.v1.EnrollRequest
-	6,  // 16: wasmgate.control.v1.AgentControl.Session:output_type -> wasmgate.control.v1.ControlMessage
-	4,  // 17: wasmgate.control.v1.AgentArtifacts.Download:output_type -> wasmgate.control.v1.ArtifactChunk
-	2,  // 18: wasmgate.control.v1.AgentEnrollment.Enroll:output_type -> wasmgate.control.v1.EnrollResponse
-	16, // [16:19] is the sub-list for method output_type
-	13, // [13:16] is the sub-list for method input_type
+	2,  // 16: wasmgate.control.v1.AgentEnrollment.Renew:input_type -> wasmgate.control.v1.RenewRequest
+	7,  // 17: wasmgate.control.v1.AgentControl.Session:output_type -> wasmgate.control.v1.ControlMessage
+	5,  // 18: wasmgate.control.v1.AgentArtifacts.Download:output_type -> wasmgate.control.v1.ArtifactChunk
+	3,  // 19: wasmgate.control.v1.AgentEnrollment.Enroll:output_type -> wasmgate.control.v1.EnrollResponse
+	3,  // 20: wasmgate.control.v1.AgentEnrollment.Renew:output_type -> wasmgate.control.v1.EnrollResponse
+	17, // [17:21] is the sub-list for method output_type
+	13, // [13:17] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -1510,13 +1593,13 @@ func file_agent_control_proto_init() {
 	if File_agent_control_proto != nil {
 		return
 	}
-	file_agent_control_proto_msgTypes[4].OneofWrappers = []any{
+	file_agent_control_proto_msgTypes[5].OneofWrappers = []any{
 		(*AgentMessage_Hello)(nil),
 		(*AgentMessage_Heartbeat)(nil),
 		(*AgentMessage_ApplyResult)(nil),
 		(*AgentMessage_Health)(nil),
 	}
-	file_agent_control_proto_msgTypes[5].OneofWrappers = []any{
+	file_agent_control_proto_msgTypes[6].OneofWrappers = []any{
 		(*ControlMessage_ApplyRelease)(nil),
 		(*ControlMessage_Drain)(nil),
 		(*ControlMessage_SetLogLevel)(nil),
@@ -1529,7 +1612,7 @@ func file_agent_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_control_proto_rawDesc), len(file_agent_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

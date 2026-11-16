@@ -237,17 +237,19 @@ var AgentArtifacts_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	AgentEnrollment_Enroll_FullMethodName = "/wasmgate.control.v1.AgentEnrollment/Enroll"
+	AgentEnrollment_Renew_FullMethodName  = "/wasmgate.control.v1.AgentEnrollment/Renew"
 )
 
 // AgentEnrollmentClient is the client API for AgentEnrollment service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// AgentEnrollment issues the first mTLS certificate to a data plane. It is a
-// unary call protected by a one-time enrollment token: at this point the agent
-// does not have a client certificate yet.
+// AgentEnrollment issues the first mTLS certificate to a data plane and renews
+// it later. Enroll is protected by an enrollment token; Renew is protected by
+// the existing client certificate, so an agent never needs a new token.
 type AgentEnrollmentClient interface {
 	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
+	Renew(ctx context.Context, in *RenewRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
 }
 
 type agentEnrollmentClient struct {
@@ -268,15 +270,26 @@ func (c *agentEnrollmentClient) Enroll(ctx context.Context, in *EnrollRequest, o
 	return out, nil
 }
 
+func (c *agentEnrollmentClient) Renew(ctx context.Context, in *RenewRequest, opts ...grpc.CallOption) (*EnrollResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollResponse)
+	err := c.cc.Invoke(ctx, AgentEnrollment_Renew_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentEnrollmentServer is the server API for AgentEnrollment service.
 // All implementations must embed UnimplementedAgentEnrollmentServer
 // for forward compatibility.
 //
-// AgentEnrollment issues the first mTLS certificate to a data plane. It is a
-// unary call protected by a one-time enrollment token: at this point the agent
-// does not have a client certificate yet.
+// AgentEnrollment issues the first mTLS certificate to a data plane and renews
+// it later. Enroll is protected by an enrollment token; Renew is protected by
+// the existing client certificate, so an agent never needs a new token.
 type AgentEnrollmentServer interface {
 	Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error)
+	Renew(context.Context, *RenewRequest) (*EnrollResponse, error)
 	mustEmbedUnimplementedAgentEnrollmentServer()
 }
 
@@ -289,6 +302,9 @@ type UnimplementedAgentEnrollmentServer struct{}
 
 func (UnimplementedAgentEnrollmentServer) Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Enroll not implemented")
+}
+func (UnimplementedAgentEnrollmentServer) Renew(context.Context, *RenewRequest) (*EnrollResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Renew not implemented")
 }
 func (UnimplementedAgentEnrollmentServer) mustEmbedUnimplementedAgentEnrollmentServer() {}
 func (UnimplementedAgentEnrollmentServer) testEmbeddedByValue()                         {}
@@ -329,6 +345,24 @@ func _AgentEnrollment_Enroll_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentEnrollment_Renew_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentEnrollmentServer).Renew(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentEnrollment_Renew_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentEnrollmentServer).Renew(ctx, req.(*RenewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentEnrollment_ServiceDesc is the grpc.ServiceDesc for AgentEnrollment service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -339,6 +373,10 @@ var AgentEnrollment_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Enroll",
 			Handler:    _AgentEnrollment_Enroll_Handler,
+		},
+		{
+			MethodName: "Renew",
+			Handler:    _AgentEnrollment_Renew_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

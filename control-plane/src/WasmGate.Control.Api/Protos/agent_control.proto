@@ -19,11 +19,12 @@ service AgentArtifacts {
   rpc Download(ArtifactDownloadRequest) returns (stream ArtifactChunk);
 }
 
-// AgentEnrollment issues the first mTLS certificate to a data plane. It is a
-// unary call protected by a one-time enrollment token: at this point the agent
-// does not have a client certificate yet.
+// AgentEnrollment issues the first mTLS certificate to a data plane and renews
+// it later. Enroll is protected by an enrollment token; Renew is protected by
+// the existing client certificate, so an agent never needs a new token.
 service AgentEnrollment {
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Renew(RenewRequest) returns (EnrollResponse);
 }
 
 message EnrollRequest {
@@ -33,6 +34,13 @@ message EnrollRequest {
   // Operator-visible name. Required when the agent was not pre-created; for a
   // pre-created agent it must match the registered name or be omitted.
   string name = 4;
+}
+
+message RenewRequest {
+  // Must match the agent id in the client certificate CN.
+  string agent_id = 1;
+  // PEM certificate signing request for the new key.
+  bytes csr_pem = 2;
 }
 
 message EnrollResponse {
@@ -101,6 +109,12 @@ message ApplyRelease {
   repeated ArtifactRef artifacts = 4;
   int32 timeout_ms = 5;
   string deployment_id = 6;
+  // Canonical release manifest covered by manifest_signature. The agent parses
+  // it and must find the same release id, configuration hash and artifact set in
+  // this message.
+  bytes manifest = 7;
+  // Detached ECDSA P-256 signature over manifest, IEEE P1363 format.
+  bytes manifest_signature = 8;
 }
 
 message ArtifactRef {
