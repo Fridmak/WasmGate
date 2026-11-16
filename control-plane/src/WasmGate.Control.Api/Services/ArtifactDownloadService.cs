@@ -1,9 +1,9 @@
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using Grpc.Core;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.V1;
 
 namespace WasmGate.Control.Api.Services;
@@ -26,7 +26,16 @@ public sealed class ArtifactDownloadService(
     /// <summary>Chunk size used for one <see cref="ArtifactChunk"/> message.</summary>
     private const int ChunkSize = 64 * 1024;
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Streams one artifact to an enrolled agent.
+    /// </summary>
+    /// <param name="request">SHA-256 identifier of the artifact.</param>
+    /// <param name="responseStream">Stream that receives the artifact in 64 KiB chunks.</param>
+    /// <param name="context">Context of the gRPC call.</param>
+    /// <exception cref="RpcException">
+    /// The caller is not an enrolled agent, the identifier is not a SHA-256 hash,
+    /// or the artifact does not exist.
+    /// </exception>
     public override async Task Download(
         ArtifactDownloadRequest request,
         IServerStreamWriter<ArtifactChunk> responseStream,

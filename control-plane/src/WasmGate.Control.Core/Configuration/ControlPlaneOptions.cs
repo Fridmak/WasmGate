@@ -1,9 +1,9 @@
 namespace WasmGate.Control.Core.Configuration;
 
 /// <summary>
-/// Runtime options. Values are read from environment variables in Program.cs;
-/// this type deliberately has no dependency on the configuration binder, which
-/// keeps the AOT graph small.
+/// Runtime options. Values are read from environment variables by
+/// <c>StartUp.GetCpOptions</c>; this type deliberately has no dependency on the
+/// configuration binder, which keeps the AOT graph small.
 /// </summary>
 /// <remarks>
 /// Filesystem paths without a root are relative to the control-plane process
@@ -87,6 +87,13 @@ public sealed class ControlPlaneOptions
     /// <summary>PEM private key of the agent CA. Stored with restrictive permissions.</summary>
     public string AgentCaKeyPath { get; init; } = "data/ca/agents-ca.key";
 
-    /// <summary>Validity period of issued agent certificates.</summary>
+    /// <summary>
+    /// Validity period of issued agent certificates. Defaults to 30 days.
+    /// </summary>
+    /// <remarks>
+    /// Certificates are not renewed automatically. When one expires the agent must
+    /// enroll again with a fresh token, so keep this longer than the intended
+    /// lifetime of an agent.
+    /// </remarks>
     public TimeSpan AgentCertificateLifetime { get; init; } = TimeSpan.FromDays(30);
 }

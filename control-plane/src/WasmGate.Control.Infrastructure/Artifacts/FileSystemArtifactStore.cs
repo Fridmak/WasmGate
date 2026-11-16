@@ -1,16 +1,19 @@
 using System.Buffers;
 using System.Security.Cryptography;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Infrastructure.Artifacts;
 
 /// <summary>
-/// Local content-addressed artifact store for a single control-plane instance.
-/// The layout is <c>{ArtifactRoot}/sha256/{aa}/{bb}/{sha256}</c>, which can be
-/// reproduced on S3/MinIO later.
+/// Local content-addressed artifact store for one control-plane instance.
 /// </summary>
+/// <remarks>
+/// The layout is <c>{ArtifactRoot}/sha256/{aa}/{bb}/{sha256}</c>, so the same
+/// bytes are always stored once. Uploads go to a temporary file and are moved
+/// into place, which also keeps concurrent uploads of identical content safe.
+/// </remarks>
 public sealed class FileSystemArtifactStore(ControlPlaneOptions options) : IArtifactStore
 {
     private string Root => Path.GetFullPath(options.ArtifactRoot);

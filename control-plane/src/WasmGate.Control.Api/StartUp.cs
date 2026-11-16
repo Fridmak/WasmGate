@@ -1,10 +1,12 @@
 using System.Globalization;
 using System.Text.Json;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Abstractions.Releases;
+using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Infrastructure.Agents;
 using WasmGate.Control.Infrastructure.Artifacts;
-using WasmGate.Control.Infrastructure.Postgres;
+using WasmGate.Control.Infrastructure.Repositories;
 using WasmGate.Control.Infrastructure.Security;
 using WasmGate.Control.Infrastructure.Validation;
 
@@ -36,9 +38,13 @@ public static class StartUp
             });
         }
 
-        /// <summary>Reads control-plane options from environment variables.</summary>
+        /// <summary>Reads control-plane options from <c>WASMGATE_CP_*</c> environment variables.</summary>
         /// <returns>Options with defaults applied for every unset variable.</returns>
-        public ControlPlaneOptions GetCPOptions()
+        /// <remarks>
+        /// Durations use the invariant <see cref="TimeSpan"/> format. Invalid values
+        /// silently fall back to the default, so a typo does not stop the process.
+        /// </remarks>
+        public static ControlPlaneOptions GetCpOptions()
         {
             return new ControlPlaneOptions
             {
@@ -70,6 +76,8 @@ public static class StartUp
         /// from <see cref="ControlPlaneOptions.PostgresConnectionString"/>, and
         /// the schema from <c>control-plane/migrations</c> must be applied before
         /// the first request (see <c>control-plane/README.md</c>).
+        /// The session registry is the only in-memory registration here: it holds
+        /// live connections, not data.
         /// </remarks>
         public void RegisterServices()
         {

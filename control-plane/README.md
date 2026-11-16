@@ -48,21 +48,23 @@ control-plane/
 ├── migrations/                    PostgreSQL schema, apply 001 → 003 in order
 └── src/
     ├── WasmGate.Control.Core/     entities + interfaces (no infrastructure)
-    │   ├── Entities/
-    │   ├── Abstractions/
-    │   └── Configuration/
+    │   ├── Entities/              Agents/, Delivery/, Releases/
+    │   ├── Abstractions/          Agents/, Releases/, Repositories/
+    │   └── Configuration/         runtime options
     ├── WasmGate.Control.Infrastructure/
-    │   ├── Postgres/              Npgsql + Dapper.AOT repositories
+    │   ├── Repositories/          Npgsql + Dapper.AOT adapters
+    │   │   ├── Convert/           timestamptz ↔ DateTimeOffset
+    │   │   └── Serialization/     source-generated JSON for jsonb columns
     │   ├── Artifacts/             local content-addressed store
     │   ├── Validation/            Go validator adapter
     │   ├── Security/              ECDSA signer and agent CA
     │   └── Agents/                provisioning, release workflow, session registry
     └── WasmGate.Control.Api/
         ├── Protos/agent_control.proto   source of the Go bindings (`make proto`)
-        ├── Services/AgentControlService.cs
-        ├── Services/ArtifactDownloadService.cs
-        ├── Endpoints/AdminEndpoints.cs
-        └── Program.cs
+        ├── Infrastructure/Networking/   listen address parsing, TLS, Kestrel wiring
+        ├── Services/                    gRPC endpoints and the session wrapper
+        ├── Endpoints/                   admin HTTP API, one file per resource group
+        └── Program.cs                   composition root
 ```
 
 ## What is already wired
@@ -95,7 +97,7 @@ control-plane/
 - Repository, artifact store, validator, signer and session-registry interfaces.
 - Dapper.AOT + Npgsql wiring. `NpgsqlDataSource` is registered in `Program.cs`,
   and every repository is PostgreSQL-backed (`Postgres*` in
-  `Infrastructure/Postgres`). Apply the migrations before the first request.
+  `Infrastructure/Repositories`). Apply the migrations before the first request.
 
 ## Dapper.AOT query pattern
 
@@ -125,7 +127,7 @@ Two rules that are easy to get wrong:
   is silently left unpopulated.
 - Read `timestamptz` into `DateTime`, not `DateTimeOffset`: Dapper.AOT cannot
   convert the value and throws `InvalidCastException` at runtime.
-  `PostgresTimestamps` in `Infrastructure/Postgres` does the conversion.
+  `PostgresTimestamps` in `Infrastructure/Repositories/Convert` does the conversion.
 
 ## What is intentionally not implemented
 
@@ -135,6 +137,8 @@ Future work, not accidental gaps:
 - Heartbeat timeout/reaper: an agent is marked `Offline` when its session ends,
   but a half-open connection keeps it `Online` until the transport fails.
 - Certificate renewal and revocation checks when a session starts.
+- Data planes verify artifact and configuration hashes, not the release signature:
+  the signature is checked by the control plane before dispatch.
 - `GoConfigValidator` needs a built `wasmgate` binary. Validation stays in the Go
   data plane; the C# service never duplicates the schema.
 

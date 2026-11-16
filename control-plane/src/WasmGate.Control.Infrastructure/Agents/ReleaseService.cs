@@ -1,17 +1,25 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Abstractions.Releases;
+using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Delivery;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
 /// <summary>
-/// Minimal release workflow: immutable configs, validated and signed releases,
-/// wave-based deployment and rollback. Apply results reported by agents move a
-/// deployment to its terminal state; there is no health gate or approval step
-/// yet, so the first successful or failed result wins.
+/// Release workflow: immutable configuration versions, validation by the Go data
+/// plane, signing, wave dispatch and rollback.
 /// </summary>
+/// <remarks>
+/// There is no health gate and no approval step. Waves are dispatched in order
+/// without waiting for the previous one, and the first apply result reported by
+/// an agent turns the deployment and all of its dispatched waves terminal.
+/// Before dispatch the stored manifest signature is verified, so a release that
+/// was altered in the database is never sent to an agent.
+/// </remarks>
 public sealed class ReleaseService(
     IConfigVersionRepository configs,
     IArtifactRepository artifactRepository,
@@ -145,9 +153,11 @@ public sealed class ReleaseService(
                 $"Release belongs to environment '{release.Environment}', not '{environment}'.");
         }
 
+        await EnsureSignatureAsync(release, cancellationToken);
+
         foreach (var selector in waveSelectors)
         {
-            ValidateSelector(selector);
+            WaveSelector.Validate(selector);
         }
 
         var config = await configs.FindAsync(release.ConfigVersionId, cancellationToken)
@@ -160,7 +170,7 @@ public sealed class ReleaseService(
             CreatedBy = actor,
             Status = DeploymentStatus.Running,
             Waves = waveSelectors.Count == 0
-                ? [new DeploymentWave { Index = 0, Selector = "*" }]
+                ? [new DeploymentWave { Index = 0, Selector = WaveSelector.All }]
                 : waveSelectors
                     .Select((selector, index) => new DeploymentWave { Index = index, Selector = selector })
                     .ToList(),
@@ -171,23 +181,23 @@ public sealed class ReleaseService(
         var artifactRefs = new List<AgentArtifact>();
         foreach (var reference in release.Artifacts)
         {
-            var artifact = await artifactRepository.FindAsync(reference.ArtifactId, cancellationToken);
-            if (artifact is not null)
-            {
-                artifactRefs.Add(new AgentArtifact(
-                    artifact.Id,
-                    reference.Name,
-                    artifact.Kind,
-                    artifact.Size,
-                    artifact.Signature));
-            }
+            var artifact = await artifactRepository.FindAsync(reference.ArtifactId, cancellationToken)
+                           ?? throw new InvalidOperationException(
+                               $"Artifact '{reference.ArtifactId}' of the release is missing from the artifact repository.");
+
+            artifactRefs.Add(new AgentArtifact(
+                artifact.Id,
+                reference.Name,
+                artifact.Kind,
+                artifact.Size,
+                artifact.Signature));
         }
 
         var commandsSent = 0;
 
         foreach (var wave in deployment.Waves)
         {
-            var targets = allAgents.Where(agent => Matches(agent, wave.Selector)).ToList();
+            var targets = allAgents.Where(agent => WaveSelector.Matches(agent, wave.Selector)).ToList();
             if (targets.Count == 0)
             {
                 wave.Status = DeploymentWaveStatus.Skipped;
@@ -291,88 +301,28 @@ public sealed class ReleaseService(
         await AuditAsync(actor, "deployment.rollback", deploymentId.ToString("D"), cancellationToken);
     }
 
-    /// <summary>
-    /// Returns true when an agent matches one wave selector.
-    /// </summary>
-    /// <param name="agent">Agent to test.</param>
-    /// <param name="selector"><c>*</c> or a JSON label selector.</param>
-    /// <returns>True when the agent belongs to the wave.</returns>
-    private static bool Matches(Agent agent, string selector)
+    /// <summary>Verifies the release manifest before anything is sent to agents.</summary>
+    /// <param name="release">Release loaded from the database.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// The check catches an altered or partially written database row and a
+    /// replaced signing key, not a compromised control-plane process: a process
+    /// that can rewrite rows can also rewrite the signature.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// The release has no signature or the signature does not match.
+    /// </exception>
+    private async Task EnsureSignatureAsync(Release release, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(selector) || selector == "*")
+        if (string.IsNullOrEmpty(release.Signature))
         {
-            return true;
+            throw new InvalidOperationException("Release is not signed and cannot be deployed.");
         }
 
-        try
-        {
-            using var document = JsonDocument.Parse(selector);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            foreach (var property in document.RootElement.EnumerateObject())
-            {
-                if (!agent.Labels.TryGetValue(property.Name, out var value) ||
-                    property.Value.ValueKind != JsonValueKind.String ||
-                    !string.Equals(value, property.Value.GetString(), StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>Validates one wave selector before any command is sent.</summary>
-    /// <param name="selector"><c>*</c> or a JSON object with string values.</param>
-    /// <exception cref="InvalidOperationException">The selector is empty or not a JSON object.</exception>
-    private static void ValidateSelector(string selector)
-    {
-        if (string.IsNullOrWhiteSpace(selector))
-        {
-            throw new InvalidOperationException("Wave selector is empty.");
-        }
-
-        if (selector == "*")
-        {
-            return;
-        }
-
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(selector);
-        }
-        catch (JsonException ex)
+        if (!await signer.VerifyAsync(release, release.Signature, cancellationToken))
         {
             throw new InvalidOperationException(
-                $"Wave selector '{selector}' is not valid JSON: {ex.Message}",
-                ex);
-        }
-
-        using (document)
-        {
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidOperationException(
-                    $"Wave selector '{selector}' must be '*' or a JSON object.");
-            }
-
-            foreach (var property in document.RootElement.EnumerateObject())
-            {
-                if (property.Value.ValueKind != JsonValueKind.String)
-                {
-                    throw new InvalidOperationException(
-                        $"Wave selector '{selector}' must contain only string label values.");
-                }
-            }
+                "Release signature does not match the stored manifest; the release was altered or the signing key changed.");
         }
     }
 

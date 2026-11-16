@@ -1,16 +1,22 @@
 using Grpc.Core;
-using WasmGate.Control.Core.Abstractions;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Entities.Agents;
+using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.V1;
-using CoreArtifactKind = WasmGate.Control.Core.Entities.ArtifactKind;
+using CoreArtifactKind = WasmGate.Control.Core.Entities.Releases.ArtifactKind;
 using ProtoArtifactKind = WasmGate.Control.V1.ArtifactKind;
 
 namespace WasmGate.Control.Api.Services;
 
 /// <summary>
-/// One live gRPC control stream. Created by <see cref="AgentControlService.Session"/>
-/// for a single agent connection; never registered in DI.
+/// One live gRPC control stream, created by <see cref="AgentControlService.Session"/>
+/// for a single agent connection.
 /// </summary>
+/// <remarks>
+/// Writes are serialized, because a gRPC response stream allows only one writer
+/// at a time. <see cref="CloseAsync"/> cancels the linked token, which stops the
+/// read loop of the owning call; the call itself still unregisters the session.
+/// </remarks>
 public sealed class GrpcAgentSession : IAgentSession
 {
     private readonly IServerStreamWriter<ControlMessage> _writer;

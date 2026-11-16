@@ -1,15 +1,28 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Agents.Enrollment;
 
 namespace WasmGate.Control.Infrastructure.Security;
 
 /// <summary>
-/// Agent certificate authority backed by a PEM key pair on disk. The CA is
-/// generated on first use when the configured files do not exist.
+/// Agent certificate authority backed by a PEM key pair on disk.
 /// </summary>
+/// <remarks>
+/// <para>
+/// The CA is an RSA-2048 self-signed certificate valid for ten years, created on
+/// first use when both files are missing. The private key is written with
+/// owner-only permissions on Unix.
+/// </para>
+/// <para>
+/// Issued certificates are leaf certificates with CN=<c>wasmgate-agent:&lt;guid&gt;</c>,
+/// digital-signature key usage and the client-authentication EKU. Only RSA
+/// certificate requests are accepted. If exactly one of the two CA files exists,
+/// initialization fails instead of silently creating a new CA, because that would
+/// invalidate every certificate already issued.
+/// </para>
+/// </remarks>
 public sealed class PkiCertificateAuthority : ICertificateAuthority
 {
     private const string CaCommonName = "WasmGate Agent CA";

@@ -1,11 +1,14 @@
 using System.Text.Json.Serialization;
 using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Agents;
+using WasmGate.Control.Core.Entities.Delivery;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Api.Endpoints;
 
 /// <summary>Request to create one agent.</summary>
 /// <param name="Name">Unique agent name.</param>
-/// <param name="Labels">Deployment labels used by selectors.</param>
+/// <param name="Labels">Labels matched by deployment wave selectors.</param>
 public sealed record CreateAgentRequest(string Name, Dictionary<string, string>? Labels);
 
 /// <summary>Result of creating one agent.</summary>
@@ -87,8 +90,8 @@ public sealed record CreateDeploymentResponse(Guid Id, DeploymentStatus Status);
 /// <param name="Id">Agent identifier.</param>
 /// <param name="Name">Agent name.</param>
 /// <param name="Status">Agent status.</param>
-/// <param name="LastSeenAt">Last heartbeat time.</param>
-/// <param name="ActiveReleaseId">Active release, if any.</param>
+/// <param name="LastSeenAt">Time of the last heartbeat or control message.</param>
+/// <param name="ActiveReleaseId">Release the agent reports as applied, if any.</param>
 public sealed record AgentSummary(Guid Id, string Name, AgentStatus Status, DateTimeOffset LastSeenAt, string? ActiveReleaseId);
 
 [JsonSerializable(typeof(CreateAgentRequest))]

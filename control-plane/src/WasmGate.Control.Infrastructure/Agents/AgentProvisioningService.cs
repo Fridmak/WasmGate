@@ -1,16 +1,25 @@
 using System.Security.Cryptography;
 using System.Text;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Agents;
+using WasmGate.Control.Core.Entities.Agents.Enrollment;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
 /// <summary>
-/// Provisions agents, issues enrollment tokens and performs enrollment.
-/// Token usage is consumed atomically by the token repository, so the service
-/// works with several control-plane instances at once.
+/// Provisions agents and enrolls data planes: creates agents with a single-use
+/// enrollment token, issues shared registration tokens, validates tokens and
+/// CSRs, and records the certificates it issues.
 /// </summary>
+/// <remarks>
+/// A use of a registration token is reserved with one conditional update, so
+/// several control-plane instances can serve enrollments concurrently without
+/// exceeding the use limit. Raw tokens are returned once and stored only as
+/// SHA-256 hashes.
+/// </remarks>
 public sealed class AgentProvisioningService(
     IAgentRepository agents,
     IEnrollmentTokenRepository tokens,
@@ -190,7 +199,7 @@ public sealed class AgentProvisioningService(
                 Version = "0",
                 AbiVersions = [],
                 Labels = new Dictionary<string, string>(StringComparer.Ordinal),
-                Status = AgentStatus.Online,
+                Status = AgentStatus.Pending,
             };
         }
         else if (!string.IsNullOrEmpty(requestedName) &&
@@ -235,7 +244,11 @@ public sealed class AgentProvisioningService(
         }
         else
         {
-            await agents.TouchAsync(agentGuid, now, activeReleaseId: null, activeConfigSha256: null, cancellationToken);
+            // Enrollment proves the identity, not that a control session is open:
+            // keep the current status and only record the contact. The session
+            // handler moves the agent to Online when the Hello arrives.
+            existing.LastSeenAt = now;
+            await agents.UpsertAsync(existing, cancellationToken);
         }
 
         await certificates.AddAsync(

@@ -1,20 +1,24 @@
 using System.Security.Cryptography;
-using System.Text;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Infrastructure.Security;
 
 /// <summary>
-/// ECDSA P-256 signer for release manifests. The private key stays on the
-/// control plane; the derived public key can be shipped to data planes for
-/// verification.
+/// ECDSA P-256 signer for release manifests.
 /// </summary>
 /// <remarks>
-/// The key is stored as an unencrypted PKCS#8 PEM file. On Unix it is written
-/// with owner-only permissions. The public key is written next to it as
-/// <c>&lt;path&gt;.pub</c> in SubjectPublicKeyInfo PEM format.
+/// <para>
+/// The key is an unencrypted PKCS#8 PEM file; on Unix it is written with
+/// owner-only permissions. The matching public key is written next to it as
+/// <c>&lt;path&gt;.pub</c> in SubjectPublicKeyInfo PEM format for external
+/// verification.
+/// </para>
+/// <para>
+/// Signatures are produced over <see cref="ReleaseManifest"/> in the IEEE P1363
+/// format, so signing and verification cannot disagree about the covered bytes.
+/// </para>
 /// </remarks>
 public sealed class EcdsaReleaseSigner : IReleaseSigner
 {
@@ -56,7 +60,7 @@ public sealed class EcdsaReleaseSigner : IReleaseSigner
     {
         cancellationToken.ThrowIfCancellationRequested();
         var signature = _key.SignData(
-            CanonicalManifest(release),
+            ReleaseManifest.Canonicalize(release),
             HashAlgorithmName.SHA256,
             DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
         return Task.FromResult(Convert.ToBase64String(signature));
@@ -69,7 +73,7 @@ public sealed class EcdsaReleaseSigner : IReleaseSigner
         try
         {
             return Task.FromResult(_key.VerifyData(
-                CanonicalManifest(release),
+                ReleaseManifest.Canonicalize(release),
                 Convert.FromBase64String(signature),
                 HashAlgorithmName.SHA256,
                 DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
@@ -78,25 +82,5 @@ public sealed class EcdsaReleaseSigner : IReleaseSigner
         {
             return Task.FromResult(false);
         }
-    }
-
-    /// <summary>Builds the deterministic byte representation covered by the signature.</summary>
-    /// <param name="release">Release to serialize.</param>
-    private static byte[] CanonicalManifest(Release release)
-    {
-        var builder = new StringBuilder();
-        builder.Append("wasmgate-release-v1\n");
-        builder.Append(release.Id).Append('\n');
-        builder.Append(release.Environment).Append('\n');
-        builder.Append(release.ConfigVersionId).Append('\n');
-        builder.Append(release.ConfigSha256).Append('\n');
-
-        foreach (var artifact in release.Artifacts.OrderBy(a => a.Name, StringComparer.Ordinal))
-        {
-            builder.Append(artifact.Name).Append('\n');
-            builder.Append(artifact.ArtifactId).Append('\n');
-        }
-
-        return Encoding.UTF8.GetBytes(builder.ToString());
     }
 }

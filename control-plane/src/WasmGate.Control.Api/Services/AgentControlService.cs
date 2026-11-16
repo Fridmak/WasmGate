@@ -1,8 +1,12 @@
 using System.Security.Cryptography.X509Certificates;
 using Grpc.Core;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Abstractions.Releases;
+using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Agents;
+using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.V1;
 
 namespace WasmGate.Control.Api.Services;
@@ -31,7 +35,16 @@ public sealed class AgentControlService(
     ControlPlaneOptions options,
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
-    /// <inheritdoc />
+    /// <summary>
+    /// Runs one agent control session until the stream ends.
+    /// </summary>
+    /// <param name="requestStream">Messages sent by the agent.</param>
+    /// <param name="responseStream">Stream used to push commands to the agent.</param>
+    /// <param name="context">Context of the gRPC call.</param>
+    /// <exception cref="RpcException">
+    /// The first message is not a valid <c>Hello</c>, or the client certificate
+    /// does not match the agent identifier.
+    /// </exception>
     public override async Task Session(
         IAsyncStreamReader<AgentMessage> requestStream,
         IServerStreamWriter<ControlMessage> responseStream,
@@ -148,6 +161,11 @@ public sealed class AgentControlService(
     /// </summary>
     /// <param name="context">Current gRPC call context.</param>
     /// <param name="agentId">Agent identifier reported in the Hello.</param>
+    /// <remarks>
+    /// The TLS layer only requests the certificate, so this check is the
+    /// enforcement point: it rejects a call without a certificate and a call whose
+    /// certificate CN names a different agent.
+    /// </remarks>
     /// <exception cref="RpcException">
     /// No client certificate is present, or its CN names another agent.
     /// </exception>

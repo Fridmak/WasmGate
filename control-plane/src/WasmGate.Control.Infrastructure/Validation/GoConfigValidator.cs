@@ -1,15 +1,21 @@
 using System.Diagnostics;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Infrastructure.Validation;
 
 /// <summary>
-/// Delegates validation to the Go data-plane binary. This is the single source
-/// of truth for the YAML schema, WASM ABI and TLS material; do not reimplement
-/// those rules in C#.
+/// Validates a configuration document and its artifacts by running the Go data
+/// plane binary with <c>-config … -validate</c>.
 /// </summary>
+/// <remarks>
+/// The C# side does not own the YAML schema, the WASM ABI or the TLS rules, so
+/// validation cannot drift from the runtime that will apply the release. The
+/// configuration and the artifacts are laid out in a temporary directory first;
+/// artifact paths must stay inside it. A hung validator is killed after
+/// <see cref="ControlPlaneOptions.ValidationTimeout"/> and reported as an error.
+/// </remarks>
 public sealed class GoConfigValidator(
     ControlPlaneOptions options,
     IArtifactStore artifacts) : IConfigValidator
@@ -54,7 +60,7 @@ public sealed class GoConfigValidator(
                 string target;
                 try
                 {
-                    target = SafeTarget(tempRoot, artifact.Name);
+                    target = ReleasePath.Combine(tempRoot, artifact.Name);
                 }
                 catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
                 {
@@ -171,39 +177,6 @@ public sealed class GoConfigValidator(
         }
 
         return binary;
-    }
-
-    /// <summary>Maps an artifact install path to a file inside the temporary tree.</summary>
-    /// <param name="root">Temporary release root.</param>
-    /// <param name="name">Artifact install path from the release.</param>
-    /// <returns>Absolute target path inside <paramref name="root"/>.</returns>
-    /// <exception cref="ArgumentException">The path is rooted or escapes the release directory.</exception>
-    /// <exception cref="NotSupportedException">The path contains characters unsupported by the platform.</exception>
-    private static string SafeTarget(string root, string name)
-    {
-        if (Path.IsPathRooted(name))
-        {
-            throw new ArgumentException($"Artifact path '{name}' must be relative.", nameof(name));
-        }
-
-        var normalizedRoot = Path.GetFullPath(root);
-        var target = Path.GetFullPath(Path.Combine(normalizedRoot, name));
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        var prefix = normalizedRoot.EndsWith(Path.DirectorySeparatorChar)
-            ? normalizedRoot
-            : normalizedRoot + Path.DirectorySeparatorChar;
-
-        if (string.Equals(target, normalizedRoot, comparison) ||
-            !target.StartsWith(prefix, comparison))
-        {
-            throw new ArgumentException(
-                $"Artifact path '{name}' escapes the release directory.",
-                nameof(name));
-        }
-
-        return target;
     }
 
     /// <summary>Kills a validator process after a timeout.</summary>

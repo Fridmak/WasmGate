@@ -1,20 +1,31 @@
 using Google.Protobuf;
 using Grpc.Core;
-using WasmGate.Control.Core.Abstractions;
-using WasmGate.Control.Core.Entities;
+using WasmGate.Control.Core.Abstractions.Agents;
+using WasmGate.Control.Core.Entities.Agents.Enrollment;
 using WasmGate.Control.V1;
 
 namespace WasmGate.Control.Api.Services;
 
 /// <summary>
-/// Issues the first mTLS certificate to a data plane. Protected by a one-time
-/// enrollment token; the agent does not have a client certificate at this point.
+/// Issues the first mTLS certificate to a data plane.
 /// </summary>
+/// <remarks>
+/// The call is unauthenticated by design: the agent has no certificate yet, and
+/// the enrollment token authorises it. A single-use token is bound to one agent;
+/// a registration token may be shared and optionally scoped by a name prefix.
+/// Failure kinds are mapped to gRPC status codes, so the data plane can tell a
+/// bad token from a name conflict.
+/// </remarks>
 public sealed class AgentEnrollmentService(
     IAgentProvisioningService provisioning,
     ILogger<AgentEnrollmentService> logger) : AgentEnrollment.AgentEnrollmentBase
 {
-    /// <inheritdoc />
+    /// <summary>
+    /// Issues a client certificate in exchange for an enrollment token.
+    /// </summary>
+    /// <param name="request">Agent identifier, token, name and CSR.</param>
+    /// <param name="context">Context of the gRPC call.</param>
+    /// <returns>The issued certificate, the agent CA and the expiry.</returns>
     public override async Task<EnrollResponse> Enroll(
         EnrollRequest request,
         ServerCallContext context)

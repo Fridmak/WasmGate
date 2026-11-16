@@ -1,21 +1,30 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using WasmGate.Control.Core.Abstractions;
+using WasmGate.Control.Core.Abstractions.Agents;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
 /// <summary>
-/// In-memory registry of connected agents. Enough for one CP process.
+/// Process-local registry of connected agents: one entry per agent identity,
+/// pointing at its live control stream.
 /// </summary>
 /// <remarks>
-/// Reads are lock-free. Register and unregister are serialized by a small lock
-/// so a displaced session can be returned and a stale unregister cannot remove
-/// the newer session.
+/// <para>
+/// The dictionary lives in memory because a session is an open transport, not
+/// data; the durable facts about an agent are stored by the agent repository.
+/// The registry therefore serves exactly one control-plane process: a second
+/// instance would not see the sessions of the first.
+/// </para>
+/// <para>
+/// Reads are lock-free. Register and unregister share a small lock: register must
+/// return the displaced session so the caller can take it over, and unregister
+/// must not remove a newer session that the same agent has already registered.
+/// </para>
 /// </remarks>
 public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
 {
     private readonly ConcurrentDictionary<Guid, IAgentSession> _sessions = new();
-    private readonly Lock _writeGate = new();
+    private readonly Lock _writeLock = new();
 
     /// <inheritdoc />
     public int Count => _sessions.Count;
@@ -25,7 +34,7 @@ public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
     {
         ArgumentNullException.ThrowIfNull(session);
 
-        lock (_writeGate)
+        lock (_writeLock)
         {
             _sessions.TryGetValue(agentId, out var previous);
             _sessions[agentId] = session;
@@ -36,7 +45,7 @@ public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
     /// <inheritdoc />
     public void Unregister(Guid agentId, IAgentSession session)
     {
-        lock (_writeGate)
+        lock (_writeLock)
         {
             if (_sessions.TryGetValue(agentId, out var current) && ReferenceEquals(current, session))
             {
