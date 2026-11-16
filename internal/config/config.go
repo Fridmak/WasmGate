@@ -5,10 +5,12 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -33,17 +35,41 @@ type Config struct {
 	AdminAllowRemote bool                  `yaml:"admin_allow_remote"`
 	Listeners        []ListenerConfig      `yaml:"listeners"` // front-facing TCP listeners
 	Pools            map[string]PoolConfig `yaml:"pools"`     // backend groups, keyed by pool name
+
+	// Dir is the absolute directory of the file the configuration was loaded
+	// from (yaml:"-" keeps it out of the document). Relative plugin and TLS
+	// paths are resolved against it, so a configuration delivered by the
+	// control plane can reference artifacts that sit next to it instead of next
+	// to the process working directory. Programmatic configurations may leave it
+	// empty, which keeps paths relative to the working directory.
+	Dir string `yaml:"-"`
 }
 
 // Load reads, parses and validates the configuration file at path.
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured path
 	if err != nil {
 		return nil, fmt.Errorf("open config: %w", err)
 	}
-	defer f.Close()
 
-	dec := yaml.NewDecoder(f)
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("config path: %w", err)
+	}
+	cfg.Dir = filepath.Dir(abs)
+	return cfg, nil
+}
+
+// Parse decodes and validates a configuration document. Dir is left empty;
+// callers that resolve relative paths (plugins, TLS certificates) must set it to
+// the directory those paths are relative to.
+func Parse(data []byte) (*Config, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true) // reject unknown keys instead of silently ignoring typos
 
 	var cfg Config
@@ -54,6 +80,15 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Resolve anchors a relative plugin or certificate path at the configuration
+// directory. An empty Dir or an already absolute path is returned unchanged.
+func (c *Config) Resolve(path string) string {
+	if path == "" || filepath.IsAbs(path) || c.Dir == "" {
+		return path
+	}
+	return filepath.Join(c.Dir, path)
 }
 
 // Validate applies defaults and rejects invalid configurations in place. It is

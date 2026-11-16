@@ -79,3 +79,22 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+  dotnet:
+    name: .NET (build + format + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x # global.json pins 10.0.404 with rollForward latestFeature
+
+      - name: build
+        run: dotnet build control-plane/WasmGate.Control.sln -c Release
+
+      - name: format
+        run: dotnet format control-plane/WasmGate.Control.sln --verify-no-changes --no-restore
+
+      - name: test
+        run: dotnet test control-plane/WasmGate.Control.sln -c Release --no-build --no-restore

@@ -24,7 +24,7 @@
 ## 2. Высокоуровневая архитектура
 
 ```
-┌───────────────────────────── CONTROL PLANE (C# / .NET 8) ─────────────────────────────┐
+┌───────────────────────────── CONTROL PLANE (C# / .NET 10) ─────────────────────────────┐
 │  ASP.NET Core + gRPC                                                                   │
 │  ┌──────────────┐  ┌────────────────┐  ┌───────────────┐  ┌──────────┐  ┌───────────┐  │
 │  │ Config Store │  │ Plugin Registry│  │ Validate/Pub. │  │ Audit Log│  │ Rollback  │  │
@@ -131,7 +131,7 @@ accept()
 | Metrics | **`observe.Metrics`** (атомики + Prometheus text 0.0.4) | 0 аллокаций и ~60 нс на соединение, совместимость с любым Prometheus-scraper'ом без тяжёлых зависимостей | `client_golang` на каждом чанке (дороже) |
 | Rate limit | **собственный sliding window** (`internal/ratelimit`) | 64 шарда, 10 слотов, 16-байтный ключ, allow-list, `/24` и `/64`, backoff-бан; 0 аллокаций в steady state (≈65 нс) | фикс-окно (всплески на границе окна) |
 | eBPF (future) | `cilium/ebpf` | Современный, чистый Go | `iovisor/gobpf` (устарел) |
-| Control plane | **.NET 8 / ASP.NET Core / gRPC** | Строгий контракт, генерация кода | REST (слабее контракт) |
+| Control plane | **.NET 10 LTS / ASP.NET Core / gRPC** | Строгий контракт, генерация кода, Native AOT | REST (слабее контракт) |
 | Тесты | стандартный **`testing`** (table-driven, `-race`, fuzz для SNI, bench) | Нулевые внешние зависимости, единый стиль со stdlib | — |
 | Бенчмарки | `go test -bench`, **`benchstat`**, сравнение с `nginx stream` и HAProxy на Linux | Воспроизводимость + статистика | — |
 | Линт | **`golangci-lint` v2** (схема v2, `v2.15.0`) | Один запуск — много анализаторов | — |
@@ -398,7 +398,13 @@ DP: Apply(snapshot) → atomic store → ack → метрика wasmgate_config_
 ```
 
 **Транспорт CP→DP (план):** gRPC по Unix Domain Socket (низкая латентность,
-локально, без сетевого стека), push-модель + периодический heartbeat.
+локально, без сетевого стека), push-модель + периодический heartbeat. Для
+удалённых узлов — тот же gRPC по mTLS/TCP: data plane всегда инициирует
+соединение сам.
+
+**Стек CP (каркас в `control-plane/`):** .NET 10 LTS + ASP.NET Core gRPC,
+PostgreSQL (Npgsql + Dapper.AOT), Native AOT. Валидация конфига и WASM
+делегируется Go-валидатору (`wasmgate -validate`), чтобы не дублировать схему.
 
 ---
 

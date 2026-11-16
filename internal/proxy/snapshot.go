@@ -145,6 +145,7 @@ func (r *Runtime) ReloadChecked(cfg *config.Config) (uint64, error) {
 // before any socket is bound or any snapshot is swapped.
 func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 	for _, lc := range cfg.Listeners {
+		lc = resolvePaths(cfg, lc)
 		if lc.Plugin.Enabled() {
 			if _, err := r.registry.preparePlugin(lc.Name, lc.Plugin); err != nil {
 				return fmt.Errorf("listener %q: %w", lc.Name, err)
@@ -157,6 +158,15 @@ func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// resolvePaths anchors a listener's relative artifact paths at the configuration
+// directory so the same document works from any working directory.
+func resolvePaths(cfg *config.Config, lc config.ListenerConfig) config.ListenerConfig {
+	lc.Plugin.Path = cfg.Resolve(lc.Plugin.Path)
+	lc.TLS.CertFile = cfg.Resolve(lc.TLS.CertFile)
+	lc.TLS.KeyFile = cfg.Resolve(lc.TLS.KeyFile)
+	return lc
 }
 
 func buildTLSConfig(tc config.TLSConfig) (*tls.Config, error) {
@@ -197,6 +207,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 	var preparedPlugins map[string]cachedPlugin
 	var preparedTLS map[string]*tls.Config
 	for _, lc := range cfg.Listeners {
+		lc = resolvePaths(cfg, lc)
 		if lc.Plugin.Enabled() {
 			cp, err := r.registry.preparePlugin(lc.Name, lc.Plugin)
 			if err != nil {
@@ -232,6 +243,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 
 	listeners := make(map[string]resolvedListener, len(cfg.Listeners))
 	for _, lc := range cfg.Listeners {
+		lc = resolvePaths(cfg, lc)
 		rl := resolvedListener{cfg: lc, pool: pools[lc.UpstreamPool]}
 		// Always fetch the registry limiter (this also (re)sets its limit);
 		// expose it only when a limit is actually configured.

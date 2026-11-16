@@ -60,7 +60,7 @@ F3 требует zero-alloc JSON-парсера **в ядре** → следу�
 - **Chaos-тест:** `TestReloadUnderLoadZeroDroppedConnections` — 12 reload под
   нагрузкой, 0 разорванных соединений.
 
-### Что осталось (C#/.NET 8, M6)
+### Что осталось (C#/.NET 10 LTS, M6)
 Реестр версий, валидация, публикация, health-gate, **rollback на N-1**, аудит;
 общение — **gRPC по Unix Domain Socket**.
 

@@ -175,7 +175,7 @@ snapshot остаётся активным, если сборка/валидац
 | **M3. Observe+hardening** | метрики, pprof, health-checks, CLI, `-validate`, `POST /reload`, SNI peek | Наблюдаемый прокси + Linux-baseline | ✅ done |
 | **M4. Connection flood (F2)** | скользящее окно per-IP/subnet, allow-list, backoff-бан | Фильтр в горячем пути, 0 allocs/op | ✅ done |
 | **M5. WASM + L7 + TLS** | wazero sandbox, ABI v1/v2/v3, `on_data`/`on_data_ex`/`on_data_state`, `route_pools`, TLS passthrough/termination, circuit breaker, dial retries, 8 showcase-плагинов | Плагин без рестарта, e2e и сравнение с nginx/HAProxy | ✅ done |
-| **M6. Control Plane** | C#/.NET 8 + gRPC/UDS: версии, публикация, откат, аудит | Hot reload из CP | ⏳ plan |
+| **M6. Control Plane** | C#/.NET 10 LTS + gRPC/UDS: версии, публикация, откат, аудит | Каркас в `control-plane/`; hot reload из CP | 🟡 skeleton |
 
 > После M5 — C# control plane; zero-alloc JSON DPI в ядре (F3) и eBPF (F4) —
 > следующие направления.

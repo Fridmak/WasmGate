@@ -564,12 +564,15 @@ listeners:
 
 ## Дорожная карта
 
-- C#/.NET control plane: версии конфигурации, реестр плагинов, публикация,
-  откат и аудит через gRPC/UDS.
+- C#/.NET control plane готов: версии конфигурации, реестр артефактов,
+  публикация, деплой волнами, откат и аудит; PostgreSQL + Dapper.AOT. Data plane
+  сам enroll'ится по токену, держит gRPC-сессию и применяет релизы. Осталось:
+  OIDC/RBAC, health-gate волн, heartbeat-reaper, `Drain`/`SetLogLevel`.
 - Upstream TLS/mTLS и клиентские сертификаты на TLS-листенерах.
 - Zero-alloc JSON DPI в ядре и eBPF-фильтрация для раннего отсечения на уровне
   пакетов.
-- Контейнерная упаковка (Docker/compose) и расширенные deployment-рецепты.
+- Контейнерная упаковка готова: Dockerfile'ы для DP и CP (Native AOT) и
+  `deployments/docker-compose.yml` с PostgreSQL и применением миграций.
 
 Уже сделано и доступно сегодня: L4 data plane, zero-copy, rate limiting, TLS/SNI,
 health checks, circuit breaker, hot reload, метрики, ABI v3 и восемь плагинов.
@@ -584,6 +587,8 @@ health checks, circuit breaker, hot reload, метрики, ABI v3 и восем
 | [`plugins/examples/README.md`](plugins/examples/README.md) | ABI v1–v3, ограничения песочницы, сборка плагинов |
 | [`benchmarks/README.md`](benchmarks/README.md) | Методика, сценарии, Linux-результаты, сравнение с nginx/HAProxy |
 | [`deployments/README.md`](deployments/README.md) | Production-сборка, systemd, рекомендации |
+| [`control-plane/README.md`](control-plane/README.md) | Control plane: AOT-стек, схема, окружение, запуск |
+| [`control-plane/AGENT-PROTOCOL.md`](control-plane/AGENT-PROTOCOL.md) | Протокол CP ↔ DP: enrollment, Session, артефакты, применение релиза |
 | [`docs/01-problem.md`](docs/01-problem.md) | Постановка задачи, пользователи, метрики |
 | [`docs/02-architecture-tech.md`](docs/02-architecture-tech.md) | Архитектура, стек, ADR, модель плагинов |
 | [`docs/03-mvp.md`](docs/03-mvp.md) | Границы MVP, Definition of Done, методика замеров |
