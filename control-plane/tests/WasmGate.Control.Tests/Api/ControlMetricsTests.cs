@@ -14,6 +14,8 @@ public sealed class ControlMetricsTests
         metrics.RecordHttp("GET", 401);
         metrics.RecordHttp("post", 500);
         metrics.RecordHttp("PROPFIND", 405);
+        metrics.RecordAgentQueryFailure();
+        metrics.RecordAgentQueryFailure();
 
         var text = metrics.Render(
         [
@@ -30,6 +32,7 @@ public sealed class ControlMetricsTests
         Assert.Contains("wasmgate_control_agents{environment=\"prod\",status=\"Offline\"} 1", text);
         Assert.Contains("wasmgate_control_agents{environment=\"staging\",status=\"Online\"} 1", text);
         Assert.Contains("wasmgate_control_grpc_sessions_active 2", text);
+        Assert.Contains("wasmgate_control_agent_query_failures_total 2", text);
         Assert.Contains("wasmgate_control_build_info{version=\"", text);
         Assert.Contains("# TYPE wasmgate_control_uptime_seconds gauge", text);
         Assert.Contains("# TYPE wasmgate_control_working_set_bytes gauge", text);

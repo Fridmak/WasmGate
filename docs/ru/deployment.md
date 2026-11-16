@@ -126,7 +126,7 @@ done
 ## Метрики
 
 Оба процесса отдают метрики Prometheus: `<admin_addr>/metrics` у data plane и
-`/metrics` на HTTP-адресе control plane. Готовый стек Prometheus + Grafana лежит
+`/metrics` по HTTP-адресу control plane. Готовый стек Prometheus + Grafana лежит
 в [`deployments/observability`](../../deployments/observability/). Полный список
 метрик, токены и примеры scrape — в [метриках](metrics.md).
 

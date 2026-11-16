@@ -75,8 +75,10 @@ The local demo exposes both metric endpoints on the compose network:
 - data plane: `data-plane:9099/metrics`;
 - control plane: `control-plane:9097/metrics`.
 
-Neither admin port is published to the host. Prometheus and Grafana run in the
-shared observability stack:
+The data-plane admin port is not published to the host. The control-plane admin
+port is published on `127.0.0.1:9097` for the UI; Prometheus reaches both over
+the compose network. Prometheus and Grafana run in the shared observability
+stack:
 
 ```bash
 export WASMGATE_ADMIN_TOKEN="$(grep '^WASMGATE_ADMIN_TOKEN=' deployments/scenarios/01-local-demo/.env | cut -d= -f2-)"
@@ -93,7 +95,8 @@ Prometheus: `http://127.0.0.1:9090`.
 
 The dashboard **WasmGate overview** is provisioned automatically. See
 [`deployments/observability/README.md`](../../observability/README.md) for other
-deployment layouts.
+deployment layouts. Set `WASMGATE_DP_VERSION=v1.2.3` in `.env` to override the
+version reported by `wasmgate_build_info` (the default is `dev`).
 
 ## Notes
 

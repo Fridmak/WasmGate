@@ -88,6 +88,8 @@ services:
     build:
       context: ../../..
       dockerfile: deployments/docker/data-plane.Dockerfile
+      args:
+        VERSION: ${WASMGATE_DP_VERSION:-dev}
     restart: unless-stopped
     profiles: ["dp"]
     depends_on:

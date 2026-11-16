@@ -22,6 +22,7 @@ internal sealed class ControlMetrics
 
     private readonly ConcurrentDictionary<HttpMetricKey, long> _http = new();
     private readonly long _startedAt = Stopwatch.GetTimestamp();
+    private long _agentQueryFailures;
 
     /// <summary>Records one completed admin/API request.</summary>
     /// <param name="method">HTTP method.</param>
@@ -35,6 +36,9 @@ internal sealed class ControlMetrics
             1,
             static (_, current) => current + 1);
     }
+
+    /// <summary>Records one scrape whose agent query failed.</summary>
+    public void RecordAgentQueryFailure() => Interlocked.Increment(ref _agentQueryFailures);
 
     /// <summary>Renders one Prometheus scrape.</summary>
     /// <param name="agents">Registered agents used for per-environment gauges.</param>
@@ -50,7 +54,7 @@ internal sealed class ControlMetrics
         Gauge(builder, "wasmgate_control_build_info", "Control-plane build information.",
             $"version=\"{EscapeLabel(version)}\",dotnet_version=\"{EscapeLabel(Environment.Version.ToString())}\"", 1);
 
-        builder.Append("# HELP wasmgate_control_http_requests_total Admin/API HTTP requests.\n");
+        builder.Append("# HELP wasmgate_control_http_requests_total Admin, API and metrics HTTP requests.\n");
         builder.Append("# TYPE wasmgate_control_http_requests_total counter\n");
         foreach (var sample in _http.OrderBy(pair => pair.Key.Method, StringComparer.Ordinal)
                                    .ThenBy(pair => pair.Key.Status))
@@ -82,6 +86,9 @@ internal sealed class ControlMetrics
 
         Gauge(builder, "wasmgate_control_grpc_sessions_active",
             "Live agent control sessions.", null, activeSessions);
+        Counter(builder, "wasmgate_control_agent_query_failures_total",
+            "Agent gauge refreshes that could not query the database.", null,
+            Interlocked.Read(ref _agentQueryFailures));
         Gauge(builder, "wasmgate_control_uptime_seconds",
             "Seconds since the control plane started.", null,
             Stopwatch.GetElapsedTime(_startedAt).TotalSeconds);

@@ -126,7 +126,7 @@ assets.
 ## Metrics
 
 Both processes expose Prometheus metrics: `<admin_addr>/metrics` on the data
-plane and the control-plane HTTP address `+ /metrics`. A provisioned Prometheus
+plane and `/metrics` on the control-plane HTTP address. A provisioned Prometheus
 and Grafana stack lives in
 [`deployments/observability`](../../deployments/observability/). See
 [metrics](metrics.md) for the full metric list, tokens and scrape examples.

@@ -31,7 +31,7 @@ type UpstreamStat struct {
 // allocate.
 type Metrics struct {
 	startedAt    time.Time
-	buildVersion string
+	buildVersion atomic.Pointer[string]
 
 	accepted        atomic.Int64 // total client connections accepted
 	closed          atomic.Int64 // total connection handlers finished
@@ -50,11 +50,14 @@ type Metrics struct {
 
 // NewMetrics returns an empty Metrics with its uptime clock started.
 func NewMetrics() *Metrics {
-	return &Metrics{startedAt: time.Now(), buildVersion: "dev"}
+	m := &Metrics{startedAt: time.Now()}
+	m.SetBuildVersion("dev")
+	return m
 }
 
 // SetBuildVersion records the build version shown in wasmgate_build_info.
 // It is optional: NewMetrics defaults to "dev", and a nil Metrics ignores it.
+// The value is stored atomically so a late or repeated call is race-free.
 func (m *Metrics) SetBuildVersion(version string) {
 	if m == nil {
 		return
@@ -62,7 +65,7 @@ func (m *Metrics) SetBuildVersion(version string) {
 	if version == "" {
 		version = "dev"
 	}
-	m.buildVersion = version
+	m.buildVersion.Store(&version)
 }
 
 // Accept records an accepted client connection.
@@ -207,8 +210,10 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	s := m.Snapshot()
 	buildVersion := "dev"
-	if m != nil && m.buildVersion != "" {
-		buildVersion = m.buildVersion
+	if m != nil {
+		if stored := m.buildVersion.Load(); stored != nil && *stored != "" {
+			buildVersion = *stored
+		}
 	}
 
 	// The helpers take the value as `any` so counters (int64) and gauges built
@@ -227,7 +232,7 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	counter("wasmgate_connections_closed_total", "Connection handlers finished.", s.ConnectionsClosed)
 	gauge("wasmgate_connections_active", "Connections currently being proxied.", s.ConnectionsActive)
 	counter("wasmgate_connections_limit_rejected_total", "Connections refused because max_conns was reached.", s.ConnectionsLimitRejected)
-	counter("wasmgate_connections_rate_rejected_total", "Connections refused by the per-IP rate limiter.", s.ConnectionsRateRejected)
+	counter("wasmgate_connections_rate_rejected_total", "Connections refused by the per-IP rate or concurrency limiter.", s.ConnectionsRateRejected)
 	counter("wasmgate_connections_plugin_rejected_total", "Connections refused by a WASM plugin hook.", s.ConnectionsPluginRejected)
 	counter("wasmgate_plugin_instances_discarded_total", "WASM instances destroyed after a trap or timeout.", s.PluginInstancesDiscarded)
 	counter("wasmgate_upstream_dial_failures_total", "Upstream dials that failed.", s.UpstreamDialFailures)

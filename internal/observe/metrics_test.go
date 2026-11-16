@@ -3,6 +3,7 @@ package observe
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -117,6 +118,26 @@ func TestWritePrometheusBuildInfo(t *testing.T) {
 	if !strings.Contains(out, `wasmgate_build_info{version="1.2.3",go_version="`) {
 		t.Fatalf("build info missing from\n%s", out)
 	}
+}
+
+func TestBuildVersionIsRaceFree(t *testing.T) {
+	m := NewMetrics()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			m.SetBuildVersion("v1")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			var buf bytes.Buffer
+			m.WritePrometheus(&buf, nil)
+		}
+	}()
+	wg.Wait()
 }
 
 // BenchmarkMetricsConnection measures exactly what the data path adds per

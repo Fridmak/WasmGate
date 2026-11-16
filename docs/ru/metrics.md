@@ -17,6 +17,10 @@ Admin-эндпоинт DP задаётся `admin_addr`. По умолчанию
 Эндпоинт CP защищён тем же bearer-токеном, что и `/api/v1/*`. Health-пробы
 остаются открытыми.
 
+Оба gauge `build_info` по умолчанию показывают development-версию (`dev` у data
+plane, версия сборки у control plane). Чтобы DP сообщал реальный тег, собирайте
+его с `make build VERSION=v1.2.3` или `--build-arg VERSION=v1.2.3`.
+
 ## Готовый Prometheus + Grafana
 
 В репозитории есть провижининг-стек:
@@ -63,9 +67,10 @@ deployments/observability/
 | Метрика | Тип | Смысл |
 |---|---|---|
 | `wasmgate_control_build_info{version,dotnet_version}` | gauge | версия сборки |
-| `wasmgate_control_http_requests_total{method,status}` | counter | HTTP-запросы admin/API |
+| `wasmgate_control_http_requests_total{method,status}` | counter | HTTP-запросы admin, API и scrape |
 | `wasmgate_control_agents{environment,status}` | gauge | агенты по среде и статусу |
 | `wasmgate_control_grpc_sessions_active` | gauge | живые gRPC-сессии агентов |
+| `wasmgate_control_agent_query_failures_total` | counter | scrape, не сумевшие прочитать агентов из PostgreSQL |
 | `wasmgate_control_uptime_seconds` | gauge | uptime процесса |
 | `wasmgate_control_working_set_bytes` | gauge | resident working set |
 | `wasmgate_control_gc_heap_bytes` | gauge | managed heap |
@@ -82,6 +87,7 @@ sum(rate(wasmgate_connections_rate_rejected_total[5m]))
 sum(rate(wasmgate_connections_plugin_rejected_total[5m]))
 wasmgate_upstream_healthy == 0
 wasmgate_control_agents{status="Online"}
+increase(wasmgate_control_agent_query_failures_total[5m]) > 0
 ```
 
 ## Scrape-конфиг
@@ -119,5 +125,6 @@ scrape_configs:
   только внутри сети.
 - Grafana публикуется на loopback. Для удалённого доступа — SSH-туннель или
   TLS reverse proxy.
-- Token-файлы в gitignore; вне контейнера держите их `0600`. Prometheus читает
-  их read-only.
+- Token-файлы в gitignore. `setup.sh` пишет их с правами `0644`, чтобы
+  непривилегированный пользователь Prometheus мог прочитать bind mount; на
+  общем хосте ограничьте каталог или используйте Docker secrets.

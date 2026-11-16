@@ -31,15 +31,23 @@ internal static class MetricsEndpoints
         CancellationToken cancellationToken)
     {
         IReadOnlyList<Agent> list;
+        using var dbTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // A scrape must return even when PostgreSQL is slow or unreachable:
+        // Prometheus gives up after its own scrape timeout and marks the target
+        // down, hiding the process metrics that are still perfectly valid.
+        dbTimeout.CancelAfter(TimeSpan.FromSeconds(2));
         try
         {
-            list = await agents.ListAsync(cancellationToken);
+            list = await agents.ListAsync(dbTimeout.Token);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // A database outage must not turn a scrape into a 500: Prometheus would
-            // mark the target down even though the control plane itself is alive.
+            throw;
+        }
+        catch (Exception ex)
+        {
             logger.LogWarning(ex, "agent metrics unavailable; rendering process metrics only");
+            metrics.RecordAgentQueryFailure();
             list = [];
         }
 

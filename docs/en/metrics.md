@@ -17,6 +17,10 @@ needs a non-loopback admin address plus the admin token.
 The control-plane endpoint is protected by the same bearer token as `/api/v1/*`.
 Health probes stay open.
 
+Both `build_info` gauges default to a development version (`dev` on the data
+plane, the assembly version on the control plane). Build the data plane with
+`make build VERSION=v1.2.3` or `--build-arg VERSION=v1.2.3` to report a real tag.
+
 ## Ready-made Prometheus + Grafana
 
 The repository contains a provisioned stack:
@@ -63,9 +67,10 @@ See [`deployments/observability/README.md`](../../deployments/observability/READ
 | Metric | Type | Meaning |
 |---|---|---|
 | `wasmgate_control_build_info{version,dotnet_version}` | gauge | build information |
-| `wasmgate_control_http_requests_total{method,status}` | counter | admin/API HTTP requests |
+| `wasmgate_control_http_requests_total{method,status}` | counter | admin, API and scrape HTTP requests |
 | `wasmgate_control_agents{environment,status}` | gauge | registered agents grouped by environment and status |
 | `wasmgate_control_grpc_sessions_active` | gauge | live agent control sessions |
+| `wasmgate_control_agent_query_failures_total` | counter | scrapes that could not read agents from PostgreSQL |
 | `wasmgate_control_uptime_seconds` | gauge | process uptime |
 | `wasmgate_control_working_set_bytes` | gauge | resident working set |
 | `wasmgate_control_gc_heap_bytes` | gauge | managed heap size |
@@ -82,6 +87,7 @@ sum(rate(wasmgate_connections_rate_rejected_total[5m]))
 sum(rate(wasmgate_connections_plugin_rejected_total[5m]))
 wasmgate_upstream_healthy == 0
 wasmgate_control_agents{status="Online"}
+increase(wasmgate_control_agent_query_failures_total[5m]) > 0
 ```
 
 ## Scrape configuration
@@ -119,5 +125,6 @@ Prometheus can reach.
   Compose stack keeps it on the internal network.
 - Grafana is published on host loopback. Use an SSH tunnel or a TLS reverse proxy
   for remote access.
-- Token files are gitignored; keep them `0600` outside the container. The sample
-  Prometheus container reads them read-only.
+- Token files are gitignored. `setup.sh` writes them `0644` so the unprivileged
+  Prometheus user can read the bind mount; on a shared host restrict the
+  directory or use Docker secrets.

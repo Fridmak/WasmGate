@@ -267,7 +267,7 @@
             "lineWidth": 2,
             "showPoints": "never"
           },
-          "unit": "reqps"
+          "unit": "cps"
         },
         "overrides": []
       },
@@ -382,7 +382,7 @@
             "lineWidth": 2,
             "showPoints": "never"
           },
-          "unit": "reqps"
+          "unit": "cps"
         },
         "overrides": []
       },
@@ -559,7 +559,7 @@
             "lineWidth": 2,
             "showPoints": "never"
           },
-          "unit": "reqps"
+          "unit": "cps"
         },
         "overrides": []
       },
@@ -670,6 +670,15 @@
           "expr": "wasmgate_control_grpc_sessions_active{job=\"wasmgate-control-plane\"}",
           "legendFormat": "sessions",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "wasmgate_control_agent_query_failures_total{job=\"wasmgate-control-plane\"}",
+          "legendFormat": "agent query failures",
+          "refId": "C"
         }
       ],
       "title": "Agents and sessions",
@@ -850,8 +859,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(wasmgate_reloads_total{job=\"wasmgate-data-plane\"})",
-          "legendFormat": "reloads",
+          "expr": "sum(increase(wasmgate_reloads_total{job=\"wasmgate-data-plane\"}[$__range]))",
+          "legendFormat": "reloads in range",
           "refId": "B"
         }
       ],
