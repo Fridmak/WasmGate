@@ -38,8 +38,26 @@
     <main class="main">
       <header class="topbar">
         <div class="field env">
-          <label for="env">Environment</label>
-          <input id="env" autocomplete="off" spellcheck="false">
+          <label id="env-label" for="env-button">Environment</label>
+          <div class="env-picker">
+            <button id="env-button" class="btn env-button" type="button"
+                    aria-haspopup="listbox" aria-labelledby="env-label env-current"
+                    aria-expanded="false">
+              <span id="env-current">prod</span>
+              <span class="caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="env-popover" class="popover" hidden>
+              <div class="popover-title">Switch environment</div>
+              <div id="env-list" class="env-list" role="listbox" aria-label="Environments"></div>
+              <div class="popover-sep"></div>
+              <form id="env-create" class="env-create">
+                <input id="env-new" placeholder="new-environment" autocomplete="off"
+                       spellcheck="false" aria-label="New environment name">
+                <button class="btn small primary" type="submit">Create</button>
+              </form>
+              <p id="env-error" class="popover-error" hidden></p>
+            </div>
+          </div>
         </div>
         <div class="field grow">
           <label for="token">Admin token</label>

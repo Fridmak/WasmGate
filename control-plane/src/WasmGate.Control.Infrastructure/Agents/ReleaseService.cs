@@ -17,11 +17,18 @@ namespace WasmGate.Control.Infrastructure.Agents;
 /// plane, signing, wave dispatch and rollback.
 /// </summary>
 /// <remarks>
+/// <para>
 /// There is no health gate and no approval step. Waves are dispatched in order
 /// without waiting for the previous one, and the first apply result reported by
 /// an agent turns the deployment and all of its dispatched waves terminal.
 /// Before dispatch the stored manifest signature is verified, so a release that
 /// was altered in the database is never sent to an agent.
+/// </para>
+/// <para>
+/// An environment is a hard deployment scope, not a label: a deployment can only
+/// reach agents that belong to the same environment. Rollback redeploys the
+/// release that precedes the current one, skipping revoked releases.
+/// </para>
 /// </remarks>
 public sealed class ReleaseService(
     IConfigVersionRepository configs,
@@ -29,6 +36,8 @@ public sealed class ReleaseService(
     IReleaseRepository releases,
     IDeploymentRepository deployments,
     IAgentRepository agents,
+    IEnvironmentRepository environments,
+    IEnvironmentOperationLock environmentLocks,
     IAgentSessionRegistry sessions,
     IConfigValidator validator,
     IReleaseSigner signer,
@@ -53,7 +62,12 @@ public sealed class ReleaseService(
             throw new ArgumentException("Configuration body is required.", nameof(yaml));
         }
 
-        var normalizedEnvironment = environment.Trim();
+        var normalizedEnvironment = NormalizeEnvironment(environment, nameof(environment));
+        await using var environmentLock = await environmentLocks.AcquireAsync(
+            normalizedEnvironment,
+            cancellationToken);
+        await environments.EnsureAsync(normalizedEnvironment, actor, cancellationToken);
+
         var sha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(yaml))).ToLowerInvariant();
         var existing = await configs.FindByHashAsync(normalizedEnvironment, sha, cancellationToken);
         if (existing is not null)
@@ -84,13 +98,14 @@ public sealed class ReleaseService(
     {
         ArgumentNullException.ThrowIfNull(artifacts);
 
+        var normalizedEnvironment = NormalizeEnvironment(environment, nameof(environment));
         var config = await configs.FindAsync(configVersionId, cancellationToken)
                      ?? throw new InvalidOperationException("Configuration version not found.");
 
-        if (!string.Equals(config.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(config.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Configuration version belongs to environment '{config.Environment}', not '{environment}'.");
+                $"Configuration version belongs to environment '{config.Environment}', not '{normalizedEnvironment}'.");
         }
 
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -122,7 +137,7 @@ public sealed class ReleaseService(
 
         var release = new Release
         {
-            Environment = environment,
+            Environment = normalizedEnvironment,
             ConfigVersionId = config.Id,
             ConfigSha256 = config.Sha256,
             Artifacts = artifacts,
@@ -145,6 +160,7 @@ public sealed class ReleaseService(
     {
         ArgumentNullException.ThrowIfNull(waveSelectors);
 
+        var normalizedEnvironment = NormalizeEnvironment(environment, nameof(environment));
         var release = await releases.FindAsync(releaseId, cancellationToken)
                       ?? throw new InvalidOperationException("Release not found.");
         if (release.Status == ReleaseStatus.Revoked)
@@ -152,10 +168,10 @@ public sealed class ReleaseService(
             throw new InvalidOperationException("Release is revoked.");
         }
 
-        if (!string.Equals(release.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(release.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Release belongs to environment '{release.Environment}', not '{environment}'.");
+                $"Release belongs to environment '{release.Environment}', not '{normalizedEnvironment}'.");
         }
 
         await EnsureSignatureAsync(release, cancellationToken);
@@ -169,7 +185,7 @@ public sealed class ReleaseService(
 
         var deployment = new Deployment
         {
-            Environment = environment,
+            Environment = normalizedEnvironment,
             ReleaseId = releaseId,
             CreatedBy = actor,
             Status = DeploymentStatus.Running,
@@ -181,7 +197,14 @@ public sealed class ReleaseService(
         };
         await deployments.AddAsync(deployment, cancellationToken);
 
-        var allAgents = await agents.ListAsync(cancellationToken);
+        // Environment isolation: a deployment only ever reaches agents of its own
+        // environment. Labels narrow that set further but cannot cross the scope.
+        var allAgents = (await agents.ListAsync(cancellationToken))
+            .Where(agent => string.Equals(
+                agent.Environment,
+                normalizedEnvironment,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var artifactRefs = new List<AgentArtifact>();
         foreach (var reference in release.Artifacts)
         {
@@ -261,6 +284,12 @@ public sealed class ReleaseService(
         {
             deployment.Status = DeploymentStatus.Failed;
             deployment.CompletedAt = DateTimeOffset.UtcNow;
+            deployment.Message = allAgents.Count == 0
+                ? $"No agents belong to environment '{normalizedEnvironment}'."
+                : !allAgents.Any(agent => parsedSelectors.Any(selector => selector.Matches(agent)))
+                    ? $"No agent in environment '{normalizedEnvironment}' matched the wave selectors."
+                    : "No targeted agent had a live control session.";
+
             foreach (var wave in deployment.Waves.Where(w => w.Status == DeploymentWaveStatus.Running))
             {
                 wave.Status = DeploymentWaveStatus.Failed;
@@ -287,10 +316,11 @@ public sealed class ReleaseService(
         var deployment = await deployments.FindAsync(deploymentId, cancellationToken)
                          ?? throw new InvalidOperationException("Deployment not found.");
 
-        if (!string.Equals(deployment.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        var normalizedEnvironment = NormalizeEnvironment(environment, nameof(environment));
+        if (!string.Equals(deployment.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Deployment belongs to environment '{deployment.Environment}', not '{environment}'.");
+                $"Deployment belongs to environment '{deployment.Environment}', not '{normalizedEnvironment}'.");
         }
 
         if (deployment.Status == DeploymentStatus.RolledBack)
@@ -298,14 +328,9 @@ public sealed class ReleaseService(
             throw new InvalidOperationException("Deployment was already rolled back.");
         }
 
-        var releaseList = await releases.ListAsync(environment, cancellationToken);
-        var currentIndex = releaseList.ToList().FindIndex(r => r.Id == deployment.ReleaseId);
-        if (currentIndex < 0 || currentIndex + 1 >= releaseList.Count)
-        {
-            throw new InvalidOperationException("No previous release is available for rollback.");
-        }
-
-        var previous = releaseList[currentIndex + 1];
+        var releaseList = await releases.ListAsync(normalizedEnvironment, cancellationToken);
+        var previous = ReleaseRollback.FindPrevious(releaseList, deployment.ReleaseId)
+                       ?? throw new InvalidOperationException("No previous release is available for rollback.");
 
         // Verify before changing anything: a rollback to a release with a broken
         // signature must leave the current deployment untouched.
@@ -316,7 +341,7 @@ public sealed class ReleaseService(
         await deployments.UpdateAsync(deployment, cancellationToken);
 
         await DeployAsync(
-            environment,
+            normalizedEnvironment,
             previous.Id,
             deployment.Waves.Select(w => w.Selector).ToList(),
             actor,
@@ -335,10 +360,11 @@ public sealed class ReleaseService(
         var release = await releases.FindAsync(releaseId, cancellationToken)
                       ?? throw new InvalidOperationException("Release not found.");
 
-        if (!string.Equals(release.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        var normalizedEnvironment = NormalizeEnvironment(environment, nameof(environment));
+        if (!string.Equals(release.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Release belongs to environment '{release.Environment}', not '{environment}'.");
+                $"Release belongs to environment '{release.Environment}', not '{normalizedEnvironment}'.");
         }
 
         if (release.Status == ReleaseStatus.Revoked)
@@ -353,6 +379,30 @@ public sealed class ReleaseService(
     /// <summary>Apply timeout in milliseconds, bounded for the protobuf field.</summary>
     private int ApplyTimeoutMs() =>
         (int)Math.Clamp(options.ApplyTimeout.TotalMilliseconds, 1_000, int.MaxValue);
+
+    /// <summary>Normalises and validates an environment name.</summary>
+    /// <param name="environment">Operator-supplied environment name.</param>
+    /// <param name="parameterName">Parameter name used in the exception.</param>
+    /// <returns>A valid lower-case environment name.</returns>
+    /// <exception cref="ArgumentException">The name is empty or not acceptable.</exception>
+    private static string NormalizeEnvironment(string? environment, string parameterName)
+    {
+        var normalized = EnvironmentNaming.Normalize(environment);
+        if (normalized.Length == 0)
+        {
+            throw new ArgumentException("Environment is required.", parameterName);
+        }
+
+        if (!EnvironmentNaming.IsValid(normalized))
+        {
+            throw new ArgumentException(
+                $"Environment must be 1-{EnvironmentNaming.MaxLength} ASCII letters, digits, " +
+                "'.', '_' or '-', starting and ending with a letter or digit.",
+                parameterName);
+        }
+
+        return normalized;
+    }
 
     /// <summary>Verifies the release manifest before anything is sent to agents.</summary>
     /// <param name="release">Release loaded from the database.</param>

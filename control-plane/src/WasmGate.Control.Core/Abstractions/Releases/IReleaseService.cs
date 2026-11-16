@@ -16,7 +16,7 @@ public interface IReleaseService
     /// <param name="message">Optional change description.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The stored version, or the existing one when the YAML is unchanged.</returns>
-    /// <exception cref="ArgumentException">The environment or YAML is empty.</exception>
+    /// <exception cref="ArgumentException">The environment or YAML is empty or the environment name is invalid.</exception>
     Task<ConfigVersion> CreateConfigAsync(
         string environment,
         string yaml,
@@ -58,10 +58,11 @@ public interface IReleaseService
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The created deployment.</returns>
     /// <remarks>
-    /// Commands are sent only to agents with a live session. Waves are recorded
-    /// and dispatched in order, but a wave does not wait for the previous one to
-    /// finish; the deployment turns terminal when the first agent reports a
-    /// result. The release signature is verified before dispatch.
+    /// Commands are sent only to agents with a live session that belong to
+    /// <paramref name="environment"/>. Waves are recorded and dispatched in
+    /// order, but a wave does not wait for the previous one to finish; the
+    /// deployment turns terminal when the first agent reports a result. The
+    /// release signature is verified before dispatch.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// The release is missing, revoked, belongs to another environment, is
@@ -83,6 +84,8 @@ public interface IReleaseService
     /// <remarks>
     /// Marks the deployment RolledBack and then deploys the previous release with
     /// the same wave selectors, so agents receive it as a normal ApplyRelease.
+    /// The previous release is the newest older release of the same environment
+    /// that was not revoked.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// The deployment is missing, already rolled back, belongs to another

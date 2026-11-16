@@ -234,7 +234,12 @@ public sealed class AgentControlService(
             }
 
             agent.Status = AgentStatus.Offline;
-            await agents.UpsertAsync(agent, CancellationToken.None);
+            if (!await agents.UpsertAsync(agent, CancellationToken.None))
+            {
+                logger.LogInformation(
+                    "agent {AgentId} was deleted; skipped offline update",
+                    agentId);
+            }
         }
         catch (Exception ex)
         {
@@ -265,7 +270,8 @@ public sealed class AgentControlService(
     /// a reconnect.
     /// </remarks>
     /// <exception cref="RpcException">
-    /// The reported name is invalid or belongs to another agent.
+    /// The reported name is invalid or belongs to another agent, or the agent was
+    /// deleted while reconnecting.
     /// </exception>
     private async Task PersistHelloAsync(Hello hello, Guid agentId, CancellationToken cancellationToken)
     {
@@ -330,7 +336,15 @@ public sealed class AgentControlService(
             ActiveConfigSha256 = NullIfEmpty(hello.ActiveConfigSha256) ?? existing?.ActiveConfigSha256,
         };
 
-        await agents.UpsertAsync(agent, cancellationToken);
+        if (!await agents.UpsertAsync(agent, cancellationToken))
+        {
+            logger.LogWarning(
+                "agent {AgentId} reconnected after deletion; rejecting the session",
+                agentId);
+            throw new RpcException(new Status(
+                StatusCode.PermissionDenied,
+                "Agent was deleted and cannot reconnect."));
+        }
     }
 
     /// <summary>Updates liveness and active-release fields for an agent.</summary>
@@ -383,6 +397,9 @@ public sealed class AgentControlService(
         var now = DateTimeOffset.UtcNow;
         deployment.Status = result.Ok ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
         deployment.CompletedAt = now;
+        deployment.Message = result.Ok
+            ? null
+            : await DescribeApplyFailureAsync(agentId, result, cancellationToken);
 
         foreach (var wave in deployment.Waves.Where(w => w.Status != DeploymentWaveStatus.Skipped))
         {
@@ -411,4 +428,45 @@ public sealed class AgentControlService(
     /// <returns>Null for null or empty input; the original value otherwise.</returns>
     private static string? NullIfEmpty(string? value) =>
         string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>Maximum length of a stored deployment message.</summary>
+    private const int MaxDeploymentMessageLength = 4000;
+
+    /// <summary>Builds a human-readable apply failure from an agent result.</summary>
+    /// <param name="agentId">Agent that reported the failure.</param>
+    /// <param name="result">Apply result sent by the agent.</param>
+    /// <param name="cancellationToken">Cancels the agent lookup.</param>
+    /// <returns>A message naming the agent, the error and any listener errors.</returns>
+    private async Task<string> DescribeApplyFailureAsync(
+        Guid agentId,
+        ApplyResult result,
+        CancellationToken cancellationToken)
+    {
+        var agent = await agents.FindAsync(agentId, cancellationToken);
+        var reporter = agent?.Name ?? AgentNaming.CertificateCommonName(agentId);
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(result.Error))
+        {
+            parts.Add(result.Error.Trim());
+        }
+
+        foreach (var listener in result.Listeners.Where(
+                     listener => !string.IsNullOrWhiteSpace(listener.Error)))
+        {
+            var name = string.IsNullOrWhiteSpace(listener.Name)
+                ? listener.Address
+                : listener.Name;
+            parts.Add($"{name}: {listener.Error.Trim()}");
+        }
+
+        var detail = parts.Count == 0
+            ? "agent reported failure without a message"
+            : string.Join("; ", parts);
+        var message = $"Agent '{reporter}' reported: {detail}";
+
+        return message.Length <= MaxDeploymentMessageLength
+            ? message
+            : message[..MaxDeploymentMessageLength];
+    }
 }

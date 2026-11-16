@@ -3,7 +3,7 @@ namespace WasmGate.Control.Api.Endpoints;
 /// <summary>
 /// Composition of the admin HTTP API: health probes, artifact upload,
 /// configuration versions, releases, deployments and rollback, agent
-/// provisioning, registration tokens and the audit trail.
+/// provisioning, environment catalog, registration tokens and the audit trail.
 /// </summary>
 /// <remarks>
 /// The API has no authentication yet. It is meant to stay on a loopback or
@@ -22,5 +22,6 @@ internal static class AdminEndpoints
             .MapArtifactEndpoints()
             .MapReleaseEndpoints()
             .MapAgentEndpoints()
+            .MapEnvironmentEndpoints()
             .MapAuditEndpoints();
 }

@@ -87,6 +87,8 @@ public static class StartUp
         public void RegisterServices()
         {
             builder.Services.AddSingleton<IAgentRepository, PostgresAgentRepository>();
+            builder.Services.AddSingleton<IEnvironmentRepository, PostgresEnvironmentRepository>();
+            builder.Services.AddSingleton<IEnvironmentOperationLock, PostgresEnvironmentOperationLock>();
             builder.Services.AddSingleton<IConfigVersionRepository, PostgresConfigVersionRepository>();
             builder.Services.AddSingleton<IArtifactRepository, PostgresArtifactRepository>();
             builder.Services.AddSingleton<IReleaseRepository, PostgresReleaseRepository>();

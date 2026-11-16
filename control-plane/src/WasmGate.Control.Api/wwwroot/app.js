@@ -20,6 +20,7 @@ const ARTIFACT_KINDS = ['Unspecified', 'WASM', 'Certificate', 'Key', 'Other'];
 const state = {
   view: 'dashboard',
   env: localStorage.getItem(ENV_KEY) || 'prod',
+  envs: [],
   token: sessionStorage.getItem(TOKEN_KEY) || '',
   busy: false,
 };
@@ -34,7 +35,7 @@ function viewFromHash() {
 
 document.addEventListener('DOMContentLoaded', () => {
   state.view = viewFromHash();
-  $('#env').value = state.env;
+  $('#env-current').textContent = state.env;
   $('#token').value = state.token;
   setActiveNav();
 
@@ -48,8 +49,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('#save').addEventListener('click', saveSettings);
   $('#refresh').addEventListener('click', () => refresh());
+  $('#env-button').addEventListener('click', (event) => {
+    event.stopPropagation();
+    setEnvPopover($('#env-popover').hidden);
+  });
+  $('#env-create').addEventListener('submit', createEnvironment);
 
   document.addEventListener('click', (event) => {
+    if (!event.target.closest('.field.env')) setEnvPopover(false);
+
+    const envDelete = event.target.closest('[data-env-delete]');
+    if (envDelete) {
+      deleteEnvironment(envDelete.dataset.envDelete);
+      return;
+    }
+
+    const envOption = event.target.closest('[data-env-option]');
+    if (envOption) {
+      setEnvironment(envOption.dataset.envOption);
+      return;
+    }
+
     const viewButton = event.target.closest('[data-view]');
     if (viewButton) {
       showView(viewButton.dataset.view);
@@ -74,10 +94,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeModal();
+    if (event.key !== 'Escape') return;
+    if (!$('#env-popover').hidden) {
+      setEnvPopover(false);
+      return;
+    }
+    closeModal();
   });
 
   showView(state.view);
+  loadEnvironments().catch(() => { /* keep the saved name until the API answers */ });
   setInterval(() => {
     // Only the dashboard is refreshed automatically: re-rendering a table would
     // collapse open rows and detach whatever the operator is interacting with.
@@ -93,13 +119,134 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ------------------------------------------------------------------ */
 
 function saveSettings() {
-  state.env = $('#env').value.trim() || 'prod';
   state.token = $('#token').value.trim();
-  localStorage.setItem(ENV_KEY, state.env);
   sessionStorage.setItem(TOKEN_KEY, state.token);
   hideBanner();
   toast('Settings saved', 'ok');
+  loadEnvironments().catch(() => {});
   refresh();
+}
+
+/* ------------------------------------------------------------------ */
+/* Environments                                                        */
+/* ------------------------------------------------------------------ */
+
+/** Loads the environment catalog and redraws the picker. */
+async function loadEnvironments() {
+  const list = await api('/api/v1/environments');
+  state.envs = sortEnvironments(list.map((item) => item.name).filter(Boolean));
+  renderEnvironmentOptions();
+  $('#env-current').textContent = state.env;
+}
+
+/** Puts the active environment first, then prod, then the rest by name. */
+function sortEnvironments(names) {
+  return [...new Set(names)].sort((left, right) => {
+    if (left === state.env) return -1;
+    if (right === state.env) return 1;
+    if (left === 'prod') return -1;
+    if (right === 'prod') return 1;
+    return left.localeCompare(right);
+  });
+}
+
+/** Returns the catalog, loading it if this is the first use. */
+async function ensureEnvironments() {
+  if (state.envs.length === 0) await loadEnvironments();
+  return state.envs;
+}
+
+function renderEnvironmentOptions() {
+  const list = $('#env-list');
+  if (!list) return;
+  list.innerHTML = state.envs.length === 0
+    ? '<p class="muted" style="padding:6px 8px;margin:0">No environments yet</p>'
+    : state.envs.map((name) => `
+      <div class="env-option-row">
+        <button class="env-option ${name === state.env ? 'active' : ''}" type="button"
+                role="option" aria-selected="${name === state.env}" data-env-option="${esc(name)}">
+          <span>${esc(name)}</span>
+          ${name === state.env ? '<span class="env-option-check" aria-hidden="true">✓</span>' : ''}
+        </button>
+        ${name === 'prod' ? '' : `
+          <button class="env-delete" type="button" title="Delete environment"
+                  aria-label="Delete environment ${esc(name)}" data-env-delete="${esc(name)}">✕</button>`}
+      </div>`).join('');
+}
+
+function setEnvPopover(open) {
+  $('#env-popover').hidden = !open;
+  $('#env-button').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  $('#env-error').hidden = true;
+  loadEnvironments().catch((error) => showEnvError(error.message));
+}
+
+function showEnvError(message) {
+  const element = $('#env-error');
+  element.textContent = message;
+  element.hidden = false;
+}
+
+/** Switches the environment shown by every screen. */
+function setEnvironment(name) {
+  const next = String(name || '').trim();
+  if (!next) return;
+  state.env = next;
+  localStorage.setItem(ENV_KEY, next);
+  $('#env-current').textContent = next;
+  state.envs = sortEnvironments(state.envs);
+  renderEnvironmentOptions();
+  setEnvPopover(false);
+  hideBanner();
+  refresh();
+}
+
+async function createEnvironment(event) {
+  event.preventDefault();
+  const input = $('#env-new');
+  const name = input.value.trim();
+  if (!name) return;
+
+  const button = $('#env-create button');
+  button.disabled = true;
+  try {
+    const created = await api('/api/v1/environments', {
+      method: 'POST',
+      body: { name },
+    });
+    input.value = '';
+    await loadEnvironments();
+    setEnvironment(created.name);
+    toast(`Environment ${created.name} selected`, 'ok');
+  } catch (error) {
+    showEnvError(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** Deletes an empty environment, or reports why it is still in use. */
+async function deleteEnvironment(name) {
+  if (!confirm(
+    `Delete environment "${name}"?\n\n` +
+    'Its configurations, releases, deployments and enrollment tokens will be deleted. ' +
+    'This cannot be undone. Agents must be moved to another environment first.')) {
+    return;
+  }
+
+  try {
+    await api(`/api/v1/environments/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Environment ${name} deleted`, 'ok');
+    if (state.env === name) {
+      await loadEnvironments();
+      setEnvironment('prod');
+    } else {
+      await loadEnvironments();
+    }
+  } catch (error) {
+    showEnvError(error.message);
+  }
 }
 
 function authHeaders(hasBody) {
@@ -291,7 +438,7 @@ const VIEWS = {
 };
 
 async function viewDashboard() {
-  const [health, ready, agents, deployments, audit] = await Promise.all([
+  const [health, ready, allAgents, deployments, audit] = await Promise.all([
     probe('/healthz'),
     probe('/readyz'),
     api('/api/v1/agents'),
@@ -301,6 +448,7 @@ async function viewDashboard() {
 
   updateHealth(health, ready);
 
+  const agents = allAgents.filter((agent) => agent.environment === state.env);
   const online = agents.filter((agent) => agent.status === 1).length;
   const running = deployments.filter((item) => item.status === 1).length;
   const failed = deployments.filter((item) => item.status === 3).length;
@@ -313,7 +461,7 @@ async function viewDashboard() {
       <span class="badge ${health.ok ? 'ok' : 'bad'}">CP ${esc(health.label)}</span>
       <span class="badge ${ready.ok ? 'ok' : 'bad'}">DB ${esc(ready.label)}</span>`)}
     <div class="cards">
-      <div class="card"><div class="label">Agents</div><div class="value">${agents.length}</div><div class="note">${online} online</div></div>
+      <div class="card"><div class="label">Agents</div><div class="value">${agents.length}</div><div class="note">${online} online in ${esc(state.env)}</div></div>
       <div class="card ${running ? 'warn' : ''}"><div class="label">Deployments running</div><div class="value">${running}</div><div class="note">${deployments.length} recent</div></div>
       <div class="card ${failed ? 'bad' : ''}"><div class="label">Deployments failed</div><div class="value">${failed}</div><div class="note">in the last 100</div></div>
       <div class="card"><div class="label">Audit events</div><div class="value">${audit.length}</div><div class="note">last 100</div></div>
@@ -371,19 +519,21 @@ function updateHealth(health, ready) {
 }
 
 async function viewAgents() {
-  const agents = await api('/api/v1/agents');
+  const allAgents = await api('/api/v1/agents');
+  const agents = allAgents.filter((agent) => agent.environment === state.env);
 
   render(`
-    ${viewHead('Agents', `${agents.length} registered`, `
+    ${viewHead('Agents', `${agents.length} in ${state.env}`, `
       <button class="btn primary" data-action="agent-new" type="button">New agent</button>`)}
     <div class="panel"><div class="panel-body flush">
       <table>
-        <thead><tr><th>Name</th><th>Status</th><th>Labels</th><th>Last seen</th><th>Release</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Environment</th><th>Status</th><th>Labels</th><th>Last seen</th><th>Release</th><th></th></tr></thead>
         <tbody>${agents.length === 0
-          ? emptyRow(6, 'No agents yet: create one to get an enrollment token')
+          ? emptyRow(7, 'No agents in this environment yet: create one or switch the environment')
           : agents.map((agent) => `
             <tr>
               <td><b>${esc(agent.name)}</b><div class="mono muted">${esc(agent.id)}</div></td>
+              <td>${badge(agent.environment, 'neutral')}</td>
               <td>${agentBadge(agent.status)}</td>
               <td>${chips(agent.labels)}</td>
               <td class="nowrap muted">${esc(fmtTime(agent.lastSeenAt))}</td>
@@ -506,7 +656,7 @@ async function viewDeployments() {
           ? emptyRow(6, 'No deployments in this environment')
           : deployments.map((item) => `
             <tr>
-              <td>${deployBadge(item.status)}</td>
+              <td>${deployBadge(item.status)}${item.message ? `<div class="subline">${esc(short(item.message, 76))}</div>` : ''}</td>
               <td class="mono">${esc(short(item.releaseId))}</td>
               <td>
                 <details class="wave"><summary>${item.waves.length} wave(s)</summary>
@@ -521,15 +671,31 @@ async function viewDeployments() {
               <td class="nowrap muted">${esc(fmtTime(item.createdAt))}</td>
               <td class="nowrap muted">${esc(fmtTime(item.completedAt))}</td>
               <td class="actions">
-                ${(item.status === 2 || item.status === 3)
-                  ? `<button class="btn small" data-action="deployment-rollback" data-id="${esc(item.id)}" type="button">Rollback</button>`
-                  : ''}
+                <button class="btn small" data-action="deployment-details" data-id="${esc(item.id)}" type="button">Details</button>
+                ${renderRollback(item)}
               </td>
             </tr>`).join('')}
         </tbody>
       </table>
     </div></div>
   `);
+}
+
+/**
+ * Rollback is only meaningful for terminal deployments and only when an older
+ * release exists in the same environment. The server computes the target; the
+ * button is disabled instead of failing after a click.
+ */
+function renderRollback(item) {
+  if (item.status !== 2 && item.status !== 3) return '';
+  if (!item.rollbackReleaseId) {
+    return `<span title="No older release exists in this environment">
+      <button class="btn small" type="button" disabled>Rollback</button>
+    </span>`;
+  }
+
+  return `<button class="btn small" data-action="deployment-rollback"
+    data-id="${esc(item.id)}" type="button">Rollback</button>`;
 }
 
 async function viewAudit() {
@@ -639,9 +805,10 @@ function parseLabels(text) {
   return labels;
 }
 
-function tokenBlock(token, expiresAt) {
+function tokenBlock(token, expiresAt, environment) {
   return `
     <div class="form">
+      ${environment ? `<p class="muted" style="margin:0">Environment: <b>${esc(environment)}</b></p>` : ''}
       <p>This token is shown once. Pass it to the data plane as <code>-cp-token</code>.</p>
       <div class="copy-row">
         <span class="mono">${esc(token)}</span>
@@ -651,12 +818,39 @@ function tokenBlock(token, expiresAt) {
     </div>`;
 }
 
+/** Shows the free-form name input when "New environment…" is selected. */
+function bindNewEnvironmentField(select, input) {
+  select.addEventListener('change', () => {
+    const isNew = select.value === '__new';
+    input.hidden = !isNew;
+    if (isNew) input.focus();
+  });
+}
+
+/** Resolves a select value, creating a new environment when requested. */
+async function resolveEnvironment(select, input) {
+  if (select.value !== '__new') return select.value;
+  const name = input.value.trim();
+  if (!name) throw new Error('Environment name is required');
+  const created = await api('/api/v1/environments', { method: 'POST', body: { name } });
+  await loadEnvironments();
+  return created.name;
+}
+
 const ACTIONS = {
   async 'agent-new'() {
+    const environments = await ensureEnvironments();
     showModal('New agent', `
       <div class="form">
         <div class="field"><label for="agent-name">Name</label>
           <input id="agent-name" placeholder="edge-1" autocomplete="off"></div>
+        <div class="field"><label for="agent-env">Environment</label>
+          <select id="agent-env">${environments.map((name) => `
+            <option value="${esc(name)}" ${name === state.env ? 'selected' : ''}>${esc(name)}</option>`).join('')}
+            <option value="__new">New environment…</option>
+          </select>
+          <input id="agent-env-new" placeholder="qa" autocomplete="off" spellcheck="false" hidden>
+        </div>
         <div class="field"><label for="agent-labels">Labels (one key=value per line)</label>
           <textarea id="agent-labels" rows="4" placeholder="role=edge&#10;region=eu"></textarea></div>
       </div>`, [
@@ -665,16 +859,21 @@ const ACTIONS = {
         label: 'Create', kind: 'primary', onClick: async () => {
           const name = $('#agent-name').value.trim();
           if (!name) throw new Error('Name is required');
+          const environment = await resolveEnvironment($('#agent-env'), $('#agent-env-new'));
           const result = await api('/api/v1/agents', {
             method: 'POST',
-            body: { name, labels: parseLabels($('#agent-labels').value) },
+            body: { name, environment, labels: parseLabels($('#agent-labels').value) },
           });
-          showModal('Agent created', tokenBlock(result.enrollToken, null), [
+          await loadEnvironments();
+          if (environment !== state.env) setEnvironment(environment);
+          showModal('Agent created', tokenBlock(result.enrollToken, null, environment), [
             { label: 'Close', kind: 'primary', onClick: () => { closeModal(); refresh(); } },
           ]);
         },
       },
     ]);
+
+    bindNewEnvironmentField($('#agent-env'), $('#agent-env-new'));
   },
 
   async 'agent-details'(id) {
@@ -686,6 +885,12 @@ const ACTIONS = {
     showModal(`Agent ${agent.name}`, `
       <div class="form">
         <div><span class="muted">Status</span> ${agentBadge(agent.status)}</div>
+        <div><span class="muted">Environment</span>
+          <div class="copy-row" style="margin-top:4px">
+            ${badge(agent.environment, 'neutral')}
+            <button class="btn small" data-action="agent-environment" data-id="${esc(agent.id)}" type="button">Change</button>
+          </div>
+        </div>
         <div><span class="muted">Id</span><div class="mono">${esc(agent.id)}</div></div>
         <div><span class="muted">Labels</span><div>${chips(agent.labels)}</div></div>
         <div><span class="muted">Active release</span><div class="mono">${esc(agent.activeReleaseId || '—')}</div></div>
@@ -713,8 +918,61 @@ const ACTIONS = {
           { label: 'Close', kind: 'primary', onClick: closeModal },
         ]);
       } },
+      { label: 'Delete agent', kind: 'danger', onClick: async () => {
+        if (!confirm(
+          `Delete agent "${agent.name}"?\n\n` +
+          'Its certificates and enrollment tokens will be removed and the live session will be closed. ' +
+          'The proxy process on the host is not stopped: stop it separately.')) {
+          return;
+        }
+        await api(`/api/v1/agents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        toast('Agent deleted', 'ok');
+        closeModal();
+        refresh();
+      } },
       { label: 'Close', kind: 'primary', onClick: closeModal },
     ]);
+  },
+
+  async 'agent-environment'(id) {
+    const agents = await api('/api/v1/agents');
+    const agent = agents.find((item) => item.id === id);
+    if (!agent) throw new Error('Agent not found');
+    const environments = await ensureEnvironments();
+
+    showModal(`Environment of ${agent.name}`, `
+      <div class="form">
+        <div class="field"><label for="agent-move-env">Environment</label>
+          <select id="agent-move-env">${environments.map((name) => `
+            <option value="${esc(name)}" ${name === agent.environment ? 'selected' : ''}>${esc(name)}</option>`).join('')}
+            <option value="__new">New environment…</option>
+          </select>
+          <input id="agent-move-env-new" placeholder="qa" autocomplete="off" spellcheck="false" hidden>
+        </div>
+        <p class="muted" style="margin:0">Deployments only reach agents of their own
+          environment. The agent keeps its current release until the next deployment
+          in the new environment.</p>
+      </div>`, [
+      { label: 'Cancel', onClick: closeModal },
+      {
+        label: 'Move', kind: 'primary', onClick: async () => {
+          const environment = await resolveEnvironment($('#agent-move-env'), $('#agent-move-env-new'));
+          if (environment !== agent.environment) {
+            await api(`/api/v1/agents/${encodeURIComponent(id)}/environment`, {
+              method: 'POST',
+              body: { environment },
+            });
+            await loadEnvironments();
+            toast(`Agent moved to ${environment}`, 'ok');
+          }
+          closeModal();
+          if (environment !== state.env) setEnvironment(environment);
+          else refresh();
+        },
+      },
+    ]);
+
+    bindNewEnvironmentField($('#agent-move-env'), $('#agent-move-env-new'));
   },
 
   async 'agent-token'(id) {
@@ -888,9 +1146,18 @@ const ACTIONS = {
   },
 
   async 'deployment-new'() {
-    const releases = await api(`/api/v1/releases/${encodeURIComponent(state.env)}`);
+    const [releases, allAgents] = await Promise.all([
+      api(`/api/v1/releases/${encodeURIComponent(state.env)}`),
+      api('/api/v1/agents'),
+    ]);
     const deployable = releases.filter((release) => release.status !== 3);
     if (deployable.length === 0) throw new Error('Create a release first');
+
+    const envAgents = allAgents.filter((agent) => agent.environment === state.env);
+    const online = envAgents.filter((agent) => agent.status === 1).length;
+    const targetNote = envAgents.length === 0
+      ? `No agents belong to ${state.env}: the deployment will be recorded as Failed.`
+      : `${online} of ${envAgents.length} agent(s) in ${state.env} are online.`;
 
     showModal('New deployment', `
       <div class="form">
@@ -901,6 +1168,7 @@ const ACTIONS = {
         <div class="field"><label for="deployment-waves">Wave selectors, one per line</label>
           <textarea id="deployment-waves" rows="4">*</textarea>
           <span class="muted">Use <code>*</code> or a JSON object such as <code>{"role":"edge"}</code>.</span></div>
+        <p class="muted" style="margin:0">${esc(targetNote)}</p>
       </div>`, [
       { label: 'Cancel', onClick: closeModal },
       {
@@ -926,8 +1194,70 @@ const ACTIONS = {
     ]);
   },
 
+  async 'deployment-details'(id) {
+    const [deployments, audit] = await Promise.all([
+      api(`/api/v1/deployments/${encodeURIComponent(state.env)}`),
+      api('/api/v1/audit'),
+    ]);
+    const item = deployments.find((deployment) => deployment.id === id);
+    if (!item) throw new Error('Deployment not found');
+    const events = audit.filter((event) => event.target === id);
+
+    showModal(`Deployment ${short(item.id, 16)}`, `
+      <div class="form">
+        <div><span class="muted">Environment</span> ${badge(item.environment, 'neutral')}</div>
+        <div><span class="muted">Status</span> ${deployBadge(item.status)}</div>
+        <div><span class="muted">Release</span><div class="mono">${esc(item.releaseId)}</div></div>
+        <div><span class="muted">Created</span><div>${esc(fmtTime(item.createdAt))}</div></div>
+        <div><span class="muted">Finished</span><div>${esc(fmtTime(item.completedAt))}</div></div>
+        ${item.message
+          ? `<div><span class="muted">Message</span><div class="error-box">${esc(item.message)}</div></div>`
+          : item.status === 3
+            ? '<p class="muted">No failure message was recorded for this deployment. It predates deployment messages.</p>'
+            : ''}
+        <div><span class="muted">Rollback target</span>
+          <div class="mono">${item.rollbackReleaseId ? esc(item.rollbackReleaseId) : '—'}</div></div>
+
+        <h3 class="section-title">Waves</h3>
+        <table>
+          <thead><tr><th>#</th><th>Selector</th><th>Status</th><th>Started</th><th>Finished</th></tr></thead>
+          <tbody>${item.waves.length === 0
+            ? emptyRow(5, 'No waves recorded')
+            : item.waves.map((wave) => `
+              <tr>
+                <td>#${wave.index}</td>
+                <td class="mono">${esc(wave.selector)}</td>
+                <td>${waveBadge(wave.status)}</td>
+                <td class="nowrap muted">${esc(fmtTime(wave.startedAt))}</td>
+                <td class="nowrap muted">${esc(fmtTime(wave.completedAt))}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+
+        <h3 class="section-title">Related audit</h3>
+        <table>
+          <thead><tr><th>At</th><th>Action</th><th>Actor</th></tr></thead>
+          <tbody>${events.length === 0
+            ? emptyRow(3, 'No audit events for this deployment in the last 100')
+            : events.map((event) => `
+              <tr>
+                <td class="nowrap muted">${esc(fmtTime(event.at))}</td>
+                <td>${esc(event.action)}</td>
+                <td class="mono">${esc(event.actor)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`, [
+      { label: 'Close', kind: 'primary', onClick: closeModal },
+    ]);
+  },
+
   async 'deployment-rollback'(id) {
-    if (!confirm('Roll this deployment back to the previous release?')) return;
+    const deployments = await api(`/api/v1/deployments/${encodeURIComponent(state.env)}`);
+    const deployment = deployments.find((item) => item.id === id);
+    const target = deployment?.rollbackReleaseId;
+    if (!target) throw new Error('No older release exists in this environment');
+    if (!confirm(`Roll this deployment back to release ${short(target, 14)}?`)) return;
     await api(`/api/v1/deployments/${encodeURIComponent(id)}/rollback`, { method: 'POST' });
     toast('Rollback started', 'ok');
     refresh();

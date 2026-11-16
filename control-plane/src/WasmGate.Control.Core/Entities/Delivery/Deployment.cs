@@ -33,6 +33,14 @@ public sealed class Deployment
 
     /// <summary>Time when the deployment reached a terminal state.</summary>
     public DateTimeOffset? CompletedAt { get; set; }
+
+    /// <summary>Human-readable outcome, usually the failure reason.</summary>
+    /// <remarks>
+    /// Null while the deployment is running or when it completed without an
+    /// error. Set by the dispatcher when no command could be sent, by the agent
+    /// result handler when an apply failed, and by the reaper on timeout.
+    /// </remarks>
+    public string? Message { get; set; }
 }
 
 /// <summary>

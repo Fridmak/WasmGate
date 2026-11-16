@@ -96,8 +96,46 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 }
 .field { display: grid; gap: 4px; }
 .field.grow { flex: 1; min-width: 180px; }
-.field.env input { width: 130px; }
+.env-picker { position: relative; }
 .field label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+.env-button {
+  width: 150px; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; text-align: left;
+}
+.env-button .caret { color: var(--muted); font-size: 10px; }
+
+.popover {
+  position: absolute; z-index: 30; top: calc(100% + 6px); left: 0;
+  width: 260px; padding: 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.popover[hidden] { display: none; }
+.popover-title {
+  padding: 4px 7px 6px; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.env-list { display: grid; gap: 2px; max-height: 220px; overflow: auto; }
+.env-option-row { display: flex; align-items: center; gap: 2px; }
+.env-option {
+  appearance: none; border: 0; background: transparent; color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 7px 8px; border-radius: 7px; cursor: pointer;
+  font: inherit; text-align: left; flex: 1; min-width: 0;
+}
+.env-option:hover { background: var(--panel-2); }
+.env-option.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.env-option-check { color: var(--accent); }
+.env-delete {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; line-height: 1;
+}
+.env-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.popover-sep { height: 1px; background: var(--border); margin: 7px 0; }
+.env-create { display: flex; gap: 6px; }
+.env-create input { flex: 1; min-width: 0; }
+.popover-error { margin: 7px 2px 0; color: var(--danger); font-size: 12px; }
 
 input, select, textarea {
   font: inherit; color: var(--text); background: var(--panel-2);
@@ -183,7 +221,9 @@ td.actions .btn { margin-left: 4px; }
 .chip b { font-weight: 600; }
 
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
-.error-box { padding: 12px 16px; color: var(--danger); }
+.error-box { padding: 12px 16px; color: var(--danger); white-space: pre-wrap; }
+.subline { color: var(--muted); font-size: 11.5px; font-weight: 400; margin-top: 3px; max-width: 260px; }
+.section-title { margin: 8px 0 0; font-size: 13px; }
 
 details.wave { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 6px; background: var(--panel-2); }
 details.wave summary { cursor: pointer; font-size: 12.5px; }
@@ -211,13 +251,14 @@ pre.code {
 }
 .modal[hidden] { display: none; }
 .modal-card {
-  width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  width: min(760px, 100%); max-width: 100%; min-width: 0;
+  max-height: 88vh; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
 }
-.modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
-.modal-head h2 { font-size: 15px; margin: 0; flex: 1; }
-.modal-body { padding: 16px 18px; overflow: auto; }
-.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); min-width: 0; }
+.modal-head h2 { font-size: 15px; margin: 0; flex: 1; min-width: 0; }
+.modal-body { padding: 16px 18px; overflow: auto; min-width: 0; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); min-width: 0; }
 
 /* Toasts */
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 60; }
@@ -231,12 +272,50 @@ pre.code {
 
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; flex-direction: row; align-items: center; gap: 12px; overflow-x: auto; padding: 10px 12px; }
+  .sidebar {
+    position: static; height: auto; flex-direction: row; align-items: center;
+    gap: 12px; overflow-x: auto; padding: 10px 12px;
+  }
   .sidebar-foot, .brand span { display: none; }
   #nav { flex-direction: row; }
   .nav-item { white-space: nowrap; padding: 7px 9px; }
-  .topbar { flex-wrap: nowrap; overflow-x: auto; align-items: end; gap: 8px; padding: 10px 14px; }
-  .field.env { flex: 0 0 110px; }
+  .topbar {
+    flex-wrap: wrap; overflow: visible; align-items: end;
+    gap: 8px; padding: 10px 14px;
+  }
+  .field.env { flex: 0 1 150px; }
+  .env-button { width: 100%; }
   .field.grow { flex: 1 1 240px; min-width: 0; }
   .view { padding: 14px 14px 32px; }
+
+  /* Wide tables scroll inside their panel instead of stretching the page. */
+  .panel-body.flush { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .panel-body.flush > table { min-width: 640px; }
+  .modal-body { overflow: auto; }
+  .modal-body table { min-width: 520px; }
+  .modal-foot { flex-wrap: wrap; }
+}
+
+@media (max-width: 520px) {
+  .sidebar { gap: 8px; padding: 8px 10px; }
+  .brand { display: none; }
+  .topbar { padding: 8px 10px; }
+  .field.env { flex: 1 1 100%; }
+  .field.grow { flex: 1 1 100%; order: 2; }
+  #save, #refresh { order: 3; flex: 1 1 0; }
+  .view { padding: 12px 10px 28px; gap: 12px; }
+  .view-head h1 { font-size: 18px; }
+  .card { padding: 12px; }
+  .card .value { font-size: 22px; }
+  .panel-head { padding: 10px 12px; }
+  .panel-body { padding: 10px 12px; }
+  .panel-body.flush { padding: 0; }
+  th, td { padding: 8px 10px; }
+  .modal { padding: 8px; }
+  .modal-card { max-height: 94vh; }
+  .modal-head, .modal-body, .modal-foot { padding: 12px; }
+  .popover { width: min(300px, calc(100vw - 20px)); }
+  .modal-body table { min-width: 460px; }
+  .toasts { left: 10px; right: 10px; bottom: 10px; }
+  .toast { max-width: none; }
 }

@@ -9,7 +9,23 @@ namespace WasmGate.Control.Api.Endpoints;
 /// <summary>Request to create one agent.</summary>
 /// <param name="Name">Unique agent name.</param>
 /// <param name="Labels">Labels matched by deployment wave selectors.</param>
-public sealed record CreateAgentRequest(string Name, Dictionary<string, string>? Labels);
+/// <param name="Environment">
+/// Deployment environment the agent belongs to. Omit or pass null for
+/// <c>prod</c>; a new name is created automatically.
+/// </param>
+public sealed record CreateAgentRequest(string Name, Dictionary<string, string>? Labels, string? Environment);
+
+/// <summary>Request to move one agent to another environment.</summary>
+/// <param name="Environment">Target environment; created when it is new.</param>
+public sealed record SetAgentEnvironmentRequest(string Environment);
+
+/// <summary>Request to create one environment.</summary>
+/// <param name="Name">Environment name; normalised to lower case.</param>
+public sealed record CreateEnvironmentRequest(string Name);
+
+/// <summary>One environment in the admin picker.</summary>
+/// <param name="Name">Normalised environment name.</param>
+public sealed record EnvironmentSummary(string Name);
 
 /// <summary>Result of creating one agent.</summary>
 /// <param name="AgentId">Identifier of the created agent.</param>
@@ -23,7 +39,14 @@ public sealed record CreateAgentResponse(Guid AgentId, string EnrollToken);
 /// </param>
 /// <param name="MaxUses">Maximum number of enrollments.</param>
 /// <param name="TtlSeconds">How long the token stays valid, in seconds.</param>
-public sealed record CreateRegistrationTokenRequest(string? NamePrefix, int MaxUses, int TtlSeconds);
+/// <param name="Environment">
+/// Environment a newly enrolled agent joins. Omit or pass null for <c>prod</c>.
+/// </param>
+public sealed record CreateRegistrationTokenRequest(
+    string? NamePrefix,
+    int MaxUses,
+    int TtlSeconds,
+    string? Environment);
 
 /// <summary>Result of creating a registration token.</summary>
 /// <param name="Token">Raw registration token.</param>
@@ -89,6 +112,7 @@ public sealed record CreateDeploymentResponse(Guid Id, DeploymentStatus Status);
 /// <summary>Compact agent row for the admin API.</summary>
 /// <param name="Id">Agent identifier.</param>
 /// <param name="Name">Agent name.</param>
+/// <param name="Environment">Environment the agent belongs to.</param>
 /// <param name="Status">Agent status.</param>
 /// <param name="LastSeenAt">Time of the last heartbeat or control message.</param>
 /// <param name="ActiveReleaseId">Release the agent reports as applied, if any.</param>
@@ -96,6 +120,7 @@ public sealed record CreateDeploymentResponse(Guid Id, DeploymentStatus Status);
 public sealed record AgentSummary(
     Guid Id,
     string Name,
+    string Environment,
     AgentStatus Status,
     DateTimeOffset LastSeenAt,
     string? ActiveReleaseId,
@@ -105,6 +130,35 @@ public sealed record AgentSummary(
 /// <param name="Token">Raw single-use token, shown only here.</param>
 /// <param name="ExpiresAt">When the token stops working.</param>
 public sealed record CreateAgentTokenResponse(string Token, DateTimeOffset ExpiresAt);
+
+/// <summary>Deployment row with the release a rollback would deploy.</summary>
+/// <param name="Id">Deployment identifier.</param>
+/// <param name="Environment">Environment of the deployment.</param>
+/// <param name="ReleaseId">Release the deployment applied.</param>
+/// <param name="Status">Deployment status.</param>
+/// <param name="CreatedBy">Principal that started the deployment.</param>
+/// <param name="CreatedAt">Time when the deployment was created.</param>
+/// <param name="CompletedAt">Time when it reached a terminal state.</param>
+/// <param name="Message">
+/// Human-readable outcome: why the deployment failed, or null when it succeeded
+/// or is still running.
+/// </param>
+/// <param name="Waves">Waves in dispatch order.</param>
+/// <param name="RollbackReleaseId">
+/// Release a rollback would deploy, or null when this deployment has no older
+/// release in its environment. The UI uses it to disable the Rollback button.
+/// </param>
+public sealed record DeploymentSummary(
+    Guid Id,
+    string Environment,
+    Guid ReleaseId,
+    DeploymentStatus Status,
+    string CreatedBy,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? CompletedAt,
+    string? Message,
+    IReadOnlyList<DeploymentWave> Waves,
+    Guid? RollbackReleaseId);
 
 /// <summary>Compact view of one active agent certificate.</summary>
 /// <param name="SerialNumber">Certificate serial number, used for revocation.</param>
@@ -120,6 +174,10 @@ public sealed record AgentCertificateSummary(
     DateTimeOffset IssuedAt);
 
 [JsonSerializable(typeof(CreateAgentRequest))]
+[JsonSerializable(typeof(SetAgentEnvironmentRequest))]
+[JsonSerializable(typeof(CreateEnvironmentRequest))]
+[JsonSerializable(typeof(EnvironmentSummary))]
+[JsonSerializable(typeof(List<EnvironmentSummary>))]
 [JsonSerializable(typeof(CreateAgentResponse))]
 [JsonSerializable(typeof(CreateAgentTokenResponse))]
 [JsonSerializable(typeof(List<AgentCertificateSummary>))]
@@ -133,6 +191,8 @@ public sealed record AgentCertificateSummary(
 [JsonSerializable(typeof(CreateReleaseResponse))]
 [JsonSerializable(typeof(CreateDeploymentRequest))]
 [JsonSerializable(typeof(CreateDeploymentResponse))]
+[JsonSerializable(typeof(DeploymentSummary))]
+[JsonSerializable(typeof(List<DeploymentSummary>))]
 [JsonSerializable(typeof(AgentSummary))]
 [JsonSerializable(typeof(List<AgentSummary>))]
 [JsonSerializable(typeof(List<ConfigVersion>))]

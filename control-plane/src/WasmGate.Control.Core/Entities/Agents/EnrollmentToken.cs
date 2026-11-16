@@ -17,6 +17,13 @@ public sealed class EnrollmentToken
     /// <summary>Agent the token is bound to, or null for a registration token.</summary>
     public Guid? AgentId { get; init; }
 
+    /// <summary>Environment a newly enrolled agent is placed in.</summary>
+    /// <remarks>
+    /// Null on legacy tokens means <c>prod</c>. A token bound to an existing agent
+    /// inherits that agent's environment.
+    /// </remarks>
+    public string? Environment { get; init; }
+
     /// <summary>Optional agent-name prefix a registration token is scoped to.</summary>
     /// <remarks>
     /// The prefix is compared with the final agent name, not with the agent

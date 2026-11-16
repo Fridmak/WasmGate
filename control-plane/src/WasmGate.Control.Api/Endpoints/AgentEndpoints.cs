@@ -16,6 +16,8 @@ internal static class AgentEndpoints
         app.MapPost("/api/v1/agents", CreateAgent);
         app.MapGet("/api/v1/agents", ListAgents);
         app.MapPost("/api/v1/agents/{id:guid}/tokens", IssueEnrollmentToken);
+        app.MapPost("/api/v1/agents/{id:guid}/environment", SetAgentEnvironment);
+        app.MapDelete("/api/v1/agents/{id:guid}", DeleteAgent);
         app.MapGet("/api/v1/agents/{id:guid}/certificates", ListCertificates);
         app.MapPost("/api/v1/agents/{id:guid}/certificates/{serial}/revoke", RevokeCertificate);
         app.MapPost("/api/v1/registration-tokens", CreateRegistrationToken);
@@ -39,6 +41,7 @@ internal static class AgentEndpoints
         {
             var result = await provisioning.CreateAgentAsync(
                 request.Name,
+                request.Environment,
                 request.Labels ?? new Dictionary<string, string>(),
                 actor: "admin-api",
                 cancellationToken);
@@ -64,8 +67,42 @@ internal static class AgentEndpoints
     {
         var list = await agents.ListAsync(cancellationToken);
         return Results.Ok(list
-            .Select(a => new AgentSummary(a.Id, a.Name, a.Status, a.LastSeenAt, a.ActiveReleaseId, a.Labels))
+            .Select(a => new AgentSummary(
+                a.Id,
+                a.Name,
+                a.Environment,
+                a.Status,
+                a.LastSeenAt,
+                a.ActiveReleaseId,
+                a.Labels))
             .ToList());
+    }
+
+    /// <summary>Moves an agent to another environment.</summary>
+    /// <param name="id">Registered agent identifier.</param>
+    /// <param name="request">Target environment.</param>
+    /// <param name="provisioning">Provisioning service.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>204 on success; 400 for an unknown agent or an invalid name.</returns>
+    private static async Task<IResult> SetAgentEnvironment(
+        Guid id,
+        SetAgentEnvironmentRequest request,
+        IAgentProvisioningService provisioning,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await provisioning.SetEnvironmentAsync(
+                id,
+                request.Environment,
+                actor: "admin-api",
+                cancellationToken);
+            return Results.NoContent();
+        }
+        catch (EnrollmentException ex)
+        {
+            return Results.BadRequest(ex.Message);
+        }
     }
 
     /// <summary>Issues a replacement single-use enrollment token for an existing agent.</summary>
@@ -85,6 +122,37 @@ internal static class AgentEndpoints
                 actor: "admin-api",
                 cancellationToken);
             return Results.Ok(new CreateAgentTokenResponse(token.Token, token.ExpiresAt));
+        }
+        catch (EnrollmentException ex)
+        {
+            return Results.BadRequest(ex.Message);
+        }
+    }
+
+    /// <summary>Deletes an agent, its certificates and its enrollment tokens.</summary>
+    /// <param name="id">Registered agent identifier.</param>
+    /// <param name="provisioning">Provisioning service.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>
+    /// 204 on success, 404 for an unknown agent. A live session is closed; the
+    /// data-plane process must be stopped separately.
+    /// </returns>
+    private static async Task<IResult> DeleteAgent(
+        Guid id,
+        IAgentProvisioningService provisioning,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await provisioning.DeleteAgentAsync(
+                id,
+                actor: "admin-api",
+                cancellationToken);
+            return Results.NoContent();
+        }
+        catch (KeyNotFoundException)
+        {
+            return Results.NotFound();
         }
         catch (EnrollmentException ex)
         {
@@ -154,6 +222,7 @@ internal static class AgentEndpoints
         {
             var result = await provisioning.CreateRegistrationTokenAsync(
                 request.NamePrefix,
+                request.Environment,
                 request.MaxUses,
                 TimeSpan.FromSeconds(request.TtlSeconds),
                 actor: "admin-api",

@@ -30,9 +30,9 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
     {
         const string headerSql = """
             INSERT INTO deployments (id, environment, release_id, status, created_by,
-                                     created_at, completed_at)
+                                     created_at, completed_at, message)
             VALUES (@Id, @Environment, @ReleaseId, @Status, @CreatedBy,
-                    @CreatedAt, @CompletedAt)
+                    @CreatedAt, @CompletedAt, @Message)
             """;
 
         const string waveSql = """
@@ -53,6 +53,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
             deployment.CreatedBy,
             CreatedAt = PostgresTimestamps.ToParameter(deployment.CreatedAt),
             CompletedAt = PostgresTimestamps.ToParameter(deployment.CompletedAt),
+            deployment.Message,
         }, transaction: transaction);
 
         foreach (var wave in deployment.Waves)
@@ -75,7 +76,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
     public async Task<Deployment?> FindAsync(Guid id, CancellationToken cancellationToken)
     {
         const string headerSql = """
-            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at, message
             FROM deployments
             WHERE id = @id
             """;
@@ -104,7 +105,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
         CancellationToken cancellationToken)
     {
         const string headerSql = """
-            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at, message
             FROM deployments
             WHERE environment = @environment AND status IN ('Pending', 'Running')
             ORDER BY created_at DESC, id DESC
@@ -145,7 +146,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
         CancellationToken cancellationToken)
     {
         const string headerSql = """
-            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at, message
             FROM deployments
             WHERE environment = @environment
             ORDER BY created_at DESC, id DESC
@@ -166,7 +167,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
         CancellationToken cancellationToken)
     {
         const string headerSql = """
-            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at, message
             FROM deployments
             WHERE status = 'Running' AND created_at < @createdBefore
             ORDER BY created_at
@@ -221,7 +222,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
     {
         const string headerSql = """
             UPDATE deployments
-            SET status = @Status, completed_at = @CompletedAt
+            SET status = @Status, completed_at = @CompletedAt, message = @Message
             WHERE id = @Id
             """;
 
@@ -239,6 +240,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
             deployment.Id,
             Status = deployment.Status.ToString(),
             CompletedAt = PostgresTimestamps.ToParameter(deployment.CompletedAt),
+            deployment.Message,
         }, transaction: transaction);
 
         foreach (var wave in deployment.Waves)
@@ -269,6 +271,7 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
         CreatedBy = header.CreatedBy,
         CreatedAt = PostgresTimestamps.FromColumn(header.CreatedAt),
         CompletedAt = PostgresTimestamps.FromColumn(header.CompletedAt),
+        Message = header.Message,
         Waves = waves
             .Select(wave => new DeploymentWave
             {
@@ -299,6 +302,8 @@ internal sealed class DeploymentRow
     public DateTime CreatedAt { get; set; }
 
     public DateTime? CompletedAt { get; set; }
+
+    public string? Message { get; set; }
 }
 
 /// <summary>Row shape of <c>deployment_waves</c> as read by Dapper.AOT.</summary>

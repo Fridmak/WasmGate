@@ -24,7 +24,10 @@ public sealed class AgentProvisioningService(
     IAgentRepository agents,
     IEnrollmentTokenRepository tokens,
     IAgentCertificateRepository certificates,
+    IEnvironmentRepository environments,
+    IEnvironmentOperationLock environmentLocks,
     ICertificateAuthority authority,
+    IAgentSessionRegistry sessions,
     IAuditLog audit,
     ControlPlaneOptions options) : IAgentProvisioningService
 {
@@ -37,6 +40,7 @@ public sealed class AgentProvisioningService(
     /// <inheritdoc />
     public async Task<AgentProvisioning> CreateAgentAsync(
         string name,
+        string? environment,
         IReadOnlyDictionary<string, string> labels,
         string actor,
         CancellationToken cancellationToken)
@@ -51,6 +55,9 @@ public sealed class AgentProvisioningService(
                 $"Agent name must match {AgentNamingValidNameHint}.");
         }
 
+        var normalizedEnvironment = NormalizeEnvironment(environment);
+        await environments.EnsureAsync(normalizedEnvironment, actor, cancellationToken);
+
         var existing = await agents.FindByNameAsync(normalizedName, cancellationToken);
         if (existing is not null)
         {
@@ -62,16 +69,23 @@ public sealed class AgentProvisioningService(
         var agent = new Agent
         {
             Name = normalizedName,
+            Environment = normalizedEnvironment,
             Version = "0",
             AbiVersions = [],
             Labels = CopyLabels(labels),
             Status = AgentStatus.Pending,
         };
-        await agents.UpsertAsync(agent, cancellationToken);
+        if (!await agents.UpsertAsync(agent, cancellationToken))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Agent was deleted and cannot be recreated with the same id.");
+        }
         await AuditAsync(actor, "agent.create", agent.Id.ToString("D"), cancellationToken);
 
         var token = await IssueTokenAsync(
             agent.Id,
+            normalizedEnvironment,
             null,
             1,
             DateTimeOffset.UtcNow + TimeSpan.FromMinutes(15),
@@ -84,6 +98,7 @@ public sealed class AgentProvisioningService(
     /// <inheritdoc />
     public async Task<RegistrationToken> CreateRegistrationTokenAsync(
         string? namePrefix,
+        string? environment,
         int maxUses,
         TimeSpan ttl,
         string actor,
@@ -113,11 +128,18 @@ public sealed class AgentProvisioningService(
                 "namePrefix may contain only ASCII letters, digits, '.', '_' and '-'.");
         }
 
+        var normalizedEnvironment = NormalizeEnvironment(environment);
+        await using var environmentLock = await environmentLocks.AcquireAsync(
+            normalizedEnvironment,
+            cancellationToken);
+        await environments.EnsureAsync(normalizedEnvironment, actor, cancellationToken);
+
         var token = GenerateToken();
         var record = new EnrollmentToken
         {
             TokenHash = HashToken(token),
             AgentId = null,
+            Environment = normalizedEnvironment,
             NamePrefix = normalizedPrefix,
             MaxUses = maxUses,
             ExpiresAt = DateTimeOffset.UtcNow + ttl,
@@ -149,7 +171,43 @@ public sealed class AgentProvisioningService(
             throw new EnrollmentException(EnrollmentFailure.InvalidToken, "Enrollment token is invalid.");
         }
 
-        var record = await tokens.FindByHashAsync(HashToken(rawToken), cancellationToken);
+        var tokenHash = HashToken(rawToken);
+        var record = await tokens.FindByHashAsync(tokenHash, cancellationToken);
+        if (record is null)
+        {
+            throw new EnrollmentException(EnrollmentFailure.InvalidToken, "Enrollment token is invalid.");
+        }
+
+        // The first read only discovers the lock scope. The token is read again
+        // after the lock is held, so an environment deletion that removed the
+        // token cannot be overtaken by this enrollment.
+        var lockEnvironment = EnvironmentNaming.Normalize(record.Environment);
+        if (lockEnvironment.Length > 0 && !EnvironmentNaming.IsValid(lockEnvironment))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Enrollment token carries an invalid environment.");
+        }
+
+        if (lockEnvironment.Length == 0 && record.AgentId is { } boundForLock)
+        {
+            var boundAgent = await agents.FindAsync(boundForLock, cancellationToken);
+            if (boundAgent is not null)
+            {
+                lockEnvironment = boundAgent.Environment;
+            }
+        }
+
+        if (lockEnvironment.Length == 0)
+        {
+            lockEnvironment = EnvironmentNaming.Default;
+        }
+
+        await using var environmentLock = await environmentLocks.AcquireAsync(
+            lockEnvironment,
+            cancellationToken);
+
+        record = await tokens.FindByHashAsync(tokenHash, cancellationToken);
         if (record is null)
         {
             throw new EnrollmentException(EnrollmentFailure.InvalidToken, "Enrollment token is invalid.");
@@ -173,9 +231,27 @@ public sealed class AgentProvisioningService(
                 "Enrollment token is bound to a different agent.");
         }
 
+        var tokenEnvironment = EnvironmentNaming.Normalize(record.Environment);
+        if (tokenEnvironment.Length > 0 && !EnvironmentNaming.IsValid(tokenEnvironment))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Enrollment token carries an invalid environment.");
+        }
+
         var existing = await agents.FindAsync(agentGuid, cancellationToken);
         var requestedName = name?.Trim();
         var isNewAgent = existing is null;
+
+        if (existing is not null &&
+            tokenEnvironment.Length > 0 &&
+            !string.Equals(existing.Environment, tokenEnvironment, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.AgentMismatch,
+                $"Enrollment token belongs to environment '{tokenEnvironment}', " +
+                $"but agent '{existing.Name}' is in '{existing.Environment}'.");
+        }
 
         if (existing is null)
         {
@@ -197,10 +273,15 @@ public sealed class AgentProvisioningService(
                     $"Agent '{effectiveName}' already exists.");
             }
 
+            var environment = tokenEnvironment.Length > 0
+                ? tokenEnvironment
+                : EnvironmentNaming.Default;
+
             existing = new Agent
             {
                 Id = agentGuid,
                 Name = effectiveName,
+                Environment = environment,
                 Version = "0",
                 AbiVersions = [],
                 Labels = new Dictionary<string, string>(StringComparer.Ordinal),
@@ -231,16 +312,15 @@ public sealed class AgentProvisioningService(
             throw new EnrollmentException(EnrollmentFailure.Exhausted, "Enrollment token is exhausted.");
         }
 
-        var notAfter = now + options.AgentCertificateLifetime;
-        var issued = await authority.IssueAsync(
-            csrPem,
-            AgentNaming.CertificateCommonName(agentGuid),
-            notAfter,
-            cancellationToken);
-
         if (isNewAgent)
         {
-            await agents.UpsertAsync(existing, cancellationToken);
+            if (!await agents.UpsertAsync(existing, cancellationToken))
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.InvalidRequest,
+                    "Agent was deleted and cannot be re-enrolled; create a new agent record.");
+            }
+
             await AuditAsync(
                 AgentNaming.CertificateCommonName(agentGuid),
                 "agent.create",
@@ -254,6 +334,13 @@ public sealed class AgentProvisioningService(
             // handler. A single-column update cannot overwrite concurrent state.
             await agents.RecordEnrollmentAsync(agentGuid, now, cancellationToken);
         }
+
+        var notAfter = now + options.AgentCertificateLifetime;
+        var issued = await authority.IssueAsync(
+            csrPem,
+            AgentNaming.CertificateCommonName(agentGuid),
+            notAfter,
+            cancellationToken);
 
         await certificates.AddAsync(
             new AgentCertificate
@@ -283,7 +370,8 @@ public sealed class AgentProvisioningService(
         string actor,
         CancellationToken cancellationToken)
     {
-        if (await agents.FindAsync(agentId, cancellationToken) is null)
+        var agent = await agents.FindAsync(agentId, cancellationToken);
+        if (agent is null)
         {
             throw new EnrollmentException(
                 EnrollmentFailure.InvalidRequest,
@@ -292,10 +380,73 @@ public sealed class AgentProvisioningService(
 
         var ttl = TimeSpan.FromMinutes(15);
         var expiresAt = DateTimeOffset.UtcNow + ttl;
-        var token = await IssueTokenAsync(agentId, null, 1, expiresAt, cancellationToken);
+        var token = await IssueTokenAsync(
+            agentId,
+            agent.Environment,
+            null,
+            1,
+            expiresAt,
+            cancellationToken);
         await AuditAsync(actor, "token.create", agentId.ToString("D"), cancellationToken);
 
         return new RegistrationToken(token, 1, expiresAt);
+    }
+
+    /// <inheritdoc />
+    public async Task SetEnvironmentAsync(
+        Guid agentId,
+        string environment,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(environment))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Environment is required.");
+        }
+
+        var normalizedEnvironment = NormalizeEnvironment(environment);
+        await using var environmentLock = await environmentLocks.AcquireAsync(
+            normalizedEnvironment,
+            cancellationToken);
+        var agent = await agents.FindAsync(agentId, cancellationToken);
+        if (agent is null)
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Agent is not registered.");
+        }
+
+        if (string.Equals(agent.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await environments.EnsureAsync(normalizedEnvironment, actor, cancellationToken);
+        await agents.SetEnvironmentAsync(agentId, normalizedEnvironment, cancellationToken);
+        await AuditAsync(actor, "agent.move-environment", agentId.ToString("D"), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteAgentAsync(
+        Guid agentId,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        if (!await agents.DeleteAsync(agentId, cancellationToken))
+        {
+            throw new KeyNotFoundException($"Agent '{agentId:D}' is not registered.");
+        }
+
+        // Close the session after the row is gone: the session loop's cleanup
+        // must not be able to re-insert an Offline row for a deleted agent.
+        if (sessions.TryGet(agentId, out var session))
+        {
+            await session.CloseAsync(CancellationToken.None);
+        }
+
+        await AuditAsync(actor, "agent.delete", agentId.ToString("D"), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -346,8 +497,32 @@ public sealed class AgentProvisioningService(
         $"1-{AgentNaming.MaxLength} ASCII letters, digits, '.', '_' or '-', " +
         "starting and ending with a letter or digit";
 
+    /// <summary>Normalises an environment name and defaults it to <c>prod</c>.</summary>
+    /// <param name="environment">Operator-supplied name, or null.</param>
+    /// <returns>A valid lower-case environment name.</returns>
+    /// <exception cref="EnrollmentException">The name is not acceptable.</exception>
+    private static string NormalizeEnvironment(string? environment)
+    {
+        var normalized = EnvironmentNaming.Normalize(environment);
+        if (normalized.Length == 0)
+        {
+            return EnvironmentNaming.Default;
+        }
+
+        if (!EnvironmentNaming.IsValid(normalized))
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                $"Environment must be 1-{EnvironmentNaming.MaxLength} ASCII letters, digits, " +
+                "'.', '_' or '-', starting and ending with a letter or digit.");
+        }
+
+        return normalized;
+    }
+
     /// <summary>Creates and stores a single-use token bound to one agent.</summary>
     /// <param name="agentId">Agent the token is bound to.</param>
+    /// <param name="environment">Environment a newly enrolled agent joins.</param>
     /// <param name="namePrefix">Optional name prefix, normally null for per-agent tokens.</param>
     /// <param name="maxUses">Maximum number of uses.</param>
     /// <param name="expiresAt">Absolute expiry time of the token.</param>
@@ -355,6 +530,7 @@ public sealed class AgentProvisioningService(
     /// <returns>The raw token value.</returns>
     private async Task<string> IssueTokenAsync(
         Guid agentId,
+        string environment,
         string? namePrefix,
         int maxUses,
         DateTimeOffset expiresAt,
@@ -366,6 +542,7 @@ public sealed class AgentProvisioningService(
             {
                 TokenHash = HashToken(raw),
                 AgentId = agentId,
+                Environment = environment,
                 NamePrefix = namePrefix,
                 MaxUses = maxUses,
                 ExpiresAt = expiresAt,

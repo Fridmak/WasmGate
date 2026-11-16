@@ -59,18 +59,69 @@ curl -fsS http://127.0.0.1:9097/readyz    # PostgreSQL + schema
 Open `http://127.0.0.1:9097/` and paste the admin token. The UI is a static SPA
 served by the same process: agents and certificates, artifact upload,
 configuration versions, releases, deployments with rollback and the audit trail.
-The token is kept in `sessionStorage`.
+The token is kept in `sessionStorage`. The environment picker in the top bar
+switches every screen; it also creates new environments.
+
+## Environments
+
+An environment is a hard deployment scope, not a label. Every agent belongs to
+exactly one environment, and a deployment can only reach agents of its own
+environment; wave selectors then narrow that set. Configurations, releases and
+deployments are namespaced by environment as well.
+
+- `prod` and `staging` are created by the schema. The admin picker and
+  `POST /api/v1/environments` create more; a new name used by a configuration,
+  release or agent is registered automatically.
+- The agent environment is chosen when the agent is created, or on enrollment
+  with a registration token. An operator can move an existing agent in
+  **Agents → Details → Change**; the agent keeps its current release until the
+  next deployment in the new environment.
+- A per-agent enrollment token inherits the agent environment. A registration
+  token carries its own, and enrollment rejects a token from another
+  environment.
+- An upgraded installation puts existing agents into `prod`.
+- A deployment whose selectors match no agent in its environment is recorded as
+  `Failed`, with a message explaining which of the three cases happened: no
+  agents in the environment, no selector match, or no live session.
+- An environment can be deleted from the picker. `prod` is protected. An
+  environment that still has agents or a running deployment is refused;
+  otherwise its configurations, releases, deployments and enrollment tokens are
+  deleted with it.
+
+Rollback deploys the release that precedes the current one in the same
+environment, skipping revoked releases. The API returns `rollbackReleaseId` for
+every deployment; the UI disables the button when it is null.
+
+## Deployment details and logs
+
+The deployment list shows a short failure reason. **Details** opens the full
+message, wave states, rollback target and the audit events for that deployment.
+The `message` field is filled when no command could be sent, when an agent
+reports an apply failure (including listener errors), and by the timeout reaper.
+
+The admin panel shows actions and outcomes, not the process log. Engine logs are
+in the service journal:
+
+```bash
+sudo journalctl -u wasmgate-control -n 200 --no-pager   # control plane
+sudo journalctl -u wasmgate -n 200 --no-pager           # data plane
+```
 
 ## Admin API
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/v1/agents` | Create an agent and return a one-time enrollment token |
-| GET | `/api/v1/agents` | List agents with status, labels, last seen and active release |
+| GET | `/api/v1/agents` | List agents with environment, status, labels, last seen and active release |
 | POST | `/api/v1/agents/{id}/tokens` | Reissue an enrollment token (lost token, re-enroll) |
+| POST | `/api/v1/agents/{id}/environment` | Move an agent to another environment |
+| DELETE | `/api/v1/agents/{id}` | Delete an agent, its certificates and tokens |
 | GET | `/api/v1/agents/{id}/certificates` | Active certificates (serial, fingerprint, validity) |
 | POST | `/api/v1/agents/{id}/certificates/{serial}/revoke` | Revoke one certificate |
-| POST | `/api/v1/registration-tokens` | Shared token for a rollout (`namePrefix`, `maxUses`, `ttlSeconds`) |
+| GET | `/api/v1/environments` | List environments for the picker |
+| POST | `/api/v1/environments` | Create an environment (idempotent) |
+| DELETE | `/api/v1/environments/{name}` | Delete an environment and its scoped data |
+| POST | `/api/v1/registration-tokens` | Shared token for a rollout (`namePrefix`, `environment`, `maxUses`, `ttlSeconds`) |
 | POST | `/api/v1/artifacts` | Upload an artifact (base64, ≤64 MiB) |
 | GET | `/api/v1/artifacts` | List artifacts |
 | POST | `/api/v1/configs` | Store an immutable configuration version |
@@ -79,7 +130,7 @@ The token is kept in `sessionStorage`.
 | GET | `/api/v1/releases/{environment}` | List releases |
 | POST | `/api/v1/releases/{id}/revoke` | Revoke a release (cannot be deployed) |
 | POST | `/api/v1/deployments` | Deploy a release to wave selectors |
-| GET | `/api/v1/deployments/{environment}` | List deployments |
+| GET | `/api/v1/deployments/{environment}` | List deployments, including the rollback target and failure reason |
 | POST | `/api/v1/deployments/{id}/rollback` | Deploy the previous release |
 | GET | `/api/v1/audit` | Last 100 audit events |
 | GET | `/healthz`, `/readyz` | Probes (no token) |
@@ -89,7 +140,8 @@ required when the admin endpoint is not on loopback.
 
 ## Agents and certificates
 
-1. **Create** an agent (`Pending`) or a shared registration token.
+1. **Create** an agent (`Pending`) in an environment, or a shared registration
+   token bound to an environment.
 2. **Enroll**: the agent generates an RSA key and CSR with
    `CN=wasmgate-agent:<guid>` and calls `AgentEnrollment.Enroll` with the token.
    The token is consumed atomically before the certificate is issued.
@@ -107,6 +159,13 @@ created on first start; losing them invalidates every agent certificate.
 Operator labels are authoritative: labels reported in `Hello` only fill gaps, so
 an agent cannot move itself into another wave.
 
+To remove an agent, use **Agents → Details → Delete agent** (or
+`DELETE /api/v1/agents/{id}`). The record, its certificates and enrollment
+tokens are deleted, and a live session is closed. The data-plane process is not
+stopped: stop the service on the host as well. After deletion the agent cannot
+reconnect because its certificate no longer exists; re-enrollment requires a new
+agent record.
+
 ## Releases and deployments
 
 1. **Configuration version** — immutable YAML; the SHA-256 is unique per
@@ -115,9 +174,10 @@ an agent cannot move itself into another wave.
 3. **Release** — a configuration plus artifacts with install paths. The control
    plane validates it with `wasmgate -validate`, signs a canonical manifest with
    ECDSA P-256, and stores the signature.
-4. **Deployment** — wave selectors (JSON label objects or `*`). The release
-   signature is verified before dispatch, then every agent with a live session
-   receives `ApplyRelease` with the manifest and signature.
+4. **Deployment** — wave selectors (JSON label objects or `*`) applied to agents
+   of the release environment. The release signature is verified before
+   dispatch, then every matching agent with a live session receives
+   `ApplyRelease` with the manifest and signature.
 
 Agents verify the signature against the configured public key and cross-check the
 manifest (`release_id`, `config_sha256`, artifact ids) before applying anything.
@@ -131,7 +191,8 @@ Operational details:
   dispatched in order but are not gated by the previous wave.
 - A background reaper fails deployments stuck in `Running` longer than
   `WASMGATE_CP_DEPLOYMENT_TIMEOUT` (15 min).
-- Rollback deploys the previous release of the environment with the same selectors.
+- Rollback deploys the release that precedes the current one in the same
+  environment, skipping revoked releases, with the same selectors.
 - Limits: 64 MiB per artifact, 1 MiB per configuration, 64 artifacts per release.
 
 ## Agent protocol (summary)

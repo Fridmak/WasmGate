@@ -11,15 +11,20 @@ public interface IAgentProvisioningService
 {
     /// <summary>Creates one agent in Pending state with a single-use enrollment token.</summary>
     /// <param name="name">Unique agent name.</param>
+    /// <param name="environment">
+    /// Deployment environment the agent belongs to. Null or blank means
+    /// <c>prod</c>; the name is normalised and created when it is new.
+    /// </param>
     /// <param name="labels">Deployment labels used by wave selectors.</param>
     /// <param name="actor">Identity of the principal creating the agent.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The new agent identifier and its raw one-time token.</returns>
     /// <exception cref="EnrollmentException">
-    /// The name is invalid or already registered.
+    /// The name or environment is invalid, or the name is already registered.
     /// </exception>
     Task<AgentProvisioning> CreateAgentAsync(
         string name,
+        string? environment,
         IReadOnlyDictionary<string, string> labels,
         string actor,
         CancellationToken cancellationToken);
@@ -28,6 +33,9 @@ public interface IAgentProvisioningService
     /// <param name="namePrefix">
     /// Optional prefix that every enrolling agent name must start with; the
     /// comparison is ordinal and case-sensitive. Null or empty accepts any name.
+    /// </param>
+    /// <param name="environment">
+    /// Environment a newly enrolled agent joins. Null or blank means <c>prod</c>.
     /// </param>
     /// <param name="maxUses">Maximum number of enrollments.</param>
     /// <param name="ttl">How long the token stays valid.</param>
@@ -39,6 +47,7 @@ public interface IAgentProvisioningService
     /// </returns>
     Task<RegistrationToken> CreateRegistrationTokenAsync(
         string? namePrefix,
+        string? environment,
         int maxUses,
         TimeSpan ttl,
         string actor,
@@ -81,6 +90,41 @@ public interface IAgentProvisioningService
     /// </remarks>
     /// <exception cref="EnrollmentException">The agent is not registered.</exception>
     Task<RegistrationToken> IssueEnrollmentTokenAsync(
+        Guid agentId,
+        string actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>Moves a registered agent to another environment.</summary>
+    /// <param name="agentId">Registered agent identifier.</param>
+    /// <param name="environment">Target environment; created when it is new.</param>
+    /// <param name="actor">Identity of the principal performing the move.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// Deployments only target agents of their own environment, so a move takes
+    /// effect at the next deployment. The release currently applied by the agent
+    /// is not changed.
+    /// </remarks>
+    /// <exception cref="EnrollmentException">
+    /// The agent is unknown or the environment name is invalid.
+    /// </exception>
+    Task SetEnvironmentAsync(
+        Guid agentId,
+        string environment,
+        string actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>Deletes an agent record and closes its live session.</summary>
+    /// <param name="agentId">Registered agent identifier.</param>
+    /// <param name="actor">Identity of the principal performing the deletion.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// Enrollment tokens and issued certificates are removed with the agent
+    /// through foreign-key cascades. The data-plane process is not stopped: if it
+    /// is still running, it will be rejected on its next connection because its
+    /// certificate no longer exists. Stop the process on the host as well.
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">The agent is not registered.</exception>
+    Task DeleteAgentAsync(
         Guid agentId,
         string actor,
         CancellationToken cancellationToken);

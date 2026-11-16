@@ -60,6 +60,8 @@ internal sealed class DeploymentReaper(
             var now = DateTimeOffset.UtcNow;
             deployment.Status = DeploymentStatus.Failed;
             deployment.CompletedAt = now;
+            deployment.Message =
+                $"No apply result was received within {options.DeploymentTimeout}.";
 
             foreach (var wave in deployment.Waves.Where(
                          wave => wave.Status is DeploymentWaveStatus.Pending or DeploymentWaveStatus.Running))

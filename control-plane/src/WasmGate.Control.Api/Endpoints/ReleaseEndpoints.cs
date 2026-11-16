@@ -2,6 +2,7 @@ using System.Text;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
+using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Api.Endpoints;
@@ -151,12 +152,35 @@ internal static class ReleaseEndpoints
     /// <summary>Lists the 100 most recent deployments of an environment.</summary>
     /// <param name="environment">Environment name.</param>
     /// <param name="deployments">Deployment repository.</param>
+    /// <param name="releases">Release repository, used to resolve rollback targets.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>
+    /// Deployments with <c>rollbackReleaseId</c>, which is null when the
+    /// deployment has no older release to return to.
+    /// </returns>
     private static async Task<IResult> ListDeployments(
         string environment,
         IDeploymentRepository deployments,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await deployments.ListAsync(environment, 100, cancellationToken));
+        IReleaseRepository releases,
+        CancellationToken cancellationToken)
+    {
+        var list = await deployments.ListAsync(environment, 100, cancellationToken);
+        var releaseList = await releases.ListAsync(environment, cancellationToken);
+
+        return Results.Ok(list
+            .Select(item => new DeploymentSummary(
+                item.Id,
+                item.Environment,
+                item.ReleaseId,
+                item.Status,
+                item.CreatedBy,
+                item.CreatedAt,
+                item.CompletedAt,
+                item.Message,
+                item.Waves,
+                ReleaseRollback.FindPrevious(releaseList, item.ReleaseId)?.Id))
+            .ToList());
+    }
 
     /// <summary>Starts a deployment and returns its initial status.</summary>
     /// <param name="request">Release and wave selectors.</param>

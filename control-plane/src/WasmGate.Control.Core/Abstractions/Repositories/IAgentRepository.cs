@@ -31,12 +31,39 @@ public interface IAgentRepository
     /// </summary>
     /// <param name="agent">Agent to persist.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>
+    /// True when the row was written; false when the agent id has a deletion
+    /// tombstone and must not be resurrected.
+    /// </returns>
     /// <remarks>
     /// Writing over existing fields makes this the single mutation path for the
-    /// current state of an agent. The registration time of an existing agent is
-    /// kept.
+    /// current state of an agent. The registration time and environment of an
+    /// existing agent are kept: an agent cannot move itself between environments,
+    /// and a reconcile must not undo an operator move.
     /// </remarks>
-    Task UpsertAsync(Agent agent, CancellationToken cancellationToken);
+    Task<bool> UpsertAsync(Agent agent, CancellationToken cancellationToken);
+
+    /// <summary>Moves an agent to another environment.</summary>
+    /// <param name="id">Agent identifier.</param>
+    /// <param name="environment">Normalised target environment.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// This is the only way to change the environment of an existing agent. The
+    /// active release is not changed: the agent keeps running what it has until
+    /// the next deployment from the new environment.
+    /// </remarks>
+    Task SetEnvironmentAsync(Guid id, string environment, CancellationToken cancellationToken);
+
+    /// <summary>Deletes an agent and its dependent records.</summary>
+    /// <param name="id">Agent identifier.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>True when a row was deleted, false when the agent does not exist.</returns>
+    /// <remarks>
+    /// Enrollment tokens and issued certificates are removed by foreign-key
+    /// cascades. Live sessions are not closed by the repository; the service
+    /// layer does that after the row is gone.
+    /// </remarks>
+    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken);
 
     /// <summary>Records contact with an agent and marks it Online.</summary>
     /// <param name="id">Agent identifier.</param>

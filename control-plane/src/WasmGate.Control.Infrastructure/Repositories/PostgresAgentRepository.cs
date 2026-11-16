@@ -31,7 +31,7 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     public async Task<IReadOnlyList<Agent>> ListAsync(CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT id, name, version, abi_versions, labels::text AS labels, status,
+            SELECT id, name, environment, version, abi_versions, labels::text AS labels, status,
                    registered_at, last_seen_at, active_release_id, active_config_sha256
             FROM agents
             ORDER BY name, id
@@ -46,7 +46,7 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     public async Task<Agent?> FindAsync(Guid id, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT id, name, version, abi_versions, labels::text AS labels, status,
+            SELECT id, name, environment, version, abi_versions, labels::text AS labels, status,
                    registered_at, last_seen_at, active_release_id, active_config_sha256
             FROM agents
             WHERE id = @id
@@ -61,7 +61,7 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     public async Task<Agent?> FindByNameAsync(string name, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT id, name, version, abi_versions, labels::text AS labels, status,
+            SELECT id, name, environment, version, abi_versions, labels::text AS labels, status,
                    registered_at, last_seen_at, active_release_id, active_config_sha256
             FROM agents
             WHERE name = @name
@@ -73,12 +73,12 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     }
 
     /// <inheritdoc />
-    public async Task UpsertAsync(Agent agent, CancellationToken cancellationToken)
+    public async Task<bool> UpsertAsync(Agent agent, CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO agents (id, name, version, abi_versions, labels, status,
+            INSERT INTO agents (id, name, environment, version, abi_versions, labels, status,
                                 registered_at, last_seen_at, active_release_id, active_config_sha256)
-            VALUES (@Id, @Name, @Version, @AbiVersions, @Labels::jsonb, @Status,
+            VALUES (@Id, @Name, @Environment, @Version, @AbiVersions, @Labels::jsonb, @Status,
                     @RegisteredAt, @LastSeenAt, @ActiveReleaseId, @ActiveConfigSha256)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -92,10 +92,29 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
             """;
 
         await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
-        await connection.ExecuteAsync(sql, new
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        // Serialise with DELETE so a reconnect cannot resurrect a deleted agent.
+        await connection.ExecuteAsync(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",
+            new { key = PostgresLockKeys.Agent(agent.Id) },
+            transaction: transaction);
+
+        var deleted = await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM deleted_agents WHERE id = @id)",
+            new { id = agent.Id },
+            transaction: transaction);
+        if (deleted)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+
+        var affectedRows = await connection.ExecuteAsync(sql, new
         {
             agent.Id,
             agent.Name,
+            agent.Environment,
             agent.Version,
             AbiVersions = agent.AbiVersions.ToArray(),
             Labels = SerializeLabels(agent.Labels),
@@ -104,7 +123,10 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
             LastSeenAt = PostgresTimestamps.ToParameter(agent.LastSeenAt),
             agent.ActiveReleaseId,
             agent.ActiveConfigSha256,
-        });
+        }, transaction: transaction);
+
+        await transaction.CommitAsync(cancellationToken);
+        return affectedRows == 1;
     }
 
     /// <inheritdoc />
@@ -141,6 +163,57 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     }
 
     /// <inheritdoc />
+    public async Task SetEnvironmentAsync(
+        Guid id,
+        string environment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE agents
+            SET environment = @environment
+            WHERE id = @id
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        await connection.ExecuteAsync(sql, new { id, environment });
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            DELETE FROM agents
+            WHERE id = @id
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        // Serialise with UpsertAsync: a reconnect that started before deletion
+        // must observe the tombstone instead of inserting the row again.
+        await connection.ExecuteAsync(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",
+            new { key = PostgresLockKeys.Agent(id) },
+            transaction: transaction);
+
+        var affectedRows = await connection.ExecuteAsync(sql, new { id }, transaction: transaction);
+        if (affectedRows == 1)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO deleted_agents (id, deleted_at)
+                VALUES (@id, now())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                new { id },
+                transaction: transaction);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return affectedRows == 1;
+    }
+
+    /// <inheritdoc />
     public async Task RecordEnrollmentAsync(
         Guid id,
         DateTimeOffset seenAt,
@@ -167,6 +240,7 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
     {
         Id = row.Id,
         Name = row.Name,
+        Environment = row.Environment,
         Version = row.Version,
         AbiVersions = row.AbiVersions,
         Labels = ParseLabels(row.Labels),
@@ -203,6 +277,8 @@ internal sealed class AgentRow
     public Guid Id { get; set; }
 
     public string Name { get; set; } = string.Empty;
+
+    public string Environment { get; set; } = "prod";
 
     public string Version { get; set; } = string.Empty;
 

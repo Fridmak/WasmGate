@@ -12,6 +12,13 @@ public sealed class Agent
     /// <summary>Operator-visible name, unique within the control plane.</summary>
     public required string Name { get; init; }
 
+    /// <summary>Environment this agent belongs to; deployments are scoped to it.</summary>
+    /// <remarks>
+    /// Set when the agent is provisioned and never changed by the agent. An agent
+    /// can only receive releases and deployments of its own environment.
+    /// </remarks>
+    public string Environment { get; init; } = "prod";
+
     /// <summary>Data-plane build version reported in Hello.</summary>
     public required string Version { get; init; }
 

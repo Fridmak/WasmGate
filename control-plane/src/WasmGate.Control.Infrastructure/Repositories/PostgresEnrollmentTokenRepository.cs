@@ -24,9 +24,9 @@ public sealed class PostgresEnrollmentTokenRepository(NpgsqlDataSource dataSourc
     public async Task AddAsync(EnrollmentToken token, CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO enrollment_tokens (id, token_hash, agent_id, name_prefix,
+            INSERT INTO enrollment_tokens (id, token_hash, agent_id, environment, name_prefix,
                                            max_uses, used_count, expires_at, created_at)
-            VALUES (@Id, @TokenHash, @AgentId, @NamePrefix,
+            VALUES (@Id, @TokenHash, @AgentId, @Environment, @NamePrefix,
                     @MaxUses, @UsedCount, @ExpiresAt, @CreatedAt)
             """;
 
@@ -36,6 +36,7 @@ public sealed class PostgresEnrollmentTokenRepository(NpgsqlDataSource dataSourc
             token.Id,
             token.TokenHash,
             token.AgentId,
+            token.Environment,
             token.NamePrefix,
             token.MaxUses,
             token.UsedCount,
@@ -48,7 +49,7 @@ public sealed class PostgresEnrollmentTokenRepository(NpgsqlDataSource dataSourc
     public async Task<EnrollmentToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT id, token_hash, agent_id, name_prefix, max_uses, used_count,
+            SELECT id, token_hash, agent_id, environment, name_prefix, max_uses, used_count,
                    expires_at, created_at
             FROM enrollment_tokens
             WHERE token_hash = @tokenHash
@@ -81,6 +82,7 @@ public sealed class PostgresEnrollmentTokenRepository(NpgsqlDataSource dataSourc
         Id = row.Id,
         TokenHash = row.TokenHash,
         AgentId = row.AgentId,
+        Environment = row.Environment,
         NamePrefix = row.NamePrefix,
         MaxUses = row.MaxUses,
         UsedCount = row.UsedCount,
@@ -98,6 +100,8 @@ internal sealed class EnrollmentTokenRow
     public string TokenHash { get; set; } = string.Empty;
 
     public Guid? AgentId { get; set; }
+
+    public string? Environment { get; set; }
 
     public string? NamePrefix { get; set; }
 
