@@ -29,9 +29,11 @@ agent ────gRPC :9096──────┘   Session / Enroll / Renew / D
 With Docker (TLS + admin token + PostgreSQL; see [deployment](deployment.md)):
 
 ```bash
-./deployments/dev-certs.sh
-export WASMGATE_CP_ADMIN_TOKEN=$(openssl rand -hex 24)
-docker compose -f deployments/docker-compose.yml up -d --build
+./deployments/scripts/dev-certs.sh
+cp deployments/scenarios/03-control-plane/.env.example \
+   deployments/scenarios/03-control-plane/.env
+# edit .env and set WASMGATE_CP_ADMIN_TOKEN
+docker compose -f deployments/scenarios/03-control-plane/compose.yml up -d --build
 ```
 
 Manually:

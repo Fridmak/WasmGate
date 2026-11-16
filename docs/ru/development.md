@@ -22,7 +22,7 @@ internal/controlplane/ клиент control plane
 plugins/examples/      Rust workspace с эталонными плагинами
 control-plane/         C# solution и xunit-тесты
 configs/               пример и showcase-конфигурация
-deployments/           systemd, Dockerfile'ы, compose, dev-сертификаты
+deployments/           сценарии развёртывания, Dockerfile'ы, systemd, dev-сертификаты
 benchmarks/            сырой вывод бенчмарков
 docs/en, docs/ru       документация на двух языках
 ```
@@ -109,7 +109,7 @@ C#-биндинги генерирует сборка; Go-биндинги ко�
 ```bash
 docker build -f deployments/docker/data-plane.Dockerfile -t wasmgate-dp .
 docker build -f deployments/docker/control-plane.Dockerfile -t wasmgate-cp .
-docker compose -f deployments/docker-compose.yml up --build
+docker compose -f deployments/scenarios/03-control-plane/compose.yml up --build
 ```
 
 ## Правило документации

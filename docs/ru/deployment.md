@@ -38,16 +38,19 @@ data plane можно запускать из любого рабочего ка
 
 ## systemd
 
-Юнит в [`deployments/wasmgate.service`((../deployments/wasmgate.service) работает
-от непривилегированного пользователя, получает низкие порты через
-`CAP_NET_BIND_SERVICE` и использует `ProtectSystem=strict`.
+Юнит в
+[`deployments/scenarios/02-standalone-data-plane/wasmgate.service`](../../deployments/scenarios/02-standalone-data-plane/wasmgate.service)
+работает от непривилегированного пользователя, получает низкие порты через
+`CAP_NET_BIND_SERVICE` и использует `ProtectSystem=strict`. Для управляемого
+агента используйте writable-юнит из
+[`04-single-node-systemd`](../../deployments/scenarios/04-single-node-systemd/).
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin wasmgate
 sudo install -m 0755 wasmgate /usr/local/bin/wasmgate
 sudo install -d -m 0750 -o wasmgate -g wasmgate /etc/wasmgate
 sudo install -m 0640 -o wasmgate -g wasmgate wasmgate.yaml /etc/wasmgate/wasmgate.yaml
-sudo cp deployments/wasmgate.service /etc/systemd/system/
+sudo cp deployments/scenarios/02-standalone-data-plane/wasmgate.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now wasmgate
 ```
 
@@ -67,7 +70,7 @@ docker build -f deployments/docker/data-plane.Dockerfile -t wasmgate-dp .
 docker run -d --name wasmgate --restart unless-stopped --network host \
   -v /etc/wasmgate:/etc/wasmgate:ro \
   -v /var/lib/wasmgate:/var/lib/wasmgate \
-  wasmgate-dp -config /var/lib/wasmgate/config/wasmgate.yaml
+  wasmgate-dp -config /etc/wasmgate/wasmgate.yaml
 ```
 
 `--network host` сохраняет `splice(2)` и реальные IP клиентов; user-space NAT
@@ -75,18 +78,23 @@ docker run -d --name wasmgate --restart unless-stopped --network host \
 
 ## Control plane + PostgreSQL
 
-[`deployments/docker-compose.yml`((../deployments/docker-compose.yml) поднимает
-PostgreSQL и control plane, публикует оба порта только на loopback, требует
-`WASMGATE_CP_ADMIN_TOKEN` и отдаёт gRPC агентов по TLS.
+[`deployments/scenarios/03-control-plane/compose.yml`](../../deployments/scenarios/03-control-plane/compose.yml)
+поднимает PostgreSQL и control plane, публикует оба порта только на loopback,
+требует `WASMGATE_CP_ADMIN_TOKEN` и отдаёт gRPC агентов по TLS.
 
 ```bash
-./deployments/dev-certs.sh                 # один раз, локальный самоподписанный сертификат
-export WASMGATE_CP_ADMIN_TOKEN=$(openssl rand -hex 24)
-docker compose -f deployments/docker-compose.yml up -d --build
+./deployments/scripts/dev-certs.sh         # один раз, локальный самоподписанный сертификат
+cp deployments/scenarios/03-control-plane/.env.example \
+   deployments/scenarios/03-control-plane/.env
+# отредактируйте .env и задайте WASMGATE_CP_ADMIN_TOKEN
+docker compose -f deployments/scenarios/03-control-plane/compose.yml up -d --build
 
 curl -fsS http://127.0.0.1:9097/readyz
 # админ-панель: http://127.0.0.1:9097/  (вставьте токен)
 ```
+
+Полный локальный стенд (control plane + один data plane + nginx-бэкенд) —
+в [`01-local-demo`](../../deployments/scenarios/01-local-demo/).
 
 Миграции применяются init-каталогом PostgreSQL при первом старте. Для уже
 существующей базы выполните их по порядку:
@@ -97,8 +105,22 @@ for f in control-plane/migrations/00*.sql; do
 done
 ```
 
-Без Docker — см. [control plane((control-plane.md): переменные окружения и ручной
+Без Docker — см. [control plane](control-plane.md): переменные окружения и ручной
 запуск.
+
+## Сценарии развёртывания
+
+Готовые заготовки для пяти типовых схем:
+
+| Сценарий | Каталог |
+|---|---|
+| Локальный демо-стенд (CP + один DP + backend) | [`deployments/scenarios/01-local-demo`](../../deployments/scenarios/01-local-demo/) |
+| Standalone data plane | [`deployments/scenarios/02-standalone-data-plane`](../../deployments/scenarios/02-standalone-data-plane/) |
+| Только control plane | [`deployments/scenarios/03-control-plane`](../../deployments/scenarios/03-control-plane/) |
+| Single-node systemd (CP + DP) | [`deployments/scenarios/04-single-node-systemd`](../../deployments/scenarios/04-single-node-systemd/) |
+| Флот data plane | [`deployments/scenarios/05-dp-fleet`](../../deployments/scenarios/05-dp-fleet/) |
+
+Индекс и общие файлы: [`deployments/README.md`](../../deployments/README.md).
 
 ## Обновления
 

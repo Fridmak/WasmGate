@@ -38,16 +38,19 @@ data plane can run from any working directory.
 
 ## systemd
 
-The unit in [`deployments/wasmgate.service`((../deployments/wasmgate.service)
+The unit in
+[`deployments/scenarios/02-standalone-data-plane/wasmgate.service`](../../deployments/scenarios/02-standalone-data-plane/wasmgate.service)
 runs as an unprivileged user, binds low ports through `CAP_NET_BIND_SERVICE` and
-uses `ProtectSystem=strict`.
+uses `ProtectSystem=strict`. A managed agent uses the writable unit in
+[`04-single-node-systemd`](../../deployments/scenarios/04-single-node-systemd/)
+instead.
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin wasmgate
 sudo install -m 0755 wasmgate /usr/local/bin/wasmgate
 sudo install -d -m 0750 -o wasmgate -g wasmgate /etc/wasmgate
 sudo install -m 0640 -o wasmgate -g wasmgate wasmgate.yaml /etc/wasmgate/wasmgate.yaml
-sudo cp deployments/wasmgate.service /etc/systemd/system/
+sudo cp deployments/scenarios/02-standalone-data-plane/wasmgate.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now wasmgate
 ```
 
@@ -66,7 +69,7 @@ docker build -f deployments/docker/data-plane.Dockerfile -t wasmgate-dp .
 docker run -d --name wasmgate --restart unless-stopped --network host \
   -v /etc/wasmgate:/etc/wasmgate:ro \
   -v /var/lib/wasmgate:/var/lib/wasmgate \
-  wasmgate-dp -config /var/lib/wasmgate/config/wasmgate.yaml
+  wasmgate-dp -config /etc/wasmgate/wasmgate.yaml
 ```
 
 `--network host` keeps `splice(2)` and client IPs intact; user-space NAT in front
@@ -74,18 +77,23 @@ of the container hides part of the zero-copy gain.
 
 ## Control plane + PostgreSQL
 
-[`deployments/docker-compose.yml`((../deployments/docker-compose.yml) starts
-PostgreSQL and the control plane, publishes both ports on host loopback, requires
-`WASMGATE_CP_ADMIN_TOKEN` and serves the agent endpoint over TLS.
+[`deployments/scenarios/03-control-plane/compose.yml`](../../deployments/scenarios/03-control-plane/compose.yml)
+starts PostgreSQL and the control plane, publishes both ports on host loopback,
+requires `WASMGATE_CP_ADMIN_TOKEN` and serves the agent endpoint over TLS.
 
 ```bash
-./deployments/dev-certs.sh                 # once, local self-signed certificate
-export WASMGATE_CP_ADMIN_TOKEN=$(openssl rand -hex 24)
-docker compose -f deployments/docker-compose.yml up -d --build
+./deployments/scripts/dev-certs.sh         # once, local self-signed certificate
+cp deployments/scenarios/03-control-plane/.env.example \
+   deployments/scenarios/03-control-plane/.env
+# edit .env and set WASMGATE_CP_ADMIN_TOKEN
+docker compose -f deployments/scenarios/03-control-plane/compose.yml up -d --build
 
 curl -fsS http://127.0.0.1:9097/readyz
 # admin UI: http://127.0.0.1:9097/  (paste the token)
 ```
+
+The complete local stack (control plane + one data plane + nginx backend) is in
+[`01-local-demo`](../../deployments/scenarios/01-local-demo/).
 
 Migrations are applied by the PostgreSQL init directory on first start. For an
 existing database run them in order:
@@ -96,8 +104,23 @@ for f in control-plane/migrations/00*.sql; do
 done
 ```
 
-Without Docker, see [control plane((control-plane.md) for the environment
+Without Docker, see [control plane](control-plane.md) for the environment
 variables and the manual run.
+
+## Deployment scenarios
+
+Ready-made assets for five common layouts:
+
+| Scenario | Directory |
+|---|---|
+| Local demo (CP + one DP + backend) | [`deployments/scenarios/01-local-demo`](../../deployments/scenarios/01-local-demo/) |
+| Standalone data plane | [`deployments/scenarios/02-standalone-data-plane`](../../deployments/scenarios/02-standalone-data-plane/) |
+| Control plane only | [`deployments/scenarios/03-control-plane`](../../deployments/scenarios/03-control-plane/) |
+| Single-node systemd (CP + DP) | [`deployments/scenarios/04-single-node-systemd`](../../deployments/scenarios/04-single-node-systemd/) |
+| Data-plane fleet | [`deployments/scenarios/05-dp-fleet`](../../deployments/scenarios/05-dp-fleet/) |
+
+See [`deployments/README.md`](../../deployments/README.md) for the index and shared
+assets.
 
 ## Upgrades
 

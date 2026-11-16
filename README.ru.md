@@ -123,7 +123,7 @@ internal/controlplane/ клиент control plane (enroll, session, apply)
 control-plane/         C# control plane и тесты
 plugins/examples/      восемь эталонных плагинов (Rust, готовые .wasm)
 configs/               пример и showcase-конфигурация
-deployments/           systemd, Dockerfile'ы, compose, dev-сертификаты
+deployments/           сценарии развёртывания, Dockerfile'ы, systemd, dev-сертификаты
 benchmarks/            сырой вывод бенчмарков
 docs/en, docs/ru       документация на двух языках
 ```

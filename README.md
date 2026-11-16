@@ -122,7 +122,7 @@ internal/controlplane/ control-plane client (enroll, session, apply)
 control-plane/         C# control plane and tests
 plugins/examples/      eight reference plugins (Rust, prebuilt .wasm)
 configs/               example and showcase configurations
-deployments/           systemd unit, Dockerfiles, compose, dev certificates
+deployments/           deployment scenarios, Dockerfiles, systemd, dev certificates
 benchmarks/            raw benchmark output
 docs/en, docs/ru       product documentation in both languages
 ```
