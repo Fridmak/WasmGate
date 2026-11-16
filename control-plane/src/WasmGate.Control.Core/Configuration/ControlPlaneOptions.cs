@@ -87,13 +87,50 @@ public sealed class ControlPlaneOptions
     /// <summary>PEM private key of the agent CA. Stored with restrictive permissions.</summary>
     public string AgentCaKeyPath { get; init; } = "data/ca/agents-ca.key";
 
-    /// <summary>
-    /// Validity period of issued agent certificates. Defaults to 30 days.
-    /// </summary>
+    /// <summary>Validity period of issued agent certificates.</summary>
     /// <remarks>
-    /// Certificates are not renewed automatically. When one expires the agent must
-    /// enroll again with a fresh token, so keep this longer than the intended
-    /// lifetime of an agent.
+    /// Renewal is automatic: a data plane renews its certificate over mTLS before
+    /// this period ends, so the value bounds the exposure of a leaked key rather
+    /// than the lifetime of an agent.
     /// </remarks>
     public TimeSpan AgentCertificateLifetime { get; init; } = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// Bearer token required by the admin API when it listens on a non-loopback
+    /// address.
+    /// </summary>
+    /// <remarks>
+    /// Null or empty means "no authentication", which is accepted only for a
+    /// loopback or Unix-socket listener. The control plane refuses to start on a
+    /// non-loopback HTTP address without a token.
+    /// </remarks>
+    public string? AdminToken { get; init; }
+
+    /// <summary>Time an agent has to apply a release before the apply times out.</summary>
+    /// <remarks>
+    /// The value is sent with every <c>ApplyRelease</c>. It must cover the
+    /// download of the release artifacts on slow links; the default is generous
+    /// so a large plugin does not fail on a poor connection.
+    /// </remarks>
+    public TimeSpan ApplyTimeout { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Time after which a deployment that is still running is marked failed by the
+    /// background reaper.
+    /// </summary>
+    /// <remarks>
+    /// Covers the cases a result cannot: a control plane crash between storing the
+    /// deployment and dispatching it, or an agent that never reports back.
+    /// </remarks>
+    public TimeSpan DeploymentTimeout { get; init; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>Largest artifact accepted by the admin API, in bytes.</summary>
+    /// <remarks>
+    /// Must stay below what the data plane accepts. Uploads are base64-encoded in
+    /// JSON, so the request body limit is derived from this value.
+    /// </remarks>
+    public long MaxArtifactBytes { get; init; } = 64L * 1024 * 1024;
+
+    /// <summary>Largest configuration document accepted by the admin API, in bytes.</summary>
+    public int MaxConfigBytes { get; init; } = 1024 * 1024;
 }

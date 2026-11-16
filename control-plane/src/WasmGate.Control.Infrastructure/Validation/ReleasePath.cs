@@ -7,8 +7,10 @@ namespace WasmGate.Control.Infrastructure.Validation;
 /// <remarks>
 /// Install paths come from an API request, so they are treated as untrusted: a
 /// rooted path or a path that resolves outside the root is rejected instead of
-/// being normalized into place. The comparison of the resolved path is
-/// case-insensitive on Windows and ordinal elsewhere.
+/// being normalized into place. Paths are portable POSIX-style, so a backslash,
+/// a drive letter or a NUL byte is rejected on every platform; the same rule
+/// applies in the data plane, which must behave identically on Linux and
+/// Windows.
 /// </remarks>
 internal static class ReleasePath
 {
@@ -17,13 +19,38 @@ internal static class ReleasePath
     /// <param name="name">Artifact install path from the release.</param>
     /// <returns>Absolute target path inside <paramref name="root"/>.</returns>
     /// <exception cref="ArgumentException">
-    /// The path is rooted or escapes the release directory.
+    /// The path is empty, rooted, contains a backslash or a drive letter, or
+    /// escapes the release directory.
     /// </exception>
     /// <exception cref="NotSupportedException">
     /// The path contains characters unsupported by the platform.
     /// </exception>
     public static string Combine(string root, string name)
     {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Artifact path is required.", nameof(name));
+        }
+
+        if (name.Contains('\0'))
+        {
+            throw new ArgumentException($"Artifact path '{name}' contains a NUL byte.", nameof(name));
+        }
+
+        if (name.Contains('\\') || name.Contains(':'))
+        {
+            throw new ArgumentException(
+                $"Artifact path '{name}' must use '/' separators and no drive letters.",
+                nameof(name));
+        }
+
+        if (name.Any(c => c < ' ' || c == '\u007f'))
+        {
+            throw new ArgumentException(
+                $"Artifact path '{name}' contains a control character.",
+                nameof(name));
+        }
+
         if (Path.IsPathRooted(name))
         {
             throw new ArgumentException($"Artifact path '{name}' must be relative.", nameof(name));

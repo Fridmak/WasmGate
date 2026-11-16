@@ -91,6 +91,32 @@ public sealed class PostgresAgentCertificateRepository(NpgsqlDataSource dataSour
         });
     }
 
+    /// <inheritdoc />
+    public async Task<bool> IsActiveAsync(
+        Guid agentId,
+        string thumbprint,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM agent_certificates
+                WHERE agent_id = @agentId
+                  AND thumbprint = @thumbprint
+                  AND revoked_at IS NULL
+                  AND not_after > @now
+            )
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        return await connection.ExecuteScalarAsync<bool>(sql, new
+        {
+            agentId,
+            thumbprint,
+            now = PostgresTimestamps.ToParameter(DateTimeOffset.UtcNow),
+        });
+    }
+
     /// <summary>Maps one row of <c>agent_certificates</c> to a domain certificate.</summary>
     /// <param name="row">Row read from the database.</param>
     /// <returns>The mapped certificate.</returns>

@@ -1,5 +1,7 @@
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
+using WasmGate.Control.Core.Configuration;
+using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Api.Endpoints;
 
@@ -19,17 +21,25 @@ internal static class ArtifactEndpoints
     /// <param name="request">Artifact bytes, base64-encoded, and their metadata.</param>
     /// <param name="store">Content-addressed artifact store.</param>
     /// <param name="repository">Artifact metadata repository.</param>
+    /// <param name="options">Size limit for one artifact.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>
     /// The content hash and stored size; re-uploading the same bytes returns the
-    /// same hash and keeps the existing metadata.
+    /// same hash and keeps the existing metadata. Returns 400 for an unknown kind,
+    /// 413 when the artifact exceeds the limit.
     /// </returns>
     private static async Task<IResult> UploadArtifact(
         UploadArtifactRequest request,
         IArtifactStore store,
         IArtifactRepository repository,
+        ControlPlaneOptions options,
         CancellationToken cancellationToken)
     {
+        if (!Enum.IsDefined(request.Kind))
+        {
+            return Results.BadRequest($"Unknown artifact kind '{(int)request.Kind}'.");
+        }
+
         byte[] content;
         try
         {
@@ -38,6 +48,13 @@ internal static class ArtifactEndpoints
         catch (FormatException)
         {
             return Results.BadRequest("ContentBase64 is not valid base64.");
+        }
+
+        if (content.LongLength > options.MaxArtifactBytes)
+        {
+            return Results.Text(
+                $"Artifact exceeds the {options.MaxArtifactBytes} byte limit.",
+                statusCode: StatusCodes.Status413PayloadTooLarge);
         }
 
         await using var stream = new MemoryStream(content, writable: false);

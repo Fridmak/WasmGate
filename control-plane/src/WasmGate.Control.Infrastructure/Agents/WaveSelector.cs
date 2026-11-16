@@ -4,27 +4,39 @@ using WasmGate.Control.Core.Entities.Agents;
 namespace WasmGate.Control.Infrastructure.Agents;
 
 /// <summary>
-/// Matches agents against deployment wave selectors.
+/// A parsed deployment wave selector.
 /// </summary>
 /// <remarks>
 /// A selector is either the wildcard <c>*</c> or a JSON object of string label
-/// values, for example <c>{"region":"eu","role":"edge"}</c>. Every property must
-/// be present on the agent with an equal value; the comparison is ordinal and
-/// case-sensitive, and unknown labels simply do not match. Selectors are
-/// validated before a deployment starts, so <see cref="Matches"/> can treat a
-/// malformed selector as "no match" instead of throwing.
+/// values, for example <c>{"region":"eu","role":"edge"}</c>. It is parsed once,
+/// before a deployment is stored, so a selector that cannot be interpreted fails
+/// the request instead of silently matching nobody. Every property must be
+/// present on the agent with an equal value; the comparison is ordinal and
+/// case-sensitive.
 /// </remarks>
-internal static class WaveSelector
+internal sealed class WaveSelector
 {
     /// <summary>Wildcard that targets every agent.</summary>
     public const string All = "*";
 
-    /// <summary>Validates a selector before any command is sent.</summary>
+    private static readonly KeyValuePair<string, string>[] Wildcard = [];
+
+    private readonly bool _wildcard;
+    private readonly KeyValuePair<string, string>[] _labels;
+
+    private WaveSelector(bool wildcard, KeyValuePair<string, string>[] labels)
+    {
+        _wildcard = wildcard;
+        _labels = labels;
+    }
+
+    /// <summary>Parses and validates one selector.</summary>
     /// <param name="selector">Wildcard or a JSON object with string values.</param>
+    /// <returns>The parsed selector.</returns>
     /// <exception cref="InvalidOperationException">
     /// The selector is empty, is not valid JSON, or is not an object of strings.
     /// </exception>
-    public static void Validate(string selector)
+    public static WaveSelector Parse(string selector)
     {
         if (string.IsNullOrWhiteSpace(selector))
         {
@@ -33,7 +45,7 @@ internal static class WaveSelector
 
         if (selector == All)
         {
-            return;
+            return new WaveSelector(wildcard: true, Wildcard);
         }
 
         JsonDocument document;
@@ -56,6 +68,7 @@ internal static class WaveSelector
                     $"Wave selector '{selector}' must be '*' or a JSON object.");
             }
 
+            var labels = new List<KeyValuePair<string, string>>();
             foreach (var property in document.RootElement.EnumerateObject())
             {
                 if (property.Value.ValueKind != JsonValueKind.String)
@@ -63,44 +76,35 @@ internal static class WaveSelector
                     throw new InvalidOperationException(
                         $"Wave selector '{selector}' must contain only string label values.");
                 }
+
+                labels.Add(new KeyValuePair<string, string>(
+                    property.Name,
+                    property.Value.GetString()!));
             }
+
+            return new WaveSelector(wildcard: false, [.. labels]);
         }
     }
 
     /// <summary>Returns true when an agent belongs to the wave.</summary>
     /// <param name="agent">Agent to test.</param>
-    /// <param name="selector">Validated wildcard or JSON label selector.</param>
-    /// <returns>True when the agent matches the selector.</returns>
-    public static bool Matches(Agent agent, string selector)
+    /// <returns>True for the wildcard, or when every label matches.</returns>
+    public bool Matches(Agent agent)
     {
-        if (string.IsNullOrWhiteSpace(selector) || selector == All)
+        if (_wildcard)
         {
             return true;
         }
 
-        try
+        foreach (var (name, value) in _labels)
         {
-            using var document = JsonDocument.Parse(selector);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            if (!agent.Labels.TryGetValue(name, out var actual) ||
+                !string.Equals(actual, value, StringComparison.Ordinal))
             {
                 return false;
             }
-
-            foreach (var property in document.RootElement.EnumerateObject())
-            {
-                if (!agent.Labels.TryGetValue(property.Name, out var value) ||
-                    property.Value.ValueKind != JsonValueKind.String ||
-                    !string.Equals(value, property.Value.GetString(), StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
-            return true;
         }
-        catch (JsonException)
-        {
-            return false;
-        }
+
+        return true;
     }
 }

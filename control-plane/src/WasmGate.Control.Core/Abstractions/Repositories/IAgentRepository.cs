@@ -56,4 +56,16 @@ public interface IAgentRepository
         string? activeReleaseId,
         string? activeConfigSha256,
         CancellationToken cancellationToken);
+
+    /// <summary>Records an enrollment without changing the lifecycle state.</summary>
+    /// <param name="id">Agent identifier.</param>
+    /// <param name="seenAt">Time of the enrollment.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// Enrollment proves possession of a token, not that a control session is
+    /// open, so this must not mark the agent Online. Unlike
+    /// <see cref="UpsertAsync"/> it updates a single column and cannot overwrite
+    /// state written by a concurrent session.
+    /// </remarks>
+    Task RecordEnrollmentAsync(Guid id, DateTimeOffset seenAt, CancellationToken cancellationToken);
 }

@@ -23,6 +23,24 @@ public interface IDeploymentRepository
     /// <returns>Pending and running deployments, newest first.</returns>
     Task<IReadOnlyList<Deployment>> ListActiveAsync(string environment, CancellationToken cancellationToken);
 
+    /// <summary>Lists recent deployments of an environment, newest first.</summary>
+    /// <param name="environment">Logical environment name.</param>
+    /// <param name="limit">Maximum number of deployments to return.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>Deployments in any state.</returns>
+    Task<IReadOnlyList<Deployment>> ListAsync(
+        string environment,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>Lists running deployments created before a cutoff.</summary>
+    /// <param name="createdBefore">Upper bound for the creation time.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>Deployments the background reaper must close.</returns>
+    Task<IReadOnlyList<Deployment>> ListStaleRunningAsync(
+        DateTimeOffset createdBefore,
+        CancellationToken cancellationToken);
+
     /// <summary>Persists changed deployment status and timestamps.</summary>
     /// <param name="deployment">Deployment with updated state.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>

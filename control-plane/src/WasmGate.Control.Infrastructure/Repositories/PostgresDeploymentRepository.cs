@@ -139,6 +139,84 @@ public sealed class PostgresDeploymentRepository(NpgsqlDataSource dataSource) : 
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<Deployment>> ListAsync(
+        string environment,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const string headerSql = """
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            FROM deployments
+            WHERE environment = @environment
+            ORDER BY created_at DESC, id DESC
+            LIMIT @limit
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        var headers = (await connection.QueryAsync<DeploymentRow>(
+            headerSql,
+            new { environment, limit = Math.Clamp(limit, 1, 500) })).ToList();
+
+        return await WithWavesAsync(connection, headers, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<Deployment>> ListStaleRunningAsync(
+        DateTimeOffset createdBefore,
+        CancellationToken cancellationToken)
+    {
+        const string headerSql = """
+            SELECT id, environment, release_id, status, created_by, created_at, completed_at
+            FROM deployments
+            WHERE status = 'Running' AND created_at < @createdBefore
+            ORDER BY created_at
+            LIMIT 100
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        var headers = (await connection.QueryAsync<DeploymentRow>(
+            headerSql,
+            new { createdBefore = PostgresTimestamps.ToParameter(createdBefore) })).ToList();
+
+        return await WithWavesAsync(connection, headers, cancellationToken);
+    }
+
+    /// <summary>Loads the waves of the given deployment headers.</summary>
+    /// <param name="connection">Open connection used for the header query.</param>
+    /// <param name="headers">Deployment headers to complete.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    private static async Task<IReadOnlyList<Deployment>> WithWavesAsync(
+        NpgsqlConnection connection,
+        List<DeploymentRow> headers,
+        CancellationToken cancellationToken)
+    {
+        if (headers.Count == 0)
+        {
+            return [];
+        }
+
+        const string waveSql = """
+            SELECT deployment_id, "index", selector, status, started_at, completed_at
+            FROM deployment_waves
+            WHERE deployment_id = ANY(@ids)
+            ORDER BY deployment_id, "index"
+            """;
+
+        var ids = headers.Select(header => header.Id).ToArray();
+        var waves = await connection.QueryAsync<DeploymentWaveRow>(waveSql, new { ids });
+
+        var wavesByDeployment = waves
+            .GroupBy(wave => wave.DeploymentId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        return headers
+            .Select(header => ToDeployment(
+                header,
+                wavesByDeployment.GetValueOrDefault(header.Id) ?? []))
+            .ToList();
+    }
+
+    /// <inheritdoc />
     public async Task UpdateAsync(Deployment deployment, CancellationToken cancellationToken)
     {
         const string headerSql = """

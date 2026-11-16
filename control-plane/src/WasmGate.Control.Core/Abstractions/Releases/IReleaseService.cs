@@ -93,4 +93,23 @@ public interface IReleaseService
         Guid deploymentId,
         string actor,
         CancellationToken cancellationToken);
+
+    /// <summary>Marks a release as revoked so it can no longer be deployed.</summary>
+    /// <param name="environment">Logical environment name.</param>
+    /// <param name="releaseId">Release to revoke.</param>
+    /// <param name="actor">Identity of the principal revoking the release.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <remarks>
+    /// Revocation is a tombstone: the release row and its artifacts stay for
+    /// audit, but <see cref="DeployAsync"/> rejects it. Releases already applied
+    /// to an agent are not rolled back automatically.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// The release is missing or belongs to another environment.
+    /// </exception>
+    Task RevokeAsync(
+        string environment,
+        Guid releaseId,
+        string actor,
+        CancellationToken cancellationToken);
 }

@@ -51,6 +51,19 @@ internal sealed record ListenAddress
     /// <summary>Absolute socket path; null for a TCP address.</summary>
     public string? SocketPath { get; init; }
 
+    /// <summary>
+    /// True when the endpoint is reachable only from the local machine: a Unix
+    /// socket, <c>localhost</c> or a loopback IP address.
+    /// </summary>
+    /// <remarks>
+    /// The wildcard host is not local: it binds every interface.
+    /// </remarks>
+    public bool IsLocal =>
+        Kind == ListenAddressKind.UnixSocket ||
+        (Host is not null &&
+         (Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+          (IPAddress.TryParse(Host, out var address) && IPAddress.IsLoopback(address))));
+
     /// <summary>Parses and validates one listen address.</summary>
     /// <param name="value">Address in one of the supported forms.</param>
     /// <returns>The parsed address.</returns>

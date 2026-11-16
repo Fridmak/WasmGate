@@ -140,6 +140,26 @@ public sealed class PostgresAgentRepository(NpgsqlDataSource dataSource) : IAgen
         });
     }
 
+    /// <inheritdoc />
+    public async Task RecordEnrollmentAsync(
+        Guid id,
+        DateTimeOffset seenAt,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE agents
+            SET last_seen_at = @seenAt
+            WHERE id = @id
+            """;
+
+        await using var connection = await DataSource.OpenConnectionAsync(cancellationToken);
+        await connection.ExecuteAsync(sql, new
+        {
+            id,
+            seenAt = PostgresTimestamps.ToParameter(seenAt),
+        });
+    }
+
     /// <summary>Maps one row of <c>agents</c> to a domain agent.</summary>
     /// <param name="row">Row read from the database.</param>
     /// <returns>The mapped agent.</returns>

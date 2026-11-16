@@ -6,10 +6,11 @@ namespace WasmGate.Control.Core.Abstractions.Releases;
 /// Signs and verifies release manifests with a control-plane-owned key.
 /// </summary>
 /// <remarks>
-/// The signature protects the release record: the workflow verifies it before
-/// dispatching a deployment and refuses a release whose manifest no longer
-/// matches. Data planes verify the SHA-256 of the configuration and of every
-/// artifact they download, not this signature.
+/// The signature protects the release record and travels with the release: the
+/// control plane verifies it before dispatching a deployment, and the data plane
+/// verifies it again against the signed manifest before applying anything. A
+/// release whose manifest no longer matches is never applied, even if the
+/// database row was rewritten.
 /// </remarks>
 public interface IReleaseSigner
 {

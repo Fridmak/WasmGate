@@ -17,6 +17,8 @@ namespace WasmGate.Control.Core.Entities.Delivery;
 /// <param name="ConfigYaml">Release configuration body.</param>
 /// <param name="Artifacts">Artifacts the data plane must fetch for the release.</param>
 /// <param name="DeploymentId">Deployment that triggered the command.</param>
+/// <param name="Manifest">Canonical release manifest covered by the signature.</param>
+/// <param name="ManifestSignature">Detached signature over the manifest.</param>
 public sealed record AgentCommand(
     AgentCommandKind Kind,
     string? ReleaseId = null,
@@ -25,7 +27,9 @@ public sealed record AgentCommand(
     string? ConfigSha256 = null,
     string? ConfigYaml = null,
     IReadOnlyList<AgentArtifact>? Artifacts = null,
-    string? DeploymentId = null);
+    string? DeploymentId = null,
+    byte[]? Manifest = null,
+    byte[]? ManifestSignature = null);
 
 /// <summary>One artifact reference sent to a data plane.</summary>
 /// <param name="Id">Content-addressed artifact identifier.</param>

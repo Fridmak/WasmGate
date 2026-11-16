@@ -94,8 +94,14 @@ public sealed record CreateDeploymentResponse(Guid Id, DeploymentStatus Status);
 /// <param name="ActiveReleaseId">Release the agent reports as applied, if any.</param>
 public sealed record AgentSummary(Guid Id, string Name, AgentStatus Status, DateTimeOffset LastSeenAt, string? ActiveReleaseId);
 
+/// <summary>Result of issuing a replacement enrollment token.</summary>
+/// <param name="Token">Raw single-use token, shown only here.</param>
+/// <param name="ExpiresAt">When the token stops working.</param>
+public sealed record CreateAgentTokenResponse(string Token, DateTimeOffset ExpiresAt);
+
 [JsonSerializable(typeof(CreateAgentRequest))]
 [JsonSerializable(typeof(CreateAgentResponse))]
+[JsonSerializable(typeof(CreateAgentTokenResponse))]
 [JsonSerializable(typeof(CreateRegistrationTokenRequest))]
 [JsonSerializable(typeof(CreateRegistrationTokenResponse))]
 [JsonSerializable(typeof(UploadArtifactRequest))]

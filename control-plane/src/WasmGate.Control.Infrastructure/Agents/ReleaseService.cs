@@ -1,11 +1,14 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
+using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.Core.Entities.Releases;
+using WasmGate.Control.Infrastructure.Security;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
@@ -29,7 +32,9 @@ public sealed class ReleaseService(
     IAgentSessionRegistry sessions,
     IConfigValidator validator,
     IReleaseSigner signer,
-    IAuditLog audit) : IReleaseService
+    IAuditLog audit,
+    ControlPlaneOptions options,
+    ILogger<ReleaseService> logger) : IReleaseService
 {
     /// <inheritdoc />
     public async Task<ConfigVersion> CreateConfigAsync(
@@ -155,10 +160,9 @@ public sealed class ReleaseService(
 
         await EnsureSignatureAsync(release, cancellationToken);
 
-        foreach (var selector in waveSelectors)
-        {
-            WaveSelector.Validate(selector);
-        }
+        var parsedSelectors = waveSelectors.Count == 0
+            ? new List<WaveSelector> { WaveSelector.Parse(WaveSelector.All) }
+            : waveSelectors.Select(WaveSelector.Parse).ToList();
 
         var config = await configs.FindAsync(release.ConfigVersionId, cancellationToken)
                      ?? throw new InvalidOperationException("Configuration version not found.");
@@ -197,7 +201,7 @@ public sealed class ReleaseService(
 
         foreach (var wave in deployment.Waves)
         {
-            var targets = allAgents.Where(agent => WaveSelector.Matches(agent, wave.Selector)).ToList();
+            var targets = allAgents.Where(agent => parsedSelectors[wave.Index].Matches(agent)).ToList();
             if (targets.Count == 0)
             {
                 wave.Status = DeploymentWaveStatus.Skipped;
@@ -207,6 +211,7 @@ public sealed class ReleaseService(
             wave.Status = DeploymentWaveStatus.Running;
             wave.StartedAt = DateTimeOffset.UtcNow;
 
+            var delivered = 0;
             foreach (var agent in targets)
             {
                 if (!sessions.TryGet(agent.Id, out var session))
@@ -221,20 +226,34 @@ public sealed class ReleaseService(
                             AgentCommandKind.ApplyRelease,
                             ReleaseId: release.Id.ToString("D"),
                             Reason: "deployment",
-                            TimeoutMs: 30000,
+                            TimeoutMs: ApplyTimeoutMs(),
                             ConfigSha256: config.Sha256,
                             ConfigYaml: config.Yaml,
                             Artifacts: artifactRefs,
-                            DeploymentId: deployment.Id.ToString("D")),
+                            DeploymentId: deployment.Id.ToString("D"),
+                            Manifest: ReleaseManifest.Canonicalize(release),
+                            ManifestSignature: Convert.FromBase64String(release.Signature!)),
                         cancellationToken);
+                    delivered++;
                     commandsSent++;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    // The agent will reconnect and the next deployment can
-                    // retry. A failed send is not a failed apply: the agent may
-                    // never receive the command.
+                    logger.LogWarning(
+                        ex,
+                        "failed to send release {ReleaseId} to agent {AgentId} for deployment {DeploymentId}",
+                        release.Id,
+                        agent.Id,
+                        deployment.Id);
                 }
+            }
+
+            if (delivered == 0)
+            {
+                // Targets matched but nobody received the command: mark the wave as
+                // skipped instead of leaving it running forever.
+                wave.Status = DeploymentWaveStatus.Skipped;
+                wave.CompletedAt = DateTimeOffset.UtcNow;
             }
         }
 
@@ -287,6 +306,11 @@ public sealed class ReleaseService(
         }
 
         var previous = releaseList[currentIndex + 1];
+
+        // Verify before changing anything: a rollback to a release with a broken
+        // signature must leave the current deployment untouched.
+        await EnsureSignatureAsync(previous, cancellationToken);
+
         deployment.Status = DeploymentStatus.RolledBack;
         deployment.CompletedAt = DateTimeOffset.UtcNow;
         await deployments.UpdateAsync(deployment, cancellationToken);
@@ -300,6 +324,35 @@ public sealed class ReleaseService(
 
         await AuditAsync(actor, "deployment.rollback", deploymentId.ToString("D"), cancellationToken);
     }
+
+    /// <inheritdoc />
+    public async Task RevokeAsync(
+        string environment,
+        Guid releaseId,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var release = await releases.FindAsync(releaseId, cancellationToken)
+                      ?? throw new InvalidOperationException("Release not found.");
+
+        if (!string.Equals(release.Environment, environment, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Release belongs to environment '{release.Environment}', not '{environment}'.");
+        }
+
+        if (release.Status == ReleaseStatus.Revoked)
+        {
+            return;
+        }
+
+        await releases.SetStatusAsync(releaseId, ReleaseStatus.Revoked, cancellationToken);
+        await AuditAsync(actor, "release.revoke", releaseId.ToString("D"), cancellationToken);
+    }
+
+    /// <summary>Apply timeout in milliseconds, bounded for the protobuf field.</summary>
+    private int ApplyTimeoutMs() =>
+        (int)Math.Clamp(options.ApplyTimeout.TotalMilliseconds, 1_000, int.MaxValue);
 
     /// <summary>Verifies the release manifest before anything is sent to agents.</summary>
     /// <param name="release">Release loaded from the database.</param>

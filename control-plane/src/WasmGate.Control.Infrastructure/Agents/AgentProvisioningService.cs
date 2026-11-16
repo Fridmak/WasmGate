@@ -70,7 +70,12 @@ public sealed class AgentProvisioningService(
         await agents.UpsertAsync(agent, cancellationToken);
         await AuditAsync(actor, "agent.create", agent.Id.ToString("D"), cancellationToken);
 
-        var token = await IssueTokenAsync(agent.Id, null, 1, TimeSpan.FromMinutes(15), cancellationToken);
+        var token = await IssueTokenAsync(
+            agent.Id,
+            null,
+            1,
+            DateTimeOffset.UtcNow + TimeSpan.FromMinutes(15),
+            cancellationToken);
         await AuditAsync(actor, "token.create", agent.Id.ToString("D"), cancellationToken);
 
         return new AgentProvisioning(agent.Id, token);
@@ -245,10 +250,9 @@ public sealed class AgentProvisioningService(
         else
         {
             // Enrollment proves the identity, not that a control session is open:
-            // keep the current status and only record the contact. The session
-            // handler moves the agent to Online when the Hello arrives.
-            existing.LastSeenAt = now;
-            await agents.UpsertAsync(existing, cancellationToken);
+            // record only the contact and leave status and release to the session
+            // handler. A single-column update cannot overwrite concurrent state.
+            await agents.RecordEnrollmentAsync(agentGuid, now, cancellationToken);
         }
 
         await certificates.AddAsync(
@@ -273,23 +277,87 @@ public sealed class AgentProvisioningService(
         return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
     }
 
+    /// <inheritdoc />
+    public async Task<RegistrationToken> IssueEnrollmentTokenAsync(
+        Guid agentId,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        if (await agents.FindAsync(agentId, cancellationToken) is null)
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Agent is not registered.");
+        }
+
+        var ttl = TimeSpan.FromMinutes(15);
+        var expiresAt = DateTimeOffset.UtcNow + ttl;
+        var token = await IssueTokenAsync(agentId, null, 1, expiresAt, cancellationToken);
+        await AuditAsync(actor, "token.create", agentId.ToString("D"), cancellationToken);
+
+        return new RegistrationToken(token, 1, expiresAt);
+    }
+
+    /// <inheritdoc />
+    public async Task<EnrollmentResult> RenewAsync(
+        Guid agentId,
+        string csrPem,
+        CancellationToken cancellationToken)
+    {
+        if (await agents.FindAsync(agentId, cancellationToken) is null)
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidRequest,
+                "Agent is not registered.");
+        }
+
+        var notAfter = DateTimeOffset.UtcNow + options.AgentCertificateLifetime;
+        var issued = await authority.IssueAsync(
+            csrPem,
+            AgentNaming.CertificateCommonName(agentId),
+            notAfter,
+            cancellationToken);
+
+        await certificates.AddAsync(
+            new AgentCertificate
+            {
+                AgentId = agentId,
+                SerialNumber = issued.SerialNumber,
+                Thumbprint = issued.Thumbprint,
+                Pem = issued.CertificatePem,
+                NotBefore = issued.NotBefore,
+                NotAfter = issued.NotAfter,
+            },
+            cancellationToken);
+
+        await agents.RecordEnrollmentAsync(agentId, DateTimeOffset.UtcNow, cancellationToken);
+        await AuditAsync(
+            AgentNaming.CertificateCommonName(agentId),
+            "agent.renew",
+            agentId.ToString("D"),
+            cancellationToken);
+
+        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
+        return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
+    }
+
     /// <summary>Human-readable description of the agent-name rules used in errors.</summary>
     private static string AgentNamingValidNameHint =>
         $"1-{AgentNaming.MaxLength} ASCII letters, digits, '.', '_' or '-', " +
         "starting and ending with a letter or digit";
 
-    /// <summary>Creates and stores a one-time token bound to one agent.</summary>
+    /// <summary>Creates and stores a single-use token bound to one agent.</summary>
     /// <param name="agentId">Agent the token is bound to.</param>
-    /// <param name="namePrefix">Unused for per-agent tokens.</param>
+    /// <param name="namePrefix">Optional name prefix, normally null for per-agent tokens.</param>
     /// <param name="maxUses">Maximum number of uses.</param>
-    /// <param name="ttl">Token lifetime.</param>
+    /// <param name="expiresAt">Absolute expiry time of the token.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The raw token value.</returns>
     private async Task<string> IssueTokenAsync(
         Guid agentId,
         string? namePrefix,
         int maxUses,
-        TimeSpan ttl,
+        DateTimeOffset expiresAt,
         CancellationToken cancellationToken)
     {
         var raw = GenerateToken();
@@ -300,7 +368,7 @@ public sealed class AgentProvisioningService(
                 AgentId = agentId,
                 NamePrefix = namePrefix,
                 MaxUses = maxUses,
-                ExpiresAt = DateTimeOffset.UtcNow + ttl,
+                ExpiresAt = expiresAt,
             },
             cancellationToken);
         return raw;

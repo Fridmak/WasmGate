@@ -115,6 +115,12 @@ public sealed class GrpcAgentSession : IAgentSession
                 TimeoutMs = command.TimeoutMs,
                 DeploymentId = command.DeploymentId ?? string.Empty,
                 Artifacts = { command.Artifacts?.Select(ToArtifactRef) ?? [] },
+                Manifest = command.Manifest is null
+                    ? Google.Protobuf.ByteString.Empty
+                    : Google.Protobuf.ByteString.CopyFrom(command.Manifest),
+                ManifestSignature = command.ManifestSignature is null
+                    ? Google.Protobuf.ByteString.Empty
+                    : Google.Protobuf.ByteString.CopyFrom(command.ManifestSignature),
             },
         },
         AgentCommandKind.Drain => new ControlMessage

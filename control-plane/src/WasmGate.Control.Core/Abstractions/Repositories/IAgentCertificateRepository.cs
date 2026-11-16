@@ -22,6 +22,17 @@ public interface IAgentCertificateRepository
         Guid agentId,
         CancellationToken cancellationToken);
 
+    /// <summary>Checks that a certificate is known, active and not expired.</summary>
+    /// <param name="agentId">Agent identifier.</param>
+    /// <param name="thumbprint">SHA-256 fingerprint, upper-case hex, of the DER certificate.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>True when the control plane issued the certificate and has not revoked it.</returns>
+    /// <remarks>
+    /// Used at session start, because the TLS layer cannot consult a CRL: a
+    /// revoked certificate must stop working without waiting for its expiry.
+    /// </remarks>
+    Task<bool> IsActiveAsync(Guid agentId, string thumbprint, CancellationToken cancellationToken);
+
     /// <summary>Marks one certificate of an agent as revoked.</summary>
     /// <param name="agentId">Agent identifier.</param>
     /// <param name="serialNumber">Certificate serial number.</param>

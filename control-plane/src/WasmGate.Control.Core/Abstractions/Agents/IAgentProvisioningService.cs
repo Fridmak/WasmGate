@@ -1,3 +1,4 @@
+using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
 
 namespace WasmGate.Control.Core.Abstractions.Agents;
@@ -65,6 +66,41 @@ public interface IAgentProvisioningService
         string agentId,
         string? name,
         string token,
+        string csrPem,
+        CancellationToken cancellationToken);
+
+    /// <summary>Issues a fresh single-use enrollment token for an existing agent.</summary>
+    /// <param name="agentId">Registered agent identifier.</param>
+    /// <param name="actor">Identity of the principal issuing the token.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>The raw token, its single use and its expiry.</returns>
+    /// <remarks>
+    /// Recovers an agent whose token was lost before the first enrollment. The
+    /// token is not tied to the certificate lifecycle; renewal uses
+    /// <see cref="RenewAsync"/> instead.
+    /// </remarks>
+    /// <exception cref="EnrollmentException">The agent is not registered.</exception>
+    Task<RegistrationToken> IssueEnrollmentTokenAsync(
+        Guid agentId,
+        string actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>Renews the client certificate of an already authenticated agent.</summary>
+    /// <param name="agentId">Agent identifier taken from the client certificate.</param>
+    /// <param name="csrPem">PEM certificate signing request with a new key.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>The new certificate, the agent CA and its expiry.</returns>
+    /// <remarks>
+    /// Authorisation comes from the existing mTLS identity, not from a token: the
+    /// gRPC layer verifies that the certificate CN names the requested agent.
+    /// The expired certificate is replaced, so renewal must happen before it
+    /// expires; a data plane does this automatically.
+    /// </remarks>
+    /// <exception cref="EnrollmentException">
+    /// The agent is unknown or the CSR is invalid.
+    /// </exception>
+    Task<EnrollmentResult> RenewAsync(
+        Guid agentId,
         string csrPem,
         CancellationToken cancellationToken);
 }

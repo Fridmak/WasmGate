@@ -23,8 +23,8 @@ public sealed class Release
 
     /// <summary>Signature over the canonical release manifest.</summary>
     /// <remarks>
-    /// Produced on creation. Data planes verify the configuration and artifact
-    /// hashes, not this signature.
+    /// Produced on creation and sent to data planes in <c>ApplyRelease</c>, which
+    /// verify it against the manifest before applying the release.
     /// </remarks>
     public string? Signature { get; set; }
 

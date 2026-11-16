@@ -58,6 +58,11 @@ public static class StartUp
                 AgentCaCertPath = Env("WASMGATE_CP_AGENT_CA_CERT") ?? "data/ca/agents-ca.crt",
                 AgentCaKeyPath = Env("WASMGATE_CP_AGENT_CA_KEY") ?? "data/ca/agents-ca.key",
                 AgentCertificateLifetime = EnvDuration("WASMGATE_CP_AGENT_CERT_TTL", TimeSpan.FromDays(30)),
+                AdminToken = Env("WASMGATE_CP_ADMIN_TOKEN"),
+                ApplyTimeout = EnvDuration("WASMGATE_CP_APPLY_TIMEOUT", TimeSpan.FromMinutes(5)),
+                DeploymentTimeout = EnvDuration("WASMGATE_CP_DEPLOYMENT_TIMEOUT", TimeSpan.FromMinutes(15)),
+                MaxArtifactBytes = EnvLong("WASMGATE_CP_MAX_ARTIFACT_BYTES", 64L * 1024 * 1024),
+                MaxConfigBytes = (int)EnvLong("WASMGATE_CP_MAX_CONFIG_BYTES", 1024 * 1024),
                 GrpcTls = new ControlPlaneTlsOptions
                 {
                     CertificatePath = Env("WASMGATE_CP_GRPC_TLS_CERT"),
@@ -126,5 +131,18 @@ public static class StartUp
     {
         var value = Env(name);
         return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed) ? parsed : defaultValue;
+    }
+
+    /// <summary>Reads a positive integer environment variable, falling back to a default.</summary>
+    /// <param name="name">Environment variable name.</param>
+    /// <param name="defaultValue">Value used when the variable is unset, invalid or not positive.</param>
+    /// <returns>Parsed value or <paramref name="defaultValue"/>.</returns>
+    private static long EnvLong(string name, long defaultValue)
+    {
+        var value = Env(name);
+        return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+               parsed > 0
+            ? parsed
+            : defaultValue;
     }
 }

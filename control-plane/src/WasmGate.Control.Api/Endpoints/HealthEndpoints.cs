@@ -22,10 +22,15 @@ internal static class HealthEndpoints
         return app;
     }
 
-    /// <summary>Reports readiness: the process answers and PostgreSQL is reachable.</summary>
+    /// <summary>Reports readiness: the process answers, PostgreSQL is reachable and the schema exists.</summary>
     /// <param name="dataSource">Connection pool for the control-plane database.</param>
     /// <param name="cancellationToken">Cancels the probe.</param>
-    /// <returns><c>ok</c> when a trivial query succeeds, otherwise HTTP 503.</returns>
+    /// <returns><c>ok</c> when a trivial query against the schema succeeds, otherwise HTTP 503.</returns>
+    /// <remarks>
+    /// The probe reads from <c>agents</c> instead of running <c>SELECT 1</c>, so a
+    /// process started before the migrations are applied reports 503 instead of
+    /// looking healthy.
+    /// </remarks>
     private static async Task<IResult> CheckReady(
         NpgsqlDataSource dataSource,
         CancellationToken cancellationToken)
@@ -34,7 +39,7 @@ internal static class HealthEndpoints
         {
             await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT 1";
+            command.CommandText = "SELECT 1 FROM agents LIMIT 1";
             command.CommandTimeout = 2;
             await command.ExecuteScalarAsync(cancellationToken);
             return Results.Text("ok");

@@ -1,7 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Grpc.Core;
 using WasmGate.Control.Core.Abstractions.Agents;
-using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
@@ -19,7 +18,7 @@ namespace WasmGate.Control.Api.Services;
 /// <list type="number">
 ///   <item>read the first message and require a <c>Hello</c>;</item>
 ///   <item>validate the agent ID with <see cref="TryParseHello"/>;</item>
-///   <item>when TLS with client certificates is enabled, compare the certificate identity with the Hello using <see cref="TryGetClientAgentId"/>;</item>
+///   <item>when TLS with client certificates is enabled, compare the certificate identity with the Hello using <c>AgentCertificateIdentity.TryGetAgentId</c>;</item>
 ///   <item>persist the Hello fields with <see cref="PersistHelloAsync"/>;</item>
 ///   <item>create a <see cref="GrpcAgentSession"/> and register it;</item>
 ///   <item>close the displaced session returned by the registry (takeover);</item>
@@ -30,6 +29,7 @@ namespace WasmGate.Control.Api.Services;
 public sealed class AgentControlService(
     IAgentSessionRegistry registry,
     IAgentRepository agents,
+    IAgentCertificateRepository certificates,
     IDeploymentRepository deployments,
     IAuditLog audit,
     ControlPlaneOptions options,
@@ -71,7 +71,7 @@ public sealed class AgentControlService(
                 "The first message must be a Hello with a valid agent_id GUID."));
         }
 
-        EnsureCertificateMatches(context, agentId);
+        await EnsureCertificateMatchesAsync(context, agentId, callCancellation);
         await PersistHelloAsync(hello!, agentId, callCancellation);
 
         var session = new GrpcAgentSession(agentId, responseStream, context);
@@ -156,38 +156,60 @@ public sealed class AgentControlService(
     }
 
     /// <summary>
-    /// Enforces the mTLS identity when the control plane terminates TLS and
-    /// requires client certificates.
+    /// Enforces the mTLS identity and the revocation state when the control plane
+    /// terminates TLS.
     /// </summary>
     /// <param name="context">Current gRPC call context.</param>
     /// <param name="agentId">Agent identifier reported in the Hello.</param>
+    /// <param name="cancellationToken">Cancels the certificate lookup.</param>
     /// <remarks>
-    /// The TLS layer only requests the certificate, so this check is the
-    /// enforcement point: it rejects a call without a certificate and a call whose
-    /// certificate CN names a different agent.
+    /// The TLS layer only requests the certificate, so this is the enforcement
+    /// point: the certificate must be present when required, its CN must name the
+    /// Hello agent, and it must still be active. The revocation lookup exists
+    /// because the TLS stack cannot consult a CRL.
     /// </remarks>
     /// <exception cref="RpcException">
-    /// No client certificate is present, or its CN names another agent.
+    /// The certificate is missing, names another agent, or was revoked or expired.
     /// </exception>
-    private void EnsureCertificateMatches(ServerCallContext context, Guid agentId)
+    private async Task EnsureCertificateMatchesAsync(
+        ServerCallContext context,
+        Guid agentId,
+        CancellationToken cancellationToken)
     {
-        if (options.GrpcTls.CertificatePath is null || !options.GrpcTls.RequireClientCertificate)
+        if (options.GrpcTls.CertificatePath is null)
         {
             return;
         }
 
-        if (!TryGetClientAgentId(context, out var certificateAgentId))
+        var certificate = AgentCertificateIdentity.GetCertificate(context);
+        if (certificate is null)
         {
+            if (!options.GrpcTls.RequireClientCertificate)
+            {
+                return;
+            }
+
             throw new RpcException(new Status(
                 StatusCode.Unauthenticated,
                 "A client certificate with CN=wasmgate-agent:<guid> is required."));
         }
 
-        if (certificateAgentId != agentId)
+        if (!AgentNaming.TryParseCertificateCommonName(
+                certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false),
+                out var certificateAgentId) ||
+            certificateAgentId != agentId)
         {
             throw new RpcException(new Status(
                 StatusCode.PermissionDenied,
                 "The client certificate does not match the Hello agent_id."));
+        }
+
+        var thumbprint = AgentCertificateIdentity.Thumbprint(certificate)!;
+        if (!await certificates.IsActiveAsync(agentId, thumbprint, cancellationToken))
+        {
+            throw new RpcException(new Status(
+                StatusCode.Unauthenticated,
+                "The client certificate was revoked or has expired."));
         }
     }
 
@@ -230,23 +252,6 @@ public sealed class AgentControlService(
         return hello is not null &&
                !string.IsNullOrWhiteSpace(hello.AgentId) &&
                Guid.TryParse(hello.AgentId, out agentId);
-    }
-
-    /// <summary>Extracts the agent identity from the client certificate subject CN.</summary>
-    /// <param name="context">Current gRPC call context.</param>
-    /// <param name="agentId">Agent identifier encoded in the certificate.</param>
-    /// <returns>True when a certificate with a <c>wasmgate-agent:&lt;guid&gt;</c> CN is present.</returns>
-    private static bool TryGetClientAgentId(ServerCallContext context, out Guid agentId)
-    {
-        agentId = Guid.Empty;
-        var certificate = context.GetHttpContext()?.Connection.ClientCertificate;
-        if (certificate is null)
-        {
-            return false;
-        }
-
-        var commonName = certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
-        return AgentNaming.TryParseCertificateCommonName(commonName, out agentId);
     }
 
     /// <summary>Persists the static and reported fields from a Hello message.</summary>
@@ -304,7 +309,9 @@ public sealed class AgentControlService(
             : existing.Labels.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         foreach (var pair in hello.Labels)
         {
-            labels[pair.Key] = pair.Value;
+            // Operator labels win: an agent must not be able to move itself into
+            // another deployment wave by reporting a different value.
+            labels.TryAdd(pair.Key, pair.Value);
         }
 
         var agent = new Agent
