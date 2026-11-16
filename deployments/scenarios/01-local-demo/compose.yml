@@ -1,0 +1,127 @@
+# Local demo: PostgreSQL + control plane + one data plane + nginx backend.
+#
+#   ./deployments/scripts/dev-certs.sh
+#   cp deployments/scenarios/01-local-demo/.env.example \
+#      deployments/scenarios/01-local-demo/.env
+#   # set WASMGATE_CP_ADMIN_TOKEN
+#   docker compose -f deployments/scenarios/01-local-demo/compose.yml up -d --build
+#   # create an agent in the UI, put its id/token in .env, then:
+#   docker compose -f deployments/scenarios/01-local-demo/compose.yml --profile dp up -d
+#
+# The data plane is behind the "dp" profile because it needs an enrollment
+# token and an agent id created through the admin API.
+name: wasmgate-demo
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wasmgate
+      POSTGRES_PASSWORD: wasmgate
+      POSTGRES_DB: wasmgate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 001 → 006, applied once when the volume is initialized.
+      - ../../../control-plane/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wasmgate -d wasmgate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  control-plane:
+    build:
+      context: ../../..
+      dockerfile: deployments/docker/control-plane.Dockerfile
+    restart: unless-stopped
+    environment:
+      WASMGATE_CP_POSTGRES: "Host=postgres;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate"
+      WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
+      WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"
+      WASMGATE_CP_GRPC_LISTEN: "https://0.0.0.0:9096"
+      WASMGATE_CP_GRPC_TLS_CERT: "/certs/server.crt"
+      WASMGATE_CP_GRPC_TLS_KEY: "/certs/server.key"
+      WASMGATE_CP_GRPC_CLIENT_CA: "/data/ca/agents-ca.crt"
+      WASMGATE_CP_ADMIN_TOKEN: "${WASMGATE_CP_ADMIN_TOKEN:?set WASMGATE_CP_ADMIN_TOKEN in .env}"
+    ports:
+      - "127.0.0.1:9096:9096"
+      - "127.0.0.1:9097:9097"
+    volumes:
+      - cpdata:/data
+      - ../../certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  demo-backend:
+    image: nginx:alpine
+    restart: unless-stopped
+
+  # Waits until the control plane has created its CA/signing key and answers
+  # /readyz (DB + schema), so the agent does not start before the release public
+  # key exists.
+  cp-ready:
+    image: alpine:3.22
+    profiles: ["dp"]
+    depends_on:
+      - control-plane
+    command:
+      - sh
+      - -c
+      - until wget -qO- http://control-plane:9097/readyz >/dev/null; do sleep 1; done
+
+  # The control plane rewrites /data/wasmgate.yaml on deploy, so seed the
+  # writable volume once instead of bind-mounting the config read-only.
+  dp-init:
+    image: alpine:3.22
+    profiles: ["dp"]
+    volumes:
+      - dpdata:/data
+      - ./config/wasmgate.yaml:/seed/wasmgate.yaml:ro
+    command:
+      - sh
+      - -c
+      - test -f /data/wasmgate.yaml || cp /seed/wasmgate.yaml /data/wasmgate.yaml; chown -R 10001:10001 /data
+
+  data-plane:
+    build:
+      context: ../../..
+      dockerfile: deployments/docker/data-plane.Dockerfile
+    restart: unless-stopped
+    profiles: ["dp"]
+    depends_on:
+      cp-ready:
+        condition: service_completed_successfully
+      dp-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - dpdata:/data
+      - ../../certs/server.crt:/certs/server.crt:ro
+      - cpdata:/cpdata:ro
+    command:
+      - -config
+      - /data/wasmgate.yaml
+      - -cp
+      - https://control-plane:9096
+      - -cp-server-ca
+      - /certs/server.crt
+      - -cp-release-key
+      - /cpdata/keys/release-signing.key.pub
+      - -cp-token
+      - ${WASMGATE_ENROLL_TOKEN:-}
+      - -cp-agent-id
+      - ${WASMGATE_AGENT_ID:-}
+      - -cp-name
+      - dp-01
+      - -cp-labels
+      - role=demo
+      - -cp-state
+      - /data/agent
+
+volumes:
+  pgdata:
+  cpdata:
+  dpdata:

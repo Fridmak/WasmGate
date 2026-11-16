@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Creates a self-signed TLS certificate for the compose demo.
+# Creates a self-signed TLS certificate for the local Docker scenarios.
 #
-#   ./deployments/dev-certs.sh
+#   ./deployments/scripts/dev-certs.sh
 #
-# The control plane serves the agent gRPC endpoint over TLS, and agents trust
-# this certificate through -cp-server-ca. The key is development material: never
-# use it outside a local environment.
+# The certificate is written to deployments/certs/ and is shared by every
+# compose scenario. The control plane serves its agent gRPC endpoint over TLS,
+# and agents trust this certificate through -cp-server-ca. This is development
+# material: never use it outside a local environment.
 set -euo pipefail
 
-dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/certs"
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/certs"
 mkdir -p "$dir"
 
 if [[ -f "$dir/server.crt" && -f "$dir/server.key" ]]; then

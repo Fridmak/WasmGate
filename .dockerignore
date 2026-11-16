@@ -22,3 +22,8 @@ control-plane/.vs
 
 # Go data-plane local state created by the control-plane client
 state
+
+# Local/generated material that should never enter a build context
+local/
+plugins/examples/target/
+deployments/certs/

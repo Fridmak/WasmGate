@@ -1,0 +1,80 @@
+# Local demo
+
+Everything on one machine:
+
+- PostgreSQL;
+- control plane and admin UI;
+- one data plane;
+- nginx demo backend.
+
+## Start the control plane and backend
+
+```bash
+./deployments/scripts/dev-certs.sh
+
+cp deployments/scenarios/01-local-demo/.env.example \
+   deployments/scenarios/01-local-demo/.env
+# edit .env: set WASMGATE_CP_ADMIN_TOKEN
+
+docker compose -f deployments/scenarios/01-local-demo/compose.yml up -d --build
+
+curl -fsS http://127.0.0.1:9097/readyz
+```
+
+Open `http://127.0.0.1:9097/` and paste the token.
+
+## Create an agent
+
+In the UI:
+
+1. Environment: `prod` (or create `demo`).
+2. Agents → New agent.
+3. Name: `dp-01`; Environment: `prod`; Labels: `role=demo`.
+4. Copy the agent id and the one-time enrollment token.
+
+Put them into `.env`:
+
+```dotenv
+WASMGATE_AGENT_ID=<agent-id>
+WASMGATE_ENROLL_TOKEN=<token>
+```
+
+Then start the data plane:
+
+```bash
+docker compose -f deployments/scenarios/01-local-demo/compose.yml --profile dp up -d
+```
+
+Check:
+
+```bash
+curl http://127.0.0.1:8080/
+docker compose -f deployments/scenarios/01-local-demo/compose.yml logs -f data-plane
+```
+
+## Create the first release
+
+The data plane already runs the seed config, but the managed path should be
+exercised through the control plane:
+
+1. Copy [`config/wasmgate.yaml`](config/wasmgate.yaml) into
+   **Configurations → New configuration**.
+2. **Releases → New release**, choose that configuration, create it with no
+   artifacts (or add plugins if you want).
+3. **Deployments → New deployment**, choose the release and selector `*`.
+4. Refresh the deployments page; the status should become `Succeeded`.
+5. `curl http://127.0.0.1:8080/` still returns the nginx page.
+
+The agent downloads the release, rewrites `/data/wasmgate.yaml` and reloads. From
+now on, change the configuration in the UI instead of editing the seed file.
+
+## Notes
+
+- The data plane is under the `dp` profile because it needs a token created
+  after the control plane starts.
+- The control plane data volume `cpdata` is mounted read-only into the data
+  plane to read `release-signing.key.pub`.
+- `dpdata` is a writable volume; the control plane rewrites the configuration
+  there.
+- For a CP-only deployment see [`../03-control-plane`](../03-control-plane). For
+  many agents see [`../05-dp-fleet`](../05-dp-fleet).

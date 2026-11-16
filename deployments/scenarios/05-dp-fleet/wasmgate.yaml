@@ -1,0 +1,16 @@
+version: 1
+admin_addr: "127.0.0.1:9099"
+
+listeners:
+  - name: public
+    addr: "0.0.0.0:8080"
+    upstream_pool: backend
+    max_conns: 5000
+    idle_timeout: 60s
+
+pools:
+  backend:
+    balance: round_robin
+    # Must resolve from every data-plane container/VM. Use the same config for
+    # all replicas; 127.0.0.1 is only correct when each node has a local backend.
+    servers: ["backend.internal:9000"]

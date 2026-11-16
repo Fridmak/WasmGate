@@ -1,0 +1,31 @@
+[Unit]
+Description=WasmGate data plane managed by the control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wasmgate
+Group=wasmgate
+WorkingDirectory=/var/lib/wasmgate
+EnvironmentFile=/etc/wasmgate/agent.env
+ExecStart=/usr/local/bin/wasmgate -config /etc/wasmgate/wasmgate.yaml -cp https://127.0.0.1:9096 -cp-server-ca /etc/wasmgate/cp-server.crt -cp-release-key /etc/wasmgate/release-signing.key.pub -cp-token ${WASMGATE_CP_TOKEN} -cp-agent-id ${WASMGATE_CP_AGENT_ID} -cp-name ${WASMGATE_CP_NAME} -cp-labels ${WASMGATE_CP_LABELS} -cp-state /var/lib/wasmgate/agent -cp-heartbeat 10s -shutdown-grace 10s
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+
+# Bind low ports without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+# The control plane rewrites the config and installs artifacts here.
+ReadWritePaths=/etc/wasmgate /var/lib/wasmgate
+
+[Install]
+WantedBy=multi-user.target

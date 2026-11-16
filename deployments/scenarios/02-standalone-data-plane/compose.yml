@@ -1,0 +1,30 @@
+# Standalone data plane + demo backend.
+#
+#   docker compose -f deployments/scenarios/02-standalone-data-plane/compose.yml up --build
+#   curl http://127.0.0.1:8080/
+#
+# This scenario has no control plane: the proxy reads wasmgate.yaml at startup
+# and reloads it on SIGHUP.
+name: wasmgate-standalone
+
+services:
+  backend:
+    image: nginx:alpine
+    restart: unless-stopped
+
+  data-plane:
+    build:
+      context: ../../..
+      dockerfile: deployments/docker/data-plane.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./wasmgate.yaml:/etc/wasmgate/wasmgate.yaml:ro
+    command:
+      - -config
+      - /etc/wasmgate/wasmgate.yaml
+      - -shutdown-grace
+      - 10s

@@ -1,0 +1,29 @@
+[Unit]
+Description=WasmGate control plane (gRPC + admin UI)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=wasmgate
+Group=wasmgate
+WorkingDirectory=/var/lib/wasmgate-control
+EnvironmentFile=/etc/wasmgate-control/cp.env
+ExecStart=/opt/wasmgate-control/wasmgate-control
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/wasmgate-control
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

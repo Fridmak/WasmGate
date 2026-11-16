@@ -1,0 +1,14 @@
+version: 1
+admin_addr: "127.0.0.1:9099"
+
+listeners:
+  - name: public
+    addr: "0.0.0.0:8080"
+    upstream_pool: backend
+    max_conns: 5000
+    idle_timeout: 60s
+
+pools:
+  backend:
+    balance: round_robin
+    servers: ["127.0.0.1:9000"]
