@@ -28,8 +28,10 @@ internal sealed class ControlMetrics
     /// <param name="status">Response status code.</param>
     public void RecordHttp(string method, int status)
     {
+        // Bound the label set: clients may send arbitrary custom methods, and an
+        // unbounded dictionary would grow once per spelling.
         _http.AddOrUpdate(
-            new HttpMetricKey(method.ToUpperInvariant(), status),
+            new HttpMetricKey(NormalizeMethod(method), status),
             1,
             static (_, current) => current + 1);
     }
@@ -85,7 +87,7 @@ internal sealed class ControlMetrics
             Stopwatch.GetElapsedTime(_startedAt).TotalSeconds);
         Gauge(builder, "wasmgate_control_working_set_bytes",
             "Resident working set of the control-plane process.", null,
-            Process.GetCurrentProcess().WorkingSet64);
+            Environment.WorkingSet);
         Gauge(builder, "wasmgate_control_gc_heap_bytes",
             "Managed heap size reported by GC.GetTotalMemory(false).", null,
             GC.GetTotalMemory(forceFullCollection: false));
@@ -126,6 +128,17 @@ internal sealed class ControlMetrics
     /// <summary>Formats a floating-point sample without locale-dependent separators.</summary>
     private static string Format(double value) =>
         value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    /// <summary>Maps a request method to a bounded label value.</summary>
+    private static string NormalizeMethod(string method)
+    {
+        var upper = method.ToUpperInvariant();
+        return upper switch
+        {
+            "GET" or "HEAD" or "POST" or "PUT" or "PATCH" or "DELETE" or "OPTIONS" => upper,
+            _ => "OTHER",
+        };
+    }
 
     /// <summary>Escapes a Prometheus label value.</summary>
     private static string EscapeLabel(string value) =>

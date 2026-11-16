@@ -15,6 +15,18 @@ internal static class AdminToken
 {
     private const string Scheme = "Bearer ";
 
+    /// <summary>True for paths that require the admin token.</summary>
+    /// <param name="path">Request path.</param>
+    /// <returns>True for <c>/api</c> and <c>/metrics</c> subtrees.</returns>
+    /// <remarks>
+    /// Segment-aware matching also covers <c>/metrics/</c>, which ASP.NET Core
+    /// routes to the same endpoint as <c>/metrics</c>; an exact comparison would
+    /// leave that spelling unauthenticated.
+    /// </remarks>
+    public static bool IsProtectedPath(PathString path) =>
+        path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWithSegments("/metrics", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Adds the token check to every <c>/api</c> and <c>/metrics</c> request when a token is configured.</summary>
     /// <param name="app">Application whose pipeline is extended.</param>
     /// <param name="token">Configured token, or null/empty to disable authentication.</param>
@@ -26,11 +38,9 @@ internal static class AdminToken
         }
 
         var expected = Encoding.UTF8.GetBytes(token);
-        var metricsPath = new PathString("/metrics");
 
         app.UseWhen(
-            context => context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) ||
-                       context.Request.Path.Equals(metricsPath),
+            context => IsProtectedPath(context.Request.Path),
             branch => branch.Use(async (context, next) =>
             {
                 if (IsAuthorized(context.Request.Headers.Authorization, expected))

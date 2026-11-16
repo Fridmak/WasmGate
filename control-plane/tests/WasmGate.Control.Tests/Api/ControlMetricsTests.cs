@@ -13,6 +13,7 @@ public sealed class ControlMetricsTests
         metrics.RecordHttp("GET", 200);
         metrics.RecordHttp("GET", 401);
         metrics.RecordHttp("post", 500);
+        metrics.RecordHttp("PROPFIND", 405);
 
         var text = metrics.Render(
         [
@@ -24,6 +25,7 @@ public sealed class ControlMetricsTests
         Assert.Contains("wasmgate_control_http_requests_total{method=\"GET\",status=\"200\"} 1", text);
         Assert.Contains("wasmgate_control_http_requests_total{method=\"GET\",status=\"401\"} 1", text);
         Assert.Contains("wasmgate_control_http_requests_total{method=\"POST\",status=\"500\"} 1", text);
+        Assert.Contains("wasmgate_control_http_requests_total{method=\"OTHER\",status=\"405\"} 1", text);
         Assert.Contains("wasmgate_control_agents{environment=\"prod\",status=\"Online\"} 1", text);
         Assert.Contains("wasmgate_control_agents{environment=\"prod\",status=\"Offline\"} 1", text);
         Assert.Contains("wasmgate_control_agents{environment=\"staging\",status=\"Online\"} 1", text);

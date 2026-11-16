@@ -71,12 +71,10 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 var controlMetrics = app.Services.GetRequiredService<ControlMetrics>();
-var metricsPath = new PathString("/metrics");
 app.Use(async (context, next) =>
 {
     await next(context);
-    if (context.Request.Path.StartsWithSegments("/api") ||
-        context.Request.Path.Equals(metricsPath))
+    if (AdminToken.IsProtectedPath(context.Request.Path))
     {
         controlMetrics.RecordHttp(context.Request.Method, context.Response.StatusCode);
     }
