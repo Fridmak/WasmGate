@@ -3,7 +3,7 @@ using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Delivery;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Hosting;
 
 /// <summary>
 /// Closes deployments that can no longer receive a result.

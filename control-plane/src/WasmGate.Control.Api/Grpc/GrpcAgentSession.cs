@@ -1,12 +1,11 @@
 using Grpc.Core;
 using WasmGate.Control.Core.Abstractions.Agents;
-using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.V1;
 using CoreArtifactKind = WasmGate.Control.Core.Entities.Releases.ArtifactKind;
 using ProtoArtifactKind = WasmGate.Control.V1.ArtifactKind;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Grpc;
 
 /// <summary>
 /// One live gRPC control stream, created by <see cref="AgentControlService.Session"/>

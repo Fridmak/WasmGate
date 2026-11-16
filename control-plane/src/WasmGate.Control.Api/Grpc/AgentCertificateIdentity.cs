@@ -3,7 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using Grpc.Core;
 using WasmGate.Control.Core.Entities.Agents;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Grpc;
 
 /// <summary>
 /// Reads the agent identity from the client certificate presented to a gRPC

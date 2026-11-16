@@ -1,9 +1,10 @@
+using WasmGate.Control.Api.Contracts;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Endpoints.Agents;
 
 /// <summary>Agent provisioning, enrollment-token and certificate endpoints.</summary>
 internal static class AgentEndpoints

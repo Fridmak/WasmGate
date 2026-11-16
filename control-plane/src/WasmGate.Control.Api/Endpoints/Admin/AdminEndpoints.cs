@@ -1,4 +1,11 @@
-namespace WasmGate.Control.Api.Endpoints;
+using WasmGate.Control.Api.Endpoints.Agents;
+using WasmGate.Control.Api.Endpoints.Artifacts;
+using WasmGate.Control.Api.Endpoints.Audit;
+using WasmGate.Control.Api.Endpoints.Environments;
+using WasmGate.Control.Api.Endpoints.Health;
+using WasmGate.Control.Api.Endpoints.Releases;
+
+namespace WasmGate.Control.Api.Endpoints.Admin;
 
 /// <summary>
 /// Composition of the admin HTTP API: health probes, artifact upload,

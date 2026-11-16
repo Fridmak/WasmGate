@@ -1,9 +1,9 @@
+using WasmGate.Control.Api.Contracts;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
-using WasmGate.Control.Core.Entities.Releases;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Endpoints.Artifacts;
 
 /// <summary>Artifact upload and listing endpoints.</summary>
 internal static class ArtifactEndpoints

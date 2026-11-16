@@ -2,15 +2,18 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Npgsql;
 using WasmGate.Control.Api;
 using WasmGate.Control.Api.Endpoints;
+using WasmGate.Control.Api.Endpoints.Admin;
+using WasmGate.Control.Api.Grpc;
+using WasmGate.Control.Api.Hosting;
 using WasmGate.Control.Api.Infrastructure.Networking;
 using WasmGate.Control.Api.Infrastructure.Security;
-using WasmGate.Control.Api.Services;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Infrastructure.Agents;
 using WasmGate.Control.Infrastructure.Repositories;
 using WasmGate.Control.Infrastructure.Security;
+using AdminJsonContext = WasmGate.Control.Api.Contracts.AdminJsonContext;
 
 // Composition root of the control plane: options, logging, persistence, gRPC
 // services and the admin HTTP API. Everything is registered as a singleton,

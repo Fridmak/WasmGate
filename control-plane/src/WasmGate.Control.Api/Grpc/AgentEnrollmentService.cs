@@ -5,7 +5,7 @@ using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
 using WasmGate.Control.V1;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Grpc;
 
 /// <summary>
 /// Issues and renews the mTLS certificate of a data plane.

@@ -6,7 +6,7 @@ using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.V1;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Grpc;
 
 /// <summary>
 /// Streams content-addressed release artifacts to enrolled data planes.

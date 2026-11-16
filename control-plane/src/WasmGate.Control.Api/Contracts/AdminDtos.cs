@@ -4,7 +4,7 @@ using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.Core.Entities.Releases;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Contracts;
 
 /// <summary>Request to create one agent.</summary>
 /// <param name="Name">Unique agent name.</param>

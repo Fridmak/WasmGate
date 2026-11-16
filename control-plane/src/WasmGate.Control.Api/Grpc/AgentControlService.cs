@@ -8,7 +8,7 @@ using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.V1;
 
-namespace WasmGate.Control.Api.Services;
+namespace WasmGate.Control.Api.Grpc;
 
 /// <summary>
 /// Bidirectional control stream for data-plane agents.

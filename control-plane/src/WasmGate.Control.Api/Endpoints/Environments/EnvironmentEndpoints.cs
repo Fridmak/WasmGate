@@ -1,7 +1,8 @@
+using WasmGate.Control.Api.Contracts;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Entities;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Endpoints.Environments;
 
 /// <summary>Environment catalog endpoints used by the admin picker.</summary>
 internal static class EnvironmentEndpoints

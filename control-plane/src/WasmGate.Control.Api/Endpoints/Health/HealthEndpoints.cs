@@ -1,6 +1,6 @@
 using Npgsql;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Endpoints.Health;
 
 /// <summary>
 /// Liveness and readiness probes.

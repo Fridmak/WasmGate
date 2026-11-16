@@ -1,6 +1,6 @@
 using WasmGate.Control.Core.Abstractions.Repositories;
 
-namespace WasmGate.Control.Api.Endpoints;
+namespace WasmGate.Control.Api.Endpoints.Audit;
 
 /// <summary>Audit trail endpoint.</summary>
 internal static class AuditEndpoints
