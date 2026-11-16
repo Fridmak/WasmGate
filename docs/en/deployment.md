@@ -21,7 +21,8 @@ Always validate before shipping:
 ```
 
 `-validate` parses the YAML, compiles every referenced `.wasm`, checks TLS files
-and exits non-zero on any problem.
+and exits non-zero on any problem. Runtime secrets such as
+`WASMGATE_ADMIN_TOKEN` are not required for validation.
 
 ## File layout
 

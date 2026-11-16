@@ -81,6 +81,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// -validate is a configuration/plugin check, not a runtime start. Do it
+	// before resolving runtime secrets so a valid cluster config can be
+	// validated without WASMGATE_ADMIN_TOKEN.
+	if *validateOnly {
+		log.Info("configuration is valid", "path", *configPath)
+		return nil
+	}
+
 	var adminToken string
 	if cfg.AdminAddr != "" {
 		adminToken = os.Getenv("WASMGATE_ADMIN_TOKEN")
@@ -97,10 +106,6 @@ func run() error {
 		if cfg.AdminAllowRemote && adminToken == "" {
 			return fmt.Errorf("admin_allow_remote requires admin_token_file or WASMGATE_ADMIN_TOKEN")
 		}
-	}
-	if *validateOnly {
-		log.Info("configuration is valid", "path", *configPath)
-		return nil
 	}
 
 	srv := proxy.NewServer(log, rt, metrics)
