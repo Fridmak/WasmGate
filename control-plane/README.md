@@ -59,12 +59,13 @@ control-plane/
     │   ├── Validation/            Go validator adapter
     │   ├── Security/              ECDSA signer and agent CA
     │   └── Agents/                provisioning, release workflow, session registry
-    └── WasmGate.Control.Api/
-        ├── Protos/agent_control.proto   source of the Go bindings (`make proto`)
-        ├── Infrastructure/Networking/   listen address parsing, TLS, Kestrel wiring
-        ├── Services/                    gRPC endpoints and the session wrapper
-        ├── Endpoints/                   admin HTTP API, one file per resource group
-        └── Program.cs                   composition root
+    ├── WasmGate.Control.Api/
+    │   ├── Protos/agent_control.proto   source of the Go bindings (`make proto`)
+    │   ├── Infrastructure/Networking/   listen address parsing, TLS, Kestrel wiring
+    │   ├── Services/                    gRPC endpoints and the session wrapper
+    │   ├── Endpoints/                   admin HTTP API, one file per resource group
+    │   └── Program.cs                   composition root
+    └── tests/WasmGate.Control.Tests/    unit tests for the pure helpers
 ```
 
 ## What is already wired
@@ -82,22 +83,38 @@ control-plane/
 - An agent certificate authority (`PkiCertificateAuthority`) generates or loads
   the agent CA and signs data-plane certificate requests.
 - The `AgentEnrollment.Enroll` gRPC service issues the first certificate from a
-  one-time enrollment token; no manual `openssl` is needed.
+  one-time enrollment token; `AgentEnrollment.Renew` replaces it over mTLS before
+  it expires. No manual `openssl` is needed.
+- The session rejects a certificate whose fingerprint is revoked, so revocation
+  works without a CRL.
 - `IAgentProvisioningService` creates agents and issues per-agent or shared
-  registration tokens, so hundreds of data planes can be onboarded by CI.
-- Admin HTTP endpoints: `POST /api/v1/agents`, `POST /api/v1/registration-tokens`,
-  `POST /api/v1/artifacts`, `POST/GET /api/v1/configs`, `POST/GET /api/v1/releases`,
-  `POST /api/v1/deployments`, `POST /api/v1/deployments/{id}/rollback`,
-  `GET /api/v1/agents`, `GET /api/v1/audit`, plus `/healthz` (liveness) and
-  `/readyz` (PostgreSQL probe).
+  registration tokens, so hundreds of data planes can be onboarded by CI. A lost
+  token can be reissued with `POST /api/v1/agents/{id}/tokens`.
+- Admin HTTP endpoints: `POST /api/v1/agents`, `POST /api/v1/agents/{id}/tokens`,
+  `POST /api/v1/agents/{id}/certificates/{serial}/revoke`,
+  `POST /api/v1/registration-tokens`, `POST /api/v1/artifacts`,
+  `POST/GET /api/v1/configs`, `POST/GET /api/v1/releases`,
+  `POST /api/v1/releases/{id}/revoke`, `POST/GET /api/v1/deployments`,
+  `POST /api/v1/deployments/{id}/rollback`, `GET /api/v1/agents`,
+  `GET /api/v1/audit`, plus `/healthz` (liveness) and `/readyz` (database and
+  schema probe).
+- Admin API authentication with `WASMGATE_CP_ADMIN_TOKEN` (bearer token,
+  constant-time comparison). It is mandatory when the admin endpoint is not on
+  loopback; plaintext gRPC on a network address is refused outright.
 - Artifact store, Go validator adapter, ECDSA release signer and the complete
-  release/deploy/rollback workflow.
+  release/deploy/rollback workflow. The release signature is verified before
+  dispatch, and data planes verify it again over the signed manifest.
+- A background reaper closes deployments that never receive a result.
+- Upload limits: 64 MiB per artifact, 1 MiB per configuration, 64 artifacts per
+  release; the Kestrel request body limit is derived from the artifact limit.
 - Domain entities for agents, config versions, artifacts, releases, deployments,
   waves, audit events, certificates and enrollment tokens.
 - Repository, artifact store, validator, signer and session-registry interfaces.
 - Dapper.AOT + Npgsql wiring. `NpgsqlDataSource` is registered in `Program.cs`,
   and every repository is PostgreSQL-backed (`Postgres*` in
   `Infrastructure/Repositories`). Apply the migrations before the first request.
+- Unit tests for the pure helpers (`ListenAddress`, `ReleasePath`, `WaveSelector`,
+  signed release manifest) in `tests/WasmGate.Control.Tests`, built and run by CI.
 
 ## Dapper.AOT query pattern
 
@@ -133,12 +150,11 @@ Two rules that are easy to get wrong:
 
 Future work, not accidental gaps:
 
-- Deployment health gates, approvals, OIDC/RBAC.
+- Deployment health gates and approvals; OIDC/RBAC (the admin API only supports a
+  static bearer token).
 - Heartbeat timeout/reaper: an agent is marked `Offline` when its session ends,
   but a half-open connection keeps it `Online` until the transport fails.
-- Certificate renewal and revocation checks when a session starts.
-- Data planes verify artifact and configuration hashes, not the release signature:
-  the signature is checked by the control plane before dispatch.
+- Retention/cleanup of old artifacts, configuration versions and audit events.
 - `GoConfigValidator` needs a built `wasmgate` binary. Validation stays in the Go
   data plane; the C# service never duplicates the schema.
 
@@ -205,16 +221,24 @@ Environment variables:
 | `WASMGATE_CP_WASMGATE_BIN` | `wasmgate` — absolute, relative to the CP working directory, or a bare command resolved via `PATH` |
 | `WASMGATE_CP_VALIDATE_TIMEOUT` | `00:01:00` — maximum time for one `wasmgate -validate` run; invariant `TimeSpan` format |
 | `WASMGATE_CP_SIGNING_KEY` | unset — absolute, or relative to the CP working directory |
+| `WASMGATE_CP_ADMIN_TOKEN` | unset — bearer token for the admin API; **required** when `WASMGATE_CP_HTTP_LISTEN` is not loopback/Unix |
+| `WASMGATE_CP_APPLY_TIMEOUT` | `00:05:00` — time an agent has to apply a release, sent in `ApplyRelease` |
+| `WASMGATE_CP_DEPLOYMENT_TIMEOUT` | `00:15:00` — after this a `Running` deployment is failed by the reaper |
+| `WASMGATE_CP_MAX_ARTIFACT_BYTES` | `67108864` (64 MiB) — upload limit for one artifact |
+| `WASMGATE_CP_MAX_CONFIG_BYTES` | `1048576` (1 MiB) — upload limit for a configuration document |
 
 Listen addresses are validated strictly:
 
 - a port is always required; `http://localhost` is rejected instead of silently
   binding port 80;
 - `https://` requires `WASMGATE_CP_GRPC_TLS_CERT` and `WASMGATE_CP_GRPC_TLS_KEY`;
-- `http://` is plaintext; setting TLS files for an `http://` address is rejected;
+- `http://` is plaintext; setting TLS files for an `http://` address is rejected,
+  and a plaintext address must stay on loopback;
 - `tcp://` is rejected; use `http://`, `https://` or `unix://`;
 - path, query, fragment and userinfo are rejected;
 - `*` binds all interfaces, `localhost` binds both loopback families;
+- a non-loopback admin address requires `WASMGATE_CP_ADMIN_TOKEN`, otherwise the
+  process refuses to start;
 - a Unix socket path must be absolute, its parent directory must exist, and a
   stale socket is not deleted automatically. Use systemd `RuntimeDirectory=` (or
   remove the stale socket manually).
@@ -233,9 +257,32 @@ CN=wasmgate-agent:<agent-guid>
 The `AgentId` inside the gRPC `Hello` must match that CN. A certificate for one
 agent cannot register another agent's ID.
 
+The session also checks that the presented certificate is still active in
+`agent_certificates`: revoking a fingerprint through
+`POST /api/v1/agents/{id}/certificates/{serial}/revoke` blocks the next session
+without waiting for expiry.
+
 TLS files must be PEM. For local development without certificates, use
-`http://127.0.0.1` and keep the endpoint on loopback; the service logs a warning
-that client certificate authentication is disabled.
+`http://127.0.0.1` and keep the endpoint on loopback; the service refuses to
+start with plaintext gRPC on a non-loopback address, because anyone who could
+reach it would be able to open a session as any agent.
+
+### Certificate lifecycle
+
+1. **Enroll** — the data plane sends a CSR with a one-time token. The token is
+   consumed atomically before the certificate is issued.
+2. **Renew** — a data plane renews over its existing mTLS identity
+   (`AgentEnrollment.Renew`) when the certificate is older than the renewal
+   window, 7 days before expiry by default. The key is rotated with the
+   certificate.
+3. **Expire** — an expired certificate cannot authenticate, so renewal must
+   happen before expiry. If it does expire, the data plane needs an enrollment
+   token and re-enrolls.
+4. **Revoke** — the certificate row keeps its revocation timestamp and the
+   session check rejects it.
+
+The agent CA key (`WASMGATE_CP_AGENT_CA_KEY`) is the root of this chain. Losing it
+invalidates every issued certificate; back it up with the database.
 
 ### Onboarding many data planes
 

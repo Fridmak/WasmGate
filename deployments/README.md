@@ -118,28 +118,42 @@ Control-plane образ — Native AOT (`clang` + `zlib` на этапе сбо
 CGO-free бинарник на alpine с CA-сертификатами для mTLS.
 
 Локальный стенд (PostgreSQL + control plane; миграции применяются при создании
-volume):
+volume). Control plane работает с TLS и требует admin-токен, поэтому сначала
+создаются сертификаты и секрет:
 
 ```bash
+./deployments/dev-certs.sh
+export WASMGATE_CP_ADMIN_TOKEN=$(openssl rand -hex 24)
 docker compose -f deployments/docker-compose.yml up --build
 curl -fsS http://127.0.0.1:9097/healthz
 curl -fsS http://127.0.0.1:9097/readyz
+# admin API: токен обязателен
+curl -fsS -H "Authorization: Bearer $WASMGATE_CP_ADMIN_TOKEN" \
+  http://127.0.0.1:9097/api/v1/agents
 ```
 
+Порты опубликованы только на `127.0.0.1`: gRPC снаружи контейнера доступен по
+TLS, admin API — только с хоста. `deployments/certs` — локальная разработка, в
+репозиторий не попадает.
+
 Data plane в compose намеренно не стартует: ему нужен одноразовый enrollment
-token и agent id из admin API. Команда `docker run` — в комментарии к
-`deployments/docker-compose.yml`, порядок onboarding — в
+token, agent id и публичный ключ подписи релизов. Команда `docker run` — в
+комментарии к `deployments/docker-compose.yml`, порядок onboarding — в
 [`control-plane/AGENT-PROTOCOL.md`](../control-plane/AGENT-PROTOCOL.md).
 
 Для облака:
 
 - **Пробы.** Liveness — `/healthz` (процесс отвечает), readiness — `/readyz`
-  (проверяет PostgreSQL и отдаёт 503, пока база недоступна).
+  (проверяет PostgreSQL и наличие схемы, отдаёт 503, пока база недоступна).
 - **Конфигурация.** Только env: `WASMGATE_CP_*`. Данные, ключи CA, подпись
   релизов и артефакты — в `/data` (volume).
+- **Admin API.** Вне loopback обязателен `WASMGATE_CP_ADMIN_TOKEN`; без него
+  процесс не стартует. Токен передавайте секретом оркестратора, не в образе.
+- **Plaintext gRPC запрещён** на не-loopback адресе: либо TLS, либо loopback/unix.
 - **Миграции** — отдельный шаг деплоя: `psql ... -f control-plane/migrations/00N_*.sql`
   (файлы идемпотентны), либо init-каталог PostgreSQL, как в compose.
-- **Порты.** `9096/tcp` — gRPC (HTTP/2) для агентов, `9097/tcp` — admin HTTP.
+- **Порты.** `9096/tcp` — gRPC (HTTP/2) для агентов, `9097/tcp` — admin HTTP
+  (только loopback или приватная сеть).
 - **TLS.** Смонтируйте PEM-сертификат и ключ, задайте
   `WASMGATE_CP_GRPC_TLS_CERT/KEY` и `WASMGATE_CP_GRPC_LISTEN=https://...`;
   клиентский CA — `WASMGATE_CP_GRPC_CLIENT_CA`.
