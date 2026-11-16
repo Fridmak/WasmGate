@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"time"
 )
 
 // File names used inside Options.StateDir.
@@ -31,11 +32,13 @@ const certificateCommonPrefix = "wasmgate-agent:"
 var guidPattern = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// identity is the enrolled agent: its id and the mTLS client certificate.
+// identity is the enrolled agent: its id, the mTLS client certificate and the
+// certificate expiry used to decide when to renew.
 type identity struct {
 	AgentID     string
 	Certificate tls.Certificate
 	CAPEM       []byte
+	NotAfter    time.Time
 }
 
 // errIncompleteIdentity reports a state directory where only some of the
@@ -43,7 +46,8 @@ type identity struct {
 var errIncompleteIdentity = errors.New("control plane: incomplete agent identity")
 
 // loadIdentity reads the enrolled identity from dir. It returns (nil, nil) when
-// the agent has not enrolled yet.
+// the agent has not enrolled yet. Expiry is reported through identity.NotAfter
+// rather than enforced here: the caller decides whether to renew or re-enroll.
 func loadIdentity(dir string) (*identity, error) {
 	idPath := filepath.Join(dir, agentIDFile)
 	certPath := filepath.Join(dir, agentCertFile)
@@ -86,7 +90,7 @@ func loadIdentity(dir string) (*identity, error) {
 		return nil, fmt.Errorf("control plane: read agent CA: %w", err)
 	}
 
-	return &identity{AgentID: agentID, Certificate: cert, CAPEM: caPEM}, nil
+	return &identity{AgentID: agentID, Certificate: cert, CAPEM: caPEM, NotAfter: leaf.NotAfter}, nil
 }
 
 // saveIdentity writes the identity files, creating dir when needed.

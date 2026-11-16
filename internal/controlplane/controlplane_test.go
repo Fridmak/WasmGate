@@ -41,6 +41,12 @@ func TestSafeJoin(t *testing.T) {
 		"../escape.wasm",
 		"a/../../escape.wasm",
 		"..\\escape.wasm",
+		`plugins\..\..\escape.wasm`,
+		"C:/escape.wasm",
+		`C:\escape.wasm`,
+		`\\server\share\escape.wasm`,
+		"/etc/passwd",
+		"plugins/\x00.wasm",
 	}
 	for _, name := range rejected {
 		if _, err := safeJoin(base, name); err == nil {
@@ -189,19 +195,38 @@ func TestNewKeyAndCSR(t *testing.T) {
 }
 
 func TestOptionsNormalize(t *testing.T) {
-	opts := Options{Endpoint: "http://127.0.0.1:9096", Insecure: true, ConfigPath: "wasmgate.yaml"}
+	opts := Options{
+		Endpoint:   "http://127.0.0.1:9096",
+		Insecure:   true,
+		ConfigPath: "wasmgate.yaml",
+		ReleaseKey: "release-signing.key.pub",
+	}
 	if err := opts.normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if opts.Heartbeat != DefaultHeartbeat {
 		t.Fatalf("Heartbeat = %v, want %v", opts.Heartbeat, DefaultHeartbeat)
 	}
+	if opts.RenewBefore != DefaultRenewBefore {
+		t.Fatalf("RenewBefore = %v, want %v", opts.RenewBefore, DefaultRenewBefore)
+	}
 	if len(opts.AbiVersions) == 0 || opts.Name == "" || opts.StateDir == "" {
 		t.Fatalf("defaults were not applied: %+v", opts)
 	}
 
-	if err := (&Options{Endpoint: "http://127.0.0.1:9096", ConfigPath: "x.yaml"}).normalize(); err == nil {
+	if err := (&Options{
+		Endpoint:   "http://127.0.0.1:9096",
+		ConfigPath: "x.yaml",
+		ReleaseKey: "key.pub",
+	}).normalize(); err == nil {
 		t.Fatal("normalize accepted http:// without Insecure")
+	}
+
+	if err := (&Options{
+		Endpoint:   "https://cp.example:9096",
+		ConfigPath: "x.yaml",
+	}).normalize(); err == nil {
+		t.Fatal("normalize accepted options without a release key")
 	}
 	if err := (&Options{Endpoint: "ftp://host:1", ConfigPath: "x.yaml"}).normalize(); err == nil {
 		t.Fatal("normalize accepted an unsupported scheme")

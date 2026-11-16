@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,8 +23,9 @@ import (
 // broken or hostile control plane.
 const maxArtifactSize = 256 << 20 // 256 MiB
 
-// applyRelease downloads the release artifacts, validates the configuration,
-// reloads the data plane and reports the outcome to the control plane.
+// applyRelease verifies the release signature, downloads the artifacts,
+// validates the configuration, reloads the data plane and reports the outcome
+// to the control plane.
 func (a *Agent) applyRelease(
 	ctx context.Context,
 	conn *grpc.ClientConn,
@@ -50,13 +52,23 @@ func (a *Agent) applyRelease(
 		return result
 	}
 
+	// The signature is checked before the document is parsed: an unsigned or
+	// altered release must not even reach the configuration parser.
+	if err := verifyRelease(a.releaseKey, release); err != nil {
+		return fail(fmt.Errorf("verify release: %w", err))
+	}
+
 	cfg, dir, err := a.prepareConfig(release)
 	if err != nil {
 		return fail(err)
 	}
 
+	// Remember every artifact this release overwrites, so a rejected reload can
+	// put the previous release back on disk.
+	restorer := &artifactRestorer{}
 	for _, artifact := range release.GetArtifacts() {
-		if err := a.downloadArtifact(applyCtx, conn, dir, artifact); err != nil {
+		if err := a.downloadArtifact(applyCtx, conn, dir, artifact, restorer); err != nil {
+			restorer.restore()
 			return fail(fmt.Errorf("artifact %q: %w", artifact.GetName(), err))
 		}
 	}
@@ -65,6 +77,7 @@ func (a *Agent) applyRelease(
 	// the file on disk consistent.
 	previous, previousReadErr := os.ReadFile(a.opts.ConfigPath) // #nosec G304 -- operator-configured path
 	if err := writeFileAtomic(a.opts.ConfigPath, release.GetConfigYaml()); err != nil {
+		restorer.restore()
 		return fail(fmt.Errorf("write configuration: %w", err))
 	}
 
@@ -75,8 +88,11 @@ func (a *Agent) applyRelease(
 				a.log.Error("failed to restore the previous configuration file", "err", restoreErr)
 			}
 		}
+		restorer.restore()
 		return fail(fmt.Errorf("reload: %w", err))
 	}
+
+	restorer.discard()
 
 	sum := sha256.Sum256(release.GetConfigYaml())
 	next := appliedState{
@@ -128,12 +144,14 @@ func (a *Agent) prepareConfig(release *wasmgatepb.ApplyRelease) (*config.Config,
 }
 
 // downloadArtifact streams one content-addressed artifact next to the
-// configuration file and verifies its SHA-256 before publishing it.
+// configuration file, verifies its SHA-256 and size, and remembers the file it
+// replaces so a failed reload can put the previous release back on disk.
 func (a *Agent) downloadArtifact(
 	ctx context.Context,
 	conn *grpc.ClientConn,
 	dir string,
 	ref *wasmgatepb.ArtifactRef,
+	restorer *artifactRestorer,
 ) error {
 	id := strings.ToLower(strings.TrimSpace(ref.GetId()))
 	if !isSha256(id) {
@@ -200,29 +218,102 @@ func (a *Agent) downloadArtifact(
 		return fmt.Errorf("size mismatch: got %d bytes, want %d", size, want)
 	}
 
+	if err := restorer.save(target); err != nil {
+		return fmt.Errorf("back up the previous artifact: %w", err)
+	}
 	if err := publishFile(tempName, target); err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}
 	return nil
 }
 
+// artifactRestorer remembers the files a release replaced so the previous state
+// can be restored when the reload fails. A restore is best effort: the error
+// that caused it is what the operator needs to see.
+type artifactRestorer struct {
+	entries []artifactBackup
+}
+
+// artifactBackup is one overwritten file; backup is empty when the file did not
+// exist before the release.
+type artifactBackup struct {
+	target string
+	backup string
+}
+
+// save moves an existing target aside before it is overwritten.
+func (r *artifactRestorer) save(target string) error {
+	entry := artifactBackup{target: target}
+
+	switch _, err := os.Stat(target); {
+	case err == nil:
+		entry.backup = fmt.Sprintf("%s.wasmgate-backup-%d", target, len(r.entries))
+		if err := os.Rename(target, entry.backup); err != nil {
+			return err
+		}
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return err
+	}
+
+	r.entries = append(r.entries, entry)
+	return nil
+}
+
+// restore puts every remembered file back, newest first.
+func (r *artifactRestorer) restore() {
+	for i := len(r.entries) - 1; i >= 0; i-- {
+		entry := r.entries[i]
+		if entry.backup != "" {
+			_ = os.Rename(entry.backup, entry.target)
+			continue
+		}
+		_ = os.Remove(entry.target)
+	}
+}
+
+// discard drops the backups after a successful apply.
+func (r *artifactRestorer) discard() {
+	for _, entry := range r.entries {
+		if entry.backup != "" {
+			_ = os.Remove(entry.backup)
+		}
+	}
+}
+
 // safeJoin resolves an artifact install path inside base and rejects absolute
 // paths and any path that escapes base.
+// safeJoin resolves an artifact install path inside base.
+//
+// Release paths are portable POSIX-style relative paths: the function rejects
+// backslashes, drive letters, NUL bytes, absolute paths and any path that
+// escapes base. Rejecting Windows separators keeps a release portable and
+// stops a name that is harmless on Linux from escaping on Windows.
 func safeJoin(base, name string) (string, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", errors.New("artifact name is empty")
 	}
-	if filepath.IsAbs(name) {
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("artifact name %q contains a NUL byte", name)
+	}
+	if strings.ContainsAny(name, `\:`) {
+		return "", fmt.Errorf("artifact name %q must use '/' separators and no drive letters", name)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("artifact name %q contains a control character", name)
+		}
+	}
+	if path.IsAbs(name) {
 		return "", fmt.Errorf("artifact name %q is absolute", name)
 	}
 
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." || clean == ".." ||
-		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	clean := path.Clean(name)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("artifact name %q escapes the configuration directory", name)
 	}
 
-	target := filepath.Join(base, clean)
+	target := filepath.Join(base, filepath.FromSlash(clean))
 	rel, err := filepath.Rel(base, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("artifact name %q escapes the configuration directory", name)

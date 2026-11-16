@@ -1,7 +1,7 @@
 // Package controlplane connects the WasmGate data plane to the WasmGate
-// control plane: it enrolls the agent, keeps a long-lived Session open, sends
-// heartbeats, applies releases pushed by the control plane and reports the
-// result back.
+// control plane: it enrolls the agent, renews its certificate before expiry,
+// keeps a long-lived Session open, sends heartbeats, verifies and applies
+// releases pushed by the control plane and reports the result back.
 package controlplane
 
 import (
@@ -18,15 +18,20 @@ const (
 	DefaultHeartbeat        = 15 * time.Second
 	DefaultReconnectBackoff = time.Second
 	DefaultReconnectCeiling = 30 * time.Second
+	// DefaultRenewBefore is how long before expiry the agent renews its
+	// certificate automatically.
+	DefaultRenewBefore = 7 * 24 * time.Hour
 )
 
 // Options configures a control-plane client.
 type Options struct {
 	// Endpoint is the control-plane gRPC address. https:// enables mTLS with the
-	// agent certificate; http:// requires Insecure and is meant for local runs.
+	// agent certificate; http:// is accepted only with Insecure and must stay on
+	// a loopback address, because the control plane refuses plaintext elsewhere.
 	Endpoint string
-	// EnrollToken is a one-time enrollment token. It is used only when StateDir
-	// has no certificate yet.
+	// EnrollToken is a one-time enrollment token. It is used when StateDir has no
+	// certificate yet, and again when the certificate has expired: an expired
+	// certificate cannot authenticate, so it can only be replaced by enrolling.
 	EnrollToken string
 	// StateDir holds agent.id, agent.key, agent.crt and agents-ca.crt.
 	StateDir string
@@ -39,7 +44,8 @@ type Options struct {
 	// pre-created with a per-agent enrollment token. Empty means the agent picks
 	// its own GUID, which is what shared registration tokens expect.
 	AgentID string
-	// Labels are matched by deployment wave selectors.
+	// Labels are matched by deployment wave selectors. Labels configured by the
+	// operator on the control plane take precedence over these values.
 	Labels map[string]string
 	// Version is the data-plane version reported in Hello. Empty means the
 	// module version from the build info.
@@ -53,6 +59,12 @@ type Options struct {
 	ServerCA string
 	// ServerName overrides the TLS server name (useful when dialing by IP).
 	ServerName string
+	// ReleaseKey is a PEM file with the ECDSA P-256 public key that verifies
+	// release manifests. Required: without it the agent cannot tell a genuine
+	// release from a row rewritten in the control-plane database.
+	ReleaseKey string
+	// RenewBefore is how long before expiry the agent renews its certificate.
+	RenewBefore time.Duration
 	// Insecure allows a plaintext http:// endpoint.
 	Insecure bool
 	// ReconnectMin and ReconnectMax bound the exponential reconnect backoff.
@@ -87,6 +99,12 @@ func (o *Options) normalize() error {
 		return errors.New("control plane: config path is required")
 	}
 
+	if strings.TrimSpace(o.ReleaseKey) == "" {
+		return errors.New(
+			"control plane: release key is required; pass the control-plane public key " +
+				"(release-signing.key.pub) so release signatures can be verified")
+	}
+
 	if o.StateDir == "" {
 		o.StateDir = "state"
 	}
@@ -112,6 +130,9 @@ func (o *Options) normalize() error {
 	}
 	if o.ReconnectMax < o.ReconnectMin {
 		o.ReconnectMax = o.ReconnectMin
+	}
+	if o.RenewBefore <= 0 {
+		o.RenewBefore = DefaultRenewBefore
 	}
 	return nil
 }

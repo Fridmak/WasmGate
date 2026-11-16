@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -32,9 +33,10 @@ type Reloader interface {
 
 // Agent keeps one data plane connected to the control plane.
 type Agent struct {
-	opts     Options
-	log      *slog.Logger
-	reloader Reloader
+	opts       Options
+	log        *slog.Logger
+	reloader   Reloader
+	releaseKey *ecdsa.PublicKey
 }
 
 // NewAgent validates opts and builds a control-plane client.
@@ -48,7 +50,13 @@ func NewAgent(opts Options, reloader Reloader, log *slog.Logger) (*Agent, error)
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Agent{opts: opts, log: log, reloader: reloader}, nil
+
+	releaseKey, err := loadReleaseKey(opts.ReleaseKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Agent{opts: opts, log: log, reloader: reloader, releaseKey: releaseKey}, nil
 }
 
 // Run keeps the session alive until ctx is cancelled. Connection failures are
@@ -95,8 +103,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// runOnce enrolls the agent if needed, opens one session and returns when it
-// ends.
+// runOnce renews or enrolls the identity when needed, opens one session and
+// returns when the session ends.
 func (a *Agent) runOnce(ctx context.Context, state *stateStore) error {
 	id, err := loadIdentity(a.opts.StateDir)
 	switch {
@@ -114,6 +122,36 @@ func (a *Agent) runOnce(ctx context.Context, state *stateStore) error {
 		id, err = a.enroll(ctx)
 		if err != nil {
 			return fmt.Errorf("enrollment: %w", err)
+		}
+	}
+
+	if id != nil && !strings.HasPrefix(strings.ToLower(a.opts.Endpoint), "http://") {
+		remaining := time.Until(id.NotAfter)
+		switch {
+		case remaining <= 0:
+			// An expired certificate cannot authenticate, so renewal is impossible:
+			// replace it by enrolling again.
+			a.log.Error("agent certificate expired", "expired_at", id.NotAfter)
+			if strings.TrimSpace(a.opts.EnrollToken) == "" {
+				return fmt.Errorf(
+					"control plane: certificate expired at %s; issue an enrollment token and restart",
+					id.NotAfter.Format(time.RFC3339))
+			}
+
+			id, err = a.enroll(ctx)
+			if err != nil {
+				return fmt.Errorf("re-enrollment: %w", err)
+			}
+		case remaining < a.opts.RenewBefore:
+			renewed, renewErr := a.renew(ctx, id)
+			if renewErr != nil {
+				a.log.Warn(
+					"certificate renewal failed; continuing with the current certificate",
+					"err", renewErr,
+					"expires_at", id.NotAfter)
+			} else {
+				id = renewed
+			}
 		}
 	}
 
@@ -258,6 +296,62 @@ func (a *Agent) enroll(ctx context.Context) (*identity, error) {
 		"agent_id", agentID,
 		"expires_at_unix_ms", response.GetExpiresAtUnixMs())
 	return id, nil
+}
+
+// renew replaces the client certificate over the existing mTLS identity. The
+// private key is rotated as well: a new key and CSR are generated locally.
+func (a *Agent) renew(ctx context.Context, current *identity) (*identity, error) {
+	keyPEM, csrPEM, err := newKeyAndCSR(current.AgentID)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := a.dial(current)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close() //nolint:errcheck // closing a client connection has no recovery path
+
+	renewCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	response, err := wasmgatepb.NewAgentEnrollmentClient(conn).Renew(
+		renewCtx,
+		&wasmgatepb.RenewRequest{
+			AgentId: current.AgentID,
+			CsrPem:  csrPEM,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("control plane: renew: %w", err)
+	}
+
+	caPEM := response.GetCaPem()
+	if len(caPEM) == 0 {
+		caPEM = current.CAPEM
+	}
+
+	if err := saveIdentity(
+		a.opts.StateDir,
+		current.AgentID,
+		keyPEM,
+		response.GetCertificatePem(),
+		caPEM); err != nil {
+		return nil, err
+	}
+
+	renewed, err := loadIdentity(a.opts.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	if renewed == nil {
+		return nil, errors.New("control plane: renewed certificate was not written to the state dir")
+	}
+
+	a.log.Info(
+		"agent certificate renewed",
+		"agent_id", current.AgentID,
+		"expires_at", renewed.NotAfter)
+	return renewed, nil
 }
 
 // session opens the bidirectional stream and runs it until it ends.

@@ -36,15 +36,23 @@ func run() error {
 		shutdownGrace = flag.Duration("shutdown-grace", 15*time.Second, "graceful shutdown timeout")
 		validateOnly  = flag.Bool("validate", false, "validate the configuration (and any WASM plugins) and exit")
 
-		cpEndpoint  = flag.String("cp", "", "control-plane gRPC endpoint (https:// for mTLS); empty = standalone")
-		cpToken     = flag.String("cp-token", os.Getenv("WASMGATE_ENROLL_TOKEN"), "one-time enrollment token used when no agent certificate exists")
-		cpState     = flag.String("cp-state", "state", "directory for the agent identity and applied-release state")
-		cpName      = flag.String("cp-name", "", "agent name reported to the control plane (default: host name)")
-		cpAgentID   = flag.String("cp-agent-id", "", "agent id assigned by the control plane (per-agent enrollment tokens)")
-		cpLabels    = flag.String("cp-labels", "", "comma-separated k=v labels used by deployment selectors")
-		cpServerCA  = flag.String("cp-server-ca", "", "PEM file with the CA that signed the control-plane server certificate")
-		cpHeartbeat = flag.Duration("cp-heartbeat", controlplane.DefaultHeartbeat, "heartbeat interval")
-		cpInsecure  = flag.Bool("cp-insecure", false, "allow a plaintext http:// control-plane endpoint (local development)")
+		cpEndpoint   = flag.String("cp", "", "control-plane gRPC endpoint (https:// for mTLS); empty = standalone")
+		cpToken      = flag.String("cp-token", os.Getenv("WASMGATE_ENROLL_TOKEN"), "one-time enrollment token used when no agent certificate exists")
+		cpState      = flag.String("cp-state", "state", "directory for the agent identity and applied-release state")
+		cpName       = flag.String("cp-name", "", "agent name reported to the control plane (default: host name)")
+		cpAgentID    = flag.String("cp-agent-id", "", "agent id assigned by the control plane (per-agent enrollment tokens)")
+		cpLabels     = flag.String("cp-labels", "", "comma-separated k=v labels used by deployment selectors")
+		cpServerCA   = flag.String("cp-server-ca", "", "PEM file with the CA that signed the control-plane server certificate")
+		cpHeartbeat  = flag.Duration("cp-heartbeat", controlplane.DefaultHeartbeat, "heartbeat interval")
+		cpInsecure   = flag.Bool("cp-insecure", false, "allow a plaintext http:// control-plane endpoint (local development)")
+		cpReleaseKey = flag.String(
+			"cp-release-key",
+			"",
+			"PEM file with the control-plane release-signing public key (release-signing.key.pub); required")
+		cpRenewBefore = flag.Duration(
+			"cp-renew-before",
+			controlplane.DefaultRenewBefore,
+			"renew the agent certificate this long before it expires")
 	)
 	flag.Parse()
 
@@ -168,6 +176,8 @@ func run() error {
 			Labels:      labels,
 			Heartbeat:   *cpHeartbeat,
 			ServerCA:    *cpServerCA,
+			ReleaseKey:  *cpReleaseKey,
+			RenewBefore: *cpRenewBefore,
 			Insecure:    *cpInsecure,
 		}, srv, log)
 		if err != nil {
