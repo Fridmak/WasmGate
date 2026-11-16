@@ -16,6 +16,7 @@ internal static class AgentEndpoints
         app.MapPost("/api/v1/agents", CreateAgent);
         app.MapGet("/api/v1/agents", ListAgents);
         app.MapPost("/api/v1/agents/{id:guid}/tokens", IssueEnrollmentToken);
+        app.MapGet("/api/v1/agents/{id:guid}/certificates", ListCertificates);
         app.MapPost("/api/v1/agents/{id:guid}/certificates/{serial}/revoke", RevokeCertificate);
         app.MapPost("/api/v1/registration-tokens", CreateRegistrationToken);
         return app;
@@ -63,7 +64,7 @@ internal static class AgentEndpoints
     {
         var list = await agents.ListAsync(cancellationToken);
         return Results.Ok(list
-            .Select(a => new AgentSummary(a.Id, a.Name, a.Status, a.LastSeenAt, a.ActiveReleaseId))
+            .Select(a => new AgentSummary(a.Id, a.Name, a.Status, a.LastSeenAt, a.ActiveReleaseId, a.Labels))
             .ToList());
     }
 
@@ -89,6 +90,27 @@ internal static class AgentEndpoints
         {
             return Results.BadRequest(ex.Message);
         }
+    }
+
+    /// <summary>Lists the active certificates of an agent.</summary>
+    /// <param name="id">Agent identifier.</param>
+    /// <param name="certificates">Certificate repository.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>Serial, fingerprint and validity period of each active certificate.</returns>
+    private static async Task<IResult> ListCertificates(
+        Guid id,
+        IAgentCertificateRepository certificates,
+        CancellationToken cancellationToken)
+    {
+        var active = await certificates.ListActiveByAgentAsync(id, cancellationToken);
+        return Results.Ok(active
+            .Select(certificate => new AgentCertificateSummary(
+                certificate.SerialNumber,
+                certificate.Thumbprint,
+                certificate.NotBefore,
+                certificate.NotAfter,
+                certificate.IssuedAt))
+            .ToList());
     }
 
     /// <summary>Marks one issued certificate as revoked.</summary>

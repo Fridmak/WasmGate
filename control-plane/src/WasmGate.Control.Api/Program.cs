@@ -16,7 +16,15 @@ using WasmGate.Control.Infrastructure.Security;
 // services and the admin HTTP API. Everything is registered as a singleton,
 // because the repositories are stateless over one connection pool and the
 // services only coordinate them.
-var builder = WebApplication.CreateSlimBuilder(args);
+//
+// The content root is the application directory, not the working directory: the
+// admin UI lives in wwwroot next to the binary and must be found regardless of
+// where the service was started.
+var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+});
 
 builder.SetupLogging();
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -52,6 +60,11 @@ builder.Services.AddHostedService<DeploymentReaper>();
 
 var app = builder.Build();
 
+// The admin UI is a static SPA served from wwwroot. It uses the admin API on the
+// same origin, so no CORS is involved; the API itself stays protected by the
+// bearer token.
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.UseAdminToken(options.AdminToken);
 
 app.MapGrpcService<AgentControlService>();

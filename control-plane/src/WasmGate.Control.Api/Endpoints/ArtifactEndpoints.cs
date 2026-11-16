@@ -5,17 +5,26 @@ using WasmGate.Control.Core.Entities.Releases;
 
 namespace WasmGate.Control.Api.Endpoints;
 
-/// <summary>Artifact upload endpoint.</summary>
+/// <summary>Artifact upload and listing endpoints.</summary>
 internal static class ArtifactEndpoints
 {
-    /// <summary>Maps <c>POST /api/v1/artifacts</c>.</summary>
+    /// <summary>Maps the artifact routes.</summary>
     /// <param name="app">Endpoint route builder to extend.</param>
     /// <returns>The same route builder for chaining.</returns>
     public static IEndpointRouteBuilder MapArtifactEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/v1/artifacts", UploadArtifact);
+        app.MapGet("/api/v1/artifacts", ListArtifacts);
         return app;
     }
+
+    /// <summary>Lists stored artifacts, newest first.</summary>
+    /// <param name="repository">Artifact metadata repository.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    private static async Task<IResult> ListArtifacts(
+        IArtifactRepository repository,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await repository.ListAsync(cancellationToken));
 
     /// <summary>Stores an artifact and its metadata.</summary>
     /// <param name="request">Artifact bytes, base64-encoded, and their metadata.</param>

@@ -64,6 +64,7 @@ control-plane/
     │   ├── Infrastructure/Networking/   listen address parsing, TLS, Kestrel wiring
     │   ├── Services/                    gRPC endpoints and the session wrapper
     │   ├── Endpoints/                   admin HTTP API, one file per resource group
+    │   ├── wwwroot/                     static admin UI (no build step)
     │   └── Program.cs                   composition root
     └── tests/WasmGate.Control.Tests/    unit tests for the pure helpers
 ```
@@ -115,6 +116,19 @@ control-plane/
   `Infrastructure/Repositories`). Apply the migrations before the first request.
 - Unit tests for the pure helpers (`ListenAddress`, `ReleasePath`, `WaveSelector`,
   signed release manifest) in `tests/WasmGate.Control.Tests`, built and run by CI.
+- A static admin UI at `/` (vanilla HTML/CSS/JS in `wwwroot`): agents and their
+  certificates, artifact upload, configurations, releases, deployments with
+  rollback, and the audit trail. It talks to the admin API on the same origin and
+  asks for `WASMGATE_CP_ADMIN_TOKEN`; no npm or separate service is involved.
+
+## Admin UI
+
+Open `http://<admin-host>:9097/` and paste the admin token into the top bar. The
+token is kept in `sessionStorage` and cleared when the tab closes. The UI is
+plain static files served by the same process, so it needs no CORS, no proxy and
+no build step; every action maps one-to-one to an admin API endpoint documented
+below. Environments are free-form: type any name to scope configurations,
+releases and deployments.
 
 ## Dapper.AOT query pattern
 

@@ -92,16 +92,37 @@ public sealed record CreateDeploymentResponse(Guid Id, DeploymentStatus Status);
 /// <param name="Status">Agent status.</param>
 /// <param name="LastSeenAt">Time of the last heartbeat or control message.</param>
 /// <param name="ActiveReleaseId">Release the agent reports as applied, if any.</param>
-public sealed record AgentSummary(Guid Id, string Name, AgentStatus Status, DateTimeOffset LastSeenAt, string? ActiveReleaseId);
+/// <param name="Labels">Labels matched by wave selectors.</param>
+public sealed record AgentSummary(
+    Guid Id,
+    string Name,
+    AgentStatus Status,
+    DateTimeOffset LastSeenAt,
+    string? ActiveReleaseId,
+    IReadOnlyDictionary<string, string> Labels);
 
 /// <summary>Result of issuing a replacement enrollment token.</summary>
 /// <param name="Token">Raw single-use token, shown only here.</param>
 /// <param name="ExpiresAt">When the token stops working.</param>
 public sealed record CreateAgentTokenResponse(string Token, DateTimeOffset ExpiresAt);
 
+/// <summary>Compact view of one active agent certificate.</summary>
+/// <param name="SerialNumber">Certificate serial number, used for revocation.</param>
+/// <param name="Thumbprint">SHA-256 fingerprint of the DER certificate.</param>
+/// <param name="NotBefore">Start of the validity period.</param>
+/// <param name="NotAfter">End of the validity period.</param>
+/// <param name="IssuedAt">Time when the control plane issued it.</param>
+public sealed record AgentCertificateSummary(
+    string SerialNumber,
+    string Thumbprint,
+    DateTimeOffset NotBefore,
+    DateTimeOffset NotAfter,
+    DateTimeOffset IssuedAt);
+
 [JsonSerializable(typeof(CreateAgentRequest))]
 [JsonSerializable(typeof(CreateAgentResponse))]
 [JsonSerializable(typeof(CreateAgentTokenResponse))]
+[JsonSerializable(typeof(List<AgentCertificateSummary>))]
 [JsonSerializable(typeof(CreateRegistrationTokenRequest))]
 [JsonSerializable(typeof(CreateRegistrationTokenResponse))]
 [JsonSerializable(typeof(UploadArtifactRequest))]
@@ -117,6 +138,8 @@ public sealed record CreateAgentTokenResponse(string Token, DateTimeOffset Expir
 [JsonSerializable(typeof(List<ConfigVersion>))]
 [JsonSerializable(typeof(List<Release>))]
 [JsonSerializable(typeof(List<Deployment>))]
+[JsonSerializable(typeof(List<Artifact>))]
+[JsonSerializable(typeof(IReadOnlyList<Artifact>))]
 [JsonSerializable(typeof(List<AuditEvent>))]
 [JsonSerializable(typeof(IReadOnlyList<ConfigVersion>))]
 [JsonSerializable(typeof(IReadOnlyList<Release>))]
