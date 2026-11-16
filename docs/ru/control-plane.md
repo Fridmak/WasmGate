@@ -134,10 +134,13 @@ sudo journalctl -u wasmgate -n 200 --no-pager           # data plane
 | GET | `/api/v1/deployments/{environment}` | Список деплойментов с целью отката и причиной падения |
 | POST | `/api/v1/deployments/{id}/rollback` | Задеплоить предыдущий релиз |
 | GET | `/api/v1/audit` | Последние 100 событий аудита |
+| GET | `/metrics` | Prometheus scrape (тот же токен, что и `/api/v1/*`) |
 | GET | `/healthz`, `/readyz` | Пробы (без токена) |
 
 Пользовательских аккаунтов нет. Bearer-токен из `WASMGATE_CP_ADMIN_TOKEN`
-обязателен, когда admin endpoint слушает не loopback.
+обязателен, когда admin endpoint слушает не loopback. Он же защищает
+`/metrics`. См. [метрики](metrics.md) — справочник метрик и готовый стек
+Prometheus + Grafana.
 
 ## Агенты и сертификаты
 

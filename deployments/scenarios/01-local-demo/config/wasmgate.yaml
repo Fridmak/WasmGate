@@ -1,5 +1,6 @@
 version: 1
-admin_addr: "127.0.0.1:9099"
+admin_addr: "0.0.0.0:9099"
+admin_allow_remote: true
 
 listeners:
   - name: public

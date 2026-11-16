@@ -137,6 +137,7 @@ docs/en, docs/ru       документация на двух языках
 [Бенчмарки](docs/ru/benchmarks.md) ·
 [Развёртывание](docs/ru/deployment.md) ·
 [Control plane](docs/ru/control-plane.md) ·
+[Метрики](docs/ru/metrics.md) ·
 [Разработка](docs/ru/development.md)
 
 English:
@@ -146,6 +147,7 @@ English:
 [Benchmarks](docs/en/benchmarks.md) ·
 [Deployment](docs/en/deployment.md) ·
 [Control plane](docs/en/control-plane.md) ·
+[Metrics](docs/en/metrics.md) ·
 [Development](docs/en/development.md)
 
 ## Требования

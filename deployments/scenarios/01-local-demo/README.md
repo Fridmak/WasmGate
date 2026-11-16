@@ -14,7 +14,7 @@ Everything on one machine:
 
 cp deployments/scenarios/01-local-demo/.env.example \
    deployments/scenarios/01-local-demo/.env
-# edit .env: set WASMGATE_CP_ADMIN_TOKEN
+# edit .env: set WASMGATE_CP_ADMIN_TOKEN and WASMGATE_ADMIN_TOKEN
 
 docker compose -f deployments/scenarios/01-local-demo/compose.yml up -d --build
 
@@ -67,6 +67,33 @@ exercised through the control plane:
 
 The agent downloads the release, rewrites `/data/wasmgate.yaml` and reloads. From
 now on, change the configuration in the UI instead of editing the seed file.
+
+## Metrics and Grafana
+
+The local demo exposes both metric endpoints on the compose network:
+
+- data plane: `data-plane:9099/metrics`;
+- control plane: `control-plane:9097/metrics`.
+
+Neither admin port is published to the host. Prometheus and Grafana run in the
+shared observability stack:
+
+```bash
+export WASMGATE_ADMIN_TOKEN="$(grep '^WASMGATE_ADMIN_TOKEN=' deployments/scenarios/01-local-demo/.env | cut -d= -f2-)"
+export WASMGATE_CP_ADMIN_TOKEN="$(grep '^WASMGATE_CP_ADMIN_TOKEN=' deployments/scenarios/01-local-demo/.env | cut -d= -f2-)"
+./deployments/observability/setup.sh
+
+cp deployments/observability/.env.example deployments/observability/.env
+# set GRAFANA_ADMIN_PASSWORD; WASMGATE_NETWORK is already wasmgate-demo_default
+docker compose -f deployments/observability/compose.yml up -d
+```
+
+Grafana: `http://127.0.0.1:3000` (admin + `GRAFANA_ADMIN_PASSWORD`).
+Prometheus: `http://127.0.0.1:9090`.
+
+The dashboard **WasmGate overview** is provisioned automatically. See
+[`deployments/observability/README.md`](../../observability/README.md) for other
+deployment layouts.
 
 ## Notes
 

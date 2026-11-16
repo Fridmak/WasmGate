@@ -23,6 +23,13 @@ scripts/
 
 Generated certificates go to `deployments/certs/` and are gitignored.
 
+## Observability
+
+[`observability/`](observability/) contains a Prometheus + Grafana stack with a
+provisioned **WasmGate overview** dashboard. It scrapes both the data plane and
+the control plane; see its [README](observability/README.md) for local-demo and
+fleet wiring.
+
 ## Conventions
 
 - Copy `.env.example` to `.env` and edit it. `.env` files are ignored by git;

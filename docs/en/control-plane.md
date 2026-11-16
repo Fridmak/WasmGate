@@ -135,10 +135,13 @@ sudo journalctl -u wasmgate -n 200 --no-pager           # data plane
 | GET | `/api/v1/deployments/{environment}` | List deployments, including the rollback target and failure reason |
 | POST | `/api/v1/deployments/{id}/rollback` | Deploy the previous release |
 | GET | `/api/v1/audit` | Last 100 audit events |
+| GET | `/metrics` | Prometheus scrape (same token as `/api/v1/*`) |
 | GET | `/healthz`, `/readyz` | Probes (no token) |
 
 The API has no user accounts. A bearer token from `WASMGATE_CP_ADMIN_TOKEN` is
-required when the admin endpoint is not on loopback.
+required when the admin endpoint is not on loopback. It also protects
+`/metrics`. See [metrics](metrics.md) for the metric reference and a ready-made
+Prometheus + Grafana stack.
 
 ## Agents and certificates
 

@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Data plane: /metrics is the admin endpoint. It requires admin_allow_remote
+  # and a bearer token when Prometheus runs in another container.
+  - job_name: wasmgate-data-plane
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/wasmgate-admin-token
+    static_configs:
+      - targets: ["data-plane:9099"]
+
+  # Control plane: /metrics is protected by WASMGATE_CP_ADMIN_TOKEN.
+  - job_name: wasmgate-control-plane
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/cp-admin-token
+    static_configs:
+      - targets: ["control-plane:9097"]

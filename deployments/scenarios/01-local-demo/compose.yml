@@ -97,6 +97,8 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8080:8080"
+    environment:
+      WASMGATE_ADMIN_TOKEN: "${WASMGATE_ADMIN_TOKEN:?set WASMGATE_ADMIN_TOKEN in .env}"
     volumes:
       - dpdata:/data
       - ../../certs/server.crt:/certs/server.crt:ro
