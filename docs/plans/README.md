@@ -4,9 +4,9 @@ Active documents:
 
 - [`plugin-architecture-review.md`](plugin-architecture-review.md) — ABI v4
   architecture; M0 core is done and the `headers` path is now strict ABI v4.
-- [`m2-v4-only-runtime.md`](m2-v4-only-runtime.md) — M2 plan for removing the
-  remaining v3 L7 path (`once`/`stream`), with M2.1 direction-aware engine work
-  already implemented.
+- [`m2-v4-only-runtime.md`](m2-v4-only-runtime.md) — completed M2 plan for
+  removing the remaining v3 L7 path; `once`/`stream`/`headers` are ABI v4 and
+  only L4 lifecycle remains on v3 until M3.
 - [`security-fixes-round2.md`](security-fixes-round2.md) — security fixes from
   round 2 and the remaining DPCP-1 design item.
 

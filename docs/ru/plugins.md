@@ -1,29 +1,32 @@
-# Плагины (WASM ABI v3)
+# Плагины (ABI v4; legacy v3 L4)
 
 Плагины — WebAssembly-модули, которые Go-хост исполняет через `wazero`. Плагин
 работает в чистой песочнице: без WASI, файловой системы, сокетов, часов и
 генератора случайных чисел. Это детерминированная функция от метаданных
 соединения.
 
-> **Статус ABI:** `data_mode: headers` теперь строгий путь ABI v4. Он требует
-> модуль с `on_event`/`wg_*`; legacy-модули ABI v3 с `on_headers` отвергаются
-> при загрузке snapshot. `once` и `stream` пока используют legacy-рантайм ABI
-> v3 до реализации их v4-фаз.
+> **Статус ABI:** все `data_mode` (`once`, `headers`, `stream`) теперь строгие
+> пути ABI v4 `on_event`. Legacy-модули ABI v3 с L7-хуками отвергаются при
+> загрузке snapshot. ABI v3 остаётся только для L4 `on_accept`/`on_close` до M3.
 
 Девять эталонных плагинов лежат в [`plugins/examples/`](../../plugins/examples/);
-их `.wasm` уже закоммичены, Rust для запуска не нужен.
+их `.wasm` закоммичены, но L7-примеры всё ещё экспортируют ABI v3-хуки и поэтому
+не запускаются в текущем proxy. `ipguard` остаётся рабочим на L4-пути.
 
 | Плагин | Что демонстрирует | Режим | Вердикт |
 |---|---|---|---|
-| `ipguard` | `on_accept`: L4 allow/deny до `dial` | L4 | `0` allow, `≠0` deny |
-| `http_guard` | `on_data_ex`: методы/пути, Basic auth, CL+TE-smuggling, маскировка заголовков | `stream` | `0` / `1` |
-| `http_headers_guard` | legacy ABI v3 `on_headers`; не принимается в режиме `headers` до порта на v4 | legacy | `0` / `1` |
+| `ipguard` | `on_accept`: L4 allow/deny до `dial` | L4 (ABI v3) | `0` allow, `≠0` deny |
+| `http_guard` | legacy ABI v3 `on_data_ex`; не запускается до порта на v4 | legacy | `0` / `1` |
+| `http_headers_guard` | legacy ABI v3 `on_headers`; не принимается в `headers` до порта на v4 | legacy | `0` / `1` |
 | `http_body_guard` | `on_data_state` (ABI v3): разорванные заголовки, `Content-Length`, сигнатуры в теле, keep-alive счётчики | `stream` | `0` / `1` |
 | `path_router` | `route_pools` по `Host` и пути | `once` | `2..4` → пулы |
 | `sni_guard` | SNI из ClientHello без терминации TLS | `once` | `2..4` → пулы |
 | `protocol_router` | Определение TLS/HTTP/SSH/PostgreSQL/Redis по первым байтам | `once` | `2..6` → пулы |
 | `redis_guard` | Разбор RESP и inline-команд, ACL для `CONFIG`/`FLUSHALL`/`EVAL` | `stream` | `0` / `1` |
 | `stream_guard` | Сигнатуры атак в теле запроса, in-place маскировка JSON-секретов | `stream` | `0` / `1` |
+
+Все строки, кроме `ipguard`, — legacy ABI v3-примеры: они оставлены для
+справки, но текущий ABI v4-only L7 loader их отвергает до порта.
 
 Полный showcase: [`configs/showcase.yaml`](../../configs/showcase.yaml).
 
@@ -38,10 +41,11 @@ listeners:
       path: "plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB на инстанс
       timeout: 1s             # таймаут хука; 0 выбирает безопасный дефолт 1s
-      data_mode: "once"       # "once" (ABI v3), "headers" (ABI v4), "stream" (ABI v3)
-      max_header_bytes: 16384 # headers: максимум request-header block
-      inspect_timeout: 3s     # headers: общий дедлайн на блок
-      route_pools: ["canary"] # on_event/on_data >= 2 -> route_pools[ret-2]
+      # ipguard — L4-only: data_mode не задаётся. ABI v4 L7-модули используют
+      # data_mode: "once" | "headers" | "stream".
+      # max_header_bytes: 16384
+      # inspect_timeout: 3s
+      # route_pools: ["canary"] # once/headers only; stream cannot route
 ```
 
 ## Контракт хуков
@@ -53,12 +57,16 @@ listeners:
 |---|---|---|---|
 | `on_event` | `(i64, i32, i32, i32, i32) -> i64` | ABI v4: `conn_id`, `phase`, `flags`, `ptr`, `len` на envelope | Младшие 32 бита: `0` allow, `1` deny, `>= 2` route; старшие зарезервированы |
 | `on_accept` | `(i64, i64, i32) -> i32` | `ip_hi`, `ip_lo` (16-байтный канонический IP, big-endian; IPv4 — `::ffff:a.b.c.d`), порт клиента | `0` allow, любой ненулевой запрещает до `dial` |
-| `on_headers` | `(i64, i32, i32) -> i32` | только legacy ABI v3; в `data_mode: headers` отвергается | `0` / `1` |
+| `on_headers` | `(i64, i32, i32) -> i32` | только legacy ABI v3; текущий loader его отвергает | `0` / `1` |
 | `on_data` | `(i32, i32) -> i32` | `ptr`, `len` в линейной памяти (**обязателен `on_data_ptr() -> i32`**); до 32 KiB, можно менять на месте | `0` allow, `1` deny, `>= 2` → `route_pools[ret-2]` (только `once`) |
 | `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 client→server, 1 server→client), `ptr`, `len` | Как `on_data` |
 | `on_data_state` | `(i64, i32, i32, i32, i32, i32, i32) -> i64` | `conn_id`, `dir`, `state_ptr`, `state_len`, `state_cap` (4 KiB), `data_ptr`, `data_len`; нужны `on_data_ptr()` и `on_state_ptr()` | Младшие 32 бита — вердикт; старшие — новая длина состояния (`0..4096`) |
 | `on_close` | `(i64, i64, i64, i64) -> ()` | `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | — |
 | `on_close_ex` | `(i64, i64, i64, i64, i64) -> ()` | `conn_id`, `ip_hi`, `ip_lo`, `rx_bytes`, `tx_bytes` | — |
+
+Строки `on_data`/`on_data_ex`/`on_data_state` описывают legacy-поверхность ABI
+v3; текущий proxy отвергает их для любого `data_mode`. `on_accept` и `on_close`
+остаются активными только на L4-пути до M3.
 
 Отрицательные вердикты и `INT32_MIN` означают deny; allow — только `0`. Индекс
 маршрута вне `route_pools` — deny, а не fallback. Модуль без хуков или с
@@ -80,33 +88,33 @@ listeners:
 
 ## Режимы данных и TLS
 
-- `data_mode` **обязателен** для модулей с `on_data`, `on_data_ex`,
-  `on_data_state` или `on_event`. `once` проверяет первое чтение клиента (до
-  16 389 байт) до `dial`, затем возвращает `splice(2)`; это пока путь ABI v3.
-  Это подсказка для маршрутизации и мутации первого пакета, а не полноценный
-  фильтр: для фильтрации нужен `stream`.
-- `data_mode: headers` — путь ABI v4 `on_event`. Он собирает один полный
-  HTTP/1.x request-header block (до `\r\n\r\n`) до `dial`, вызывает плагин один
-  раз и возвращает `splice(2)` для тела. Модуль обязан экспортировать
-  `on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr` и `wg_buf_len`; legacy-модули
-  ABI v3 с `on_headers` отвергаются. Это политика уровня соединения:
-  маршрутизация, auth, заголовки. Инспектируется только первый запрос
-  keep-alive соединения. Индекс заголовков ограничен 512 записями; при большем
-  количестве запрос отклоняется. Неполный, превышающий лимит, просроченный,
-  malformed-блок и HTTP/2-preface отклоняются до `dial`. `plugin.timeout`
-  должен быть больше нуля; `sni_routes` без терминации TLS запрещены.
-- `data_mode: stream` вызывает legacy-хук ABI v3 на каждый чанк в обе стороны
-  (через `on_data_ex`), отключает `splice` и не применяет `route_pools`.
-- Терминация TLS расшифровывает поток до `on_data`; passthrough оставляет его
+- `data_mode` **обязателен** для модулей с L7-событиями. `once` проверяет первое
+  чтение клиента (до 16 389 байт) до `dial`, затем возвращает `splice(2)`. Это
+  подсказка для маршрутизации и allow/deny, а не полноценный фильтр; envelope
+  ABI v4 в M2 read-only.
+- `data_mode: headers` собирает один полный HTTP/1.x request-header block
+  (до `\r\n\r\n`) до `dial`, вызывает плагин один раз и возвращает `splice(2)`
+  для тела. Модуль обязан экспортировать `on_event`, `wg_abi`, `wg_caps`,
+  `wg_buf_ptr` и `wg_buf_len`; legacy-модули ABI v3 с `on_headers` отвергаются.
+  Инспектируется только первый запрос keep-alive соединения. Индекс заголовков
+  ограничен 512 записями; при большем количестве запрос отклоняется. Неполный,
+  превышающий лимит, просроченный, malformed-блок и HTTP/2-preface отклоняются
+  до `dial`. `plugin.timeout` должен быть больше нуля; `sni_routes` без
+  терминации TLS запрещены.
+- `data_mode: stream` вызывает `on_event` на каждый чанк в обе стороны,
+  отключает `splice` и не умеет маршрутизировать: `route_pools` запрещены.
+  В M2 поддерживается только allow/deny; in-place mutation и stateful body
+  политики отвергаются до M4.
+- Терминация TLS расшифровывает поток до `on_event`; passthrough оставляет его
   зашифрованным, и плагин видит `ClientHello`/record'ы. На листенере с
   терминацией `sni_routes` игнорируется.
 
-## Состояние ABI v3
+## Legacy-состояние ABI v3
 
-`on_data_state` даёт каждому направлению соединения ограниченный буфер состояния
-4 KiB, которым управляет хост и который копируется внутрь/наружу вокруг вызова.
-Он нужен для разорванных заголовков, keep-alive-фрейминга и инспекции тела, где
-stateless-хуков недостаточно. Эталон — [`http_body_guard`](../../plugins/examples/http_body_guard).
+`on_data_state` относится к legacy-рантайму ABI v3. Текущий ABI v4-only L7-путь
+его отвергает; state slots запланированы на M4. Эталонная v3-реализация
+[`http_body_guard`](../../plugins/examples/http_body_guard) сохранена как
+историческая.
 
 ## Сборка плагина
 

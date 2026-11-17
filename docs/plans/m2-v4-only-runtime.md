@@ -1,7 +1,7 @@
 # M2 — v4-only L7 runtime
 
 - **Branch:** `stable`
-- **Status:** in progress; M2.1 engine foundation done
+- **Status:** complete
 - **Depends on:** ABI v4 headers cutover (M1, commit `e00ccb5`)
 
 ## Goal
@@ -53,7 +53,7 @@ an explicit v4 phase, not added as another mode.
 - Tests: both directions, invalid direction, unknown flags, dual-direction
   rejection.
 
-### M2.2 — loader and plan resolution
+### M2.2 — loader and plan resolution (done)
 
 - `data_mode: once` and `stream` create an `abi4.Engine` with
   `Plan: InspectOpaqueStream`.
@@ -65,7 +65,7 @@ an explicit v4 phase, not added as another mode.
   of config equality.
 - Tests: v4 once/stream load, v3 L7 rejection, L4-only acceptance, cache hit.
 
-### M2.3 — proxy `once` cutover
+### M2.3 — proxy `once` cutover (done)
 
 - Replace the v3 `OnDataConn` call in the `once` branch with
   `Engine.OnOpaqueFirst`.
@@ -75,7 +75,7 @@ an explicit v4 phase, not added as another mode.
 - No mutation: the v4 envelope is read-only in M2.
 - Tests: allow/deny/route, timeout, no dial, body bytes unchanged.
 
-### M2.4 — proxy `stream` cutover
+### M2.4 — proxy `stream` cutover (done)
 
 - Introduce a small internal stream inspector interface so `copy.go` does not
   depend on the v3 `Plugin` type.
@@ -84,13 +84,13 @@ an explicit v4 phase, not added as another mode.
 - Mutation and state are rejected at load; stream is allow/deny only in M2.
 - Tests: both directions, deny, timeout, prefix replay, no v3 fallback.
 
-### M2.5 — remove v3 L7 from production
+### M2.5 — remove v3 L7 from production (done)
 
 - Delete `on_data`, `on_data_ex`, `on_data_state` handling from the proxy path.
 - Leave v3 only for `on_accept`/`on_close` until M3.
 - Update configs/examples: v3 L7 examples are either ported to v4 fixtures or
   marked legacy and removed from the runnable showcase.
-- Add a guard test that no `data_mode: once|stream` listener resolves a
+- Add a guard test that no `data_mode: once|stream|headers` listener resolves a
   `*plugin.Plugin`.
 
 ## M3 — lifecycle and v3 removal
@@ -122,6 +122,8 @@ an explicit v4 phase, not added as another mode.
 
 ## Current progress
 
-- M2.1 is implemented and tested.
-- M2.2+ is not started; the proxy still uses v3 for `once`/`stream`.
-- M1 headers cutover remains strict v4 and is not affected by M2 work.
+- M2.1–M2.5 are implemented and tested.
+- `data_mode: once`, `stream` and `headers` resolve only `abi4.Engine`.
+- ABI v3 remains only for the L4 `on_accept`/`on_close` path.
+- v3 L7 modules are rejected; stateful/mutating v3 examples are marked legacy.
+- Next is M3: v4 lifecycle, L4 cutover and v3 removal.

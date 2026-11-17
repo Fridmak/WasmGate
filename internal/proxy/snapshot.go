@@ -30,10 +30,10 @@ type resolvedListener struct {
 	// connGuard enforces cfg.RateLimit.MaxConcurrent per client IP/subnet; nil
 	// means no concurrent limit is configured.
 	connGuard *ratelimit.Guard
-	// plugin is the compiled legacy ABI v3 sandbox for this listener; nil means
-	// disabled or a v4 headers listener.
+	// plugin is the compiled legacy ABI v3 sandbox for the L4 lifecycle path;
+	// nil means disabled or an ABI v4 listener.
 	plugin *plugin.Plugin
-	// pluginV4 is the ABI v4 engine for data_mode: headers; nil otherwise.
+	// pluginV4 is the ABI v4 engine for every data_mode; nil for L4-only.
 	pluginV4 *abi4.Engine
 	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
 	// SNI routing is not configured on this listener.

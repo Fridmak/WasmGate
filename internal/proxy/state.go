@@ -45,8 +45,8 @@ type registry struct {
 type cachedPlugin struct {
 	cfg  config.PluginConfig
 	hash [32]byte
-	// Exactly one of pl (ABI v3) and v4 (ABI v4) is set. data_mode: headers
-	// is ABI v4 only; other modes still use the legacy v3 runtime.
+	// Exactly one of pl (ABI v3 L4 lifecycle) and v4 (ABI v4 L7) is set.
+	// All data modes use v4; v3 remains only for on_accept/on_close.
 	pl *plugin.Plugin
 	v4 *abi4.Engine
 }
@@ -82,9 +82,10 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 		return cur, nil
 	}
 
-	// data_mode: headers is a strict ABI v4 cutover. A v3 on_headers module is
+	// ABI v4 cutover: every L7 mode uses abi4.Engine. A v3 L7 module is
 	// rejected here instead of silently falling back to the legacy runtime.
-	if pc.DataMode == config.DataModeHeaders {
+	switch pc.DataMode {
+	case config.DataModeHeaders:
 		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
 			MaxMemoryPages: pc.MaxMemoryPages,
 			Timeout:        pc.Timeout,
@@ -96,8 +97,26 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 			return cachedPlugin{}, fmt.Errorf("plugin: v4 headers: %w", err)
 		}
 		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
+
+	case config.DataModeOnce, config.DataModeStream:
+		routePools := len(pc.RoutePools)
+		if pc.DataMode == config.DataModeStream {
+			routePools = 0 // stream is allow/deny only in ABI v4
+		}
+		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
+			MaxMemoryPages: pc.MaxMemoryPages,
+			Timeout:        pc.Timeout,
+			Plan:           abi4.InspectOpaqueStream,
+			RoutePools:     routePools,
+		})
+		if err != nil {
+			return cachedPlugin{}, fmt.Errorf("plugin: v4 %s: %w", pc.DataMode, err)
+		}
+		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
 	}
 
+	// No data_mode: this is the legacy L4 lifecycle path (on_accept/on_close).
+	// L7 hooks are not allowed here; their v4 cutover is selected by data_mode.
 	opts := plugin.Options{
 		MaxMemoryPages: pc.MaxMemoryPages,
 		Timeout:        pc.Timeout,
@@ -106,15 +125,10 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	if err != nil {
 		return cachedPlugin{}, err
 	}
-	if pc.DataMode == "" && (pl.HasData() || pl.HasHeaders()) {
+	if pl.HasData() || pl.HasHeaders() {
 		_ = pl.Close(context.Background())
 		return cachedPlugin{}, errors.New(
-			"plugin.data_mode is required when the module exports L7 hooks; choose once, stream or headers (v4)")
-	}
-	if pc.DataMode != config.DataModeHeaders && pl.HasHeaders() && !pl.HasData() {
-		_ = pl.Close(context.Background())
-		return cachedPlugin{}, errors.New(
-			"plugin exports only on_headers; ABI v3 on_headers is no longer supported, use ABI v4 on_event")
+			"plugin exports ABI v3 L7 hooks; use ABI v4 on_event with data_mode once, stream or headers")
 	}
 	return cachedPlugin{cfg: pc, hash: hash, pl: pl}, nil
 }

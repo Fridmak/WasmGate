@@ -39,11 +39,17 @@ const (
 	DefaultInspectTimeout = 3 * time.Second
 )
 
-// DataModeHeaders is the plugin.data_mode value that inspects one complete
-// HTTP/1 request header block before dialing the upstream. It is a strict ABI
-// v4 path: the module must export on_event/wg_* and is loaded by abi4.Engine.
-// Legacy ABI v3 on_headers modules are rejected.
-const DataModeHeaders = "headers"
+const (
+	// DataModeOnce inspects the first client chunk before dialing. It is ABI v4
+	// and may use route_pools.
+	DataModeOnce = "once"
+	// DataModeHeaders inspects one complete HTTP/1 request header block before
+	// dialing. It is ABI v4 and may use route_pools.
+	DataModeHeaders = "headers"
+	// DataModeStream inspects every chunk in both directions. It is ABI v4,
+	// disables splice(2) and cannot route.
+	DataModeStream = "stream"
+)
 
 // ListenerConfig describes a single front-facing TCP listener.
 type ListenerConfig struct {
@@ -80,7 +86,7 @@ type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
-	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (ABI v4 complete HTTP/1 request headers, splice) or "stream" (every chunk, legacy ABI v3)
+	DataMode       string        `yaml:"data_mode"`        // "once" (first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk); all three are ABI v4
 	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
 	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
@@ -201,7 +207,7 @@ func (l *ListenerConfig) Validate() error {
 		return errors.New("plugin.max_memory_pages cannot exceed 65536")
 	}
 	switch l.Plugin.DataMode {
-	case "", "once", "stream":
+	case "", DataModeOnce, DataModeStream:
 	case DataModeHeaders:
 		if !l.Plugin.Enabled() {
 			return errors.New("plugin.data_mode headers requires a plugin")
@@ -214,6 +220,9 @@ func (l *ListenerConfig) Validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown plugin.data_mode %q (want once, headers or stream)", l.Plugin.DataMode)
+	}
+	if l.Plugin.DataMode == DataModeStream && len(l.Plugin.RoutePools) > 0 {
+		return errors.New("plugin.route_pools is not supported with data_mode stream")
 	}
 	if l.Plugin.MaxHeaderBytes == 0 {
 		l.Plugin.MaxHeaderBytes = DefaultMaxHeaderBytes

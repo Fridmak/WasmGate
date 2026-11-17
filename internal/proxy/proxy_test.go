@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -270,32 +269,17 @@ func TestProxySNIRoutesToMatchingPoolAndReplaysClientHello(t *testing.T) {
 	sendHello("unmatched.example.org")
 }
 
-// TestProxyWasmOnDataInspectsL7OnceAndStream verifies L7 payload inspection in
-// both modes:
-//   - "once" (default): the first packet is inspected in WASM before dialing
-//     the upstream; allowed packets are replayed intact via DrainTo.
-//   - "stream": every chunk is inspected in WASM, so a bad packet sent later on
-//     an already established connection tears it down immediately.
+// TestProxyWasmOnDataInspectsL7OnceAndStream verifies ABI v4 opaque payload
+// inspection in both modes:
+//   - "once": the first packet is inspected before dialing the upstream;
+//     allowed packets are replayed intact via DrainTo.
+//   - "stream": every chunk is inspected, so a bad packet sent later on an
+//     already established connection tears it down immediately.
 func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
-	// WASM module exporting memory + on_data(ptr, len) -> 1 if payload[0] == 'X', else 0.
-	wasmDenyX := []byte{
-		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
-		0x03, 0x03, 0x02, 0x00, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07, 0x22, 0x03,
-		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
-		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
-		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
-		0x0a, 0x14, 0x02,
-		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
-		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
-	}
-
 	echoAddr := startEcho(t)
 	m := observe.NewMetrics()
 	cfgOnce := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
-		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX} // default data_mode = "once"
+		lc.Plugin = config.PluginConfig{Wasm: v4DenyX(), DataMode: config.DataModeOnce}
 	}))
 	srv := NewServer(testLogger(), NewRuntime(cfgOnce), m)
 	addr := startServer(t, srv)
@@ -310,7 +294,7 @@ func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
 	_, _ = bad.Write([]byte("X-INJECTION"))
 	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := bad.Read(make([]byte, 1)); err == nil {
-		t.Fatal("packet starting with 'X' was not rejected by WASM on_data")
+		t.Fatal("packet starting with 'X' was not rejected by ABI v4 on_event")
 	}
 	waitMetric(t, 2*time.Second, func() bool {
 		return m.Snapshot().ConnectionsPluginRejected >= 1
@@ -319,7 +303,7 @@ func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
 	// 3. Hot-reload to "stream" mode: the first packet passes, the second packet
 	// on the SAME connection starts with 'X' and tears down the stream.
 	cfgStream := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
-		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX, DataMode: "stream"}
+		lc.Plugin = config.PluginConfig{Wasm: v4DenyX(), DataMode: config.DataModeStream}
 	}))
 	if _, err := srv.Reload(context.Background(), cfgStream); err != nil {
 		t.Fatalf("reload stream mode: %v", err)
@@ -407,34 +391,45 @@ func TestProxyDialRetriesFailsOverTransparently(t *testing.T) {
 	})
 }
 
-// TestProxyWasmOnDataMutatesAndRoutesPool verifies that a WASM on_data hook can
-// both mutate the packet bytes in place inside its linear memory AND return >= 2
-// to route the connection to a secondary pool from plugin.route_pools.
-func TestProxyWasmOnDataMutatesAndRoutesPool(t *testing.T) {
-	defaultEcho := startEcho(t)
-	canaryEcho := startEcho(t)
+func TestProxyStreamInspectsServerDirection(t *testing.T) {
+	backend := startBanner(t, "X-RESPONSE")
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: v4DenyX(), DataMode: config.DataModeStream}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
 
-	// WASM module exporting memory (1 page) and on_data(ptr, len) -> i32:
-	//   overwrites memory[ptr] = 'M' (0x4d) and returns 2 (selects route_pools[0]):
-	//   local.get 0; i32.const 0x4d; i32.store8 align=0 offset=0; i32.const 2; end
-	wasmMutateAndRoute := []byte{
-		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
-		0x03, 0x03, 0x02, 0x00, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07, 0x22, 0x03,
-		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
-		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
-		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
-		0x0a, 0x15, 0x02,
-		0x0c, 0x00,
-		0x20, 0x00, // local.get 0 (ptr)
-		0x41, 0xcd, 0x00, // i32.const 0x4d ('M')
-		0x3a, 0x00, 0x00, // i32.store8
-		0x41, 0x02, // i32.const 2 (route_pools[0])
-		0x0b,
-		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
+	conn := dial(t, addr)
+	defer conn.Close()
+	if _, err := conn.Write([]byte("ok")); err != nil {
+		t.Fatalf("write: %v", err)
 	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("server-to-client chunk starting with 'X' was not rejected")
+	}
+}
+
+// TestProxyWasmOpaqueRoutesPool verifies that an ABI v4 once-mode event can
+// return a route verdict and select a pool before dialing. The canary backend
+// closes immediately, so a successful route is observable without payload
+// mutation (M2 is read-only).
+func TestProxyStreamRouteVerdictDenied(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: v4Verdict(2), DataMode: config.DataModeStream}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
+	conn := dial(t, addr)
+	defer conn.Close()
+	if _, err := conn.Write([]byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	expectClosed(t, conn)
+}
+
+func TestProxyWasmOpaqueRoutesPool(t *testing.T) {
+	defaultEcho := startEcho(t)
+	canary := startCloseServer(t)
 
 	cfg := validated(t, &config.Config{
 		Version: 1,
@@ -444,14 +439,14 @@ func TestProxyWasmOnDataMutatesAndRoutesPool(t *testing.T) {
 			UpstreamPool: "default",
 			DialTimeout:  time.Second,
 			Plugin: config.PluginConfig{
-				Wasm:       wasmMutateAndRoute,
-				DataMode:   "once",
+				Wasm:       v4Verdict(2),
+				DataMode:   config.DataModeOnce,
 				RoutePools: []string{"canary"},
 			},
 		}},
 		Pools: map[string]config.PoolConfig{
 			"default": {Servers: []string{defaultEcho}},
-			"canary":  {Servers: []string{canaryEcho}},
+			"canary":  {Servers: []string{canary}},
 		},
 	})
 	rt := NewRuntime(cfg)
@@ -463,41 +458,20 @@ func TestProxyWasmOnDataMutatesAndRoutesPool(t *testing.T) {
 	if _, err := c.Write([]byte("hello")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	var got [5]byte
-	if _, err := io.ReadFull(c, got[:]); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got[:]) != "Mello" {
-		t.Fatalf("mutated payload = %q, want %q", got[:], "Mello")
-	}
+	expectClosed(t, c)
 }
 
 // TestProxyTLSTerminationWithWasmOnData verifies optional TLS termination on a
 // listener: the client connects over TLS, the proxy terminates TLS and hands
-// the decrypted plaintext to the WASM on_data hook before forwarding it to the
-// plain-TCP backend.
+// the decrypted plaintext to the ABI v4 once-mode hook before forwarding it to
+// the plain-TCP backend.
 func TestProxyTLSTerminationWithWasmOnData(t *testing.T) {
 	certPEM, keyPEM := generateSelfSignedCert(t)
 	echoAddr := startEcho(t)
 
-	// WASM on_data hook that rejects packets starting with 'X' (0x58).
-	wasmDenyX := []byte{
-		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
-		0x03, 0x03, 0x02, 0x00, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07, 0x22, 0x03,
-		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
-		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
-		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
-		0x0a, 0x14, 0x02,
-		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
-		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
-	}
-
 	cfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
 		lc.TLS = config.TLSConfig{CertPEM: certPEM, KeyPEM: keyPEM, MinVersion: "1.2"}
-		lc.Plugin = config.PluginConfig{Wasm: wasmDenyX}
+		lc.Plugin = config.PluginConfig{Wasm: v4DenyX(), DataMode: config.DataModeOnce}
 	}))
 	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
 
@@ -571,25 +545,9 @@ func BenchmarkConnHotPath(b *testing.B) {
 
 // TestProxySNIRoutesStreamPluginSeesPeekedPrefix is the regression test for the
 // interaction between SNI peek and data_mode "stream": tlspeek.Peek buffers the
-// first bytes in a *tlspeek.Conn, and that buffered prefix used to be replayed
-// straight to the upstream by DrainTo, bypassing on_data entirely. The plugin
-// must now see the peeked bytes before they reach the backend.
+// first bytes in a *tlspeek.Conn, and that buffered prefix must be passed
+// through the ABI v4 stream hook before DrainTo replays it to the backend.
 func TestProxySNIRoutesStreamPluginSeesPeekedPrefix(t *testing.T) {
-	// on_data(ptr, len) -> 1 when payload[0] == 'X', else 0.
-	wasmDenyX := []byte{
-		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
-		0x03, 0x03, 0x02, 0x00, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07, 0x22, 0x03,
-		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
-		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
-		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
-		0x0a, 0x14, 0x02,
-		0x0b, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x41, 0xd8, 0x00, 0x46, 0x0b,
-		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
-	}
-
 	echoAddr := startEcho(t)
 	m := observe.NewMetrics()
 	cfg := validated(t, &config.Config{
@@ -600,7 +558,7 @@ func TestProxySNIRoutesStreamPluginSeesPeekedPrefix(t *testing.T) {
 			UpstreamPool: "web",
 			DialTimeout:  time.Second,
 			SNIRoutes:    map[string]string{"api.example.com": "web"},
-			Plugin:       config.PluginConfig{Wasm: wasmDenyX, DataMode: "stream"},
+			Plugin:       config.PluginConfig{Wasm: v4DenyX(), DataMode: config.DataModeStream},
 		}},
 		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
 	})
@@ -704,9 +662,8 @@ func BenchmarkConnHotPathParallel(b *testing.B) {
 	})
 }
 
-func TestProxyStatefulHTTPBodyGuardStream(t *testing.T) {
+func TestProxyStatefulHTTPBodyGuardRejected(t *testing.T) {
 	echoAddr := startEcho(t)
-	m := observe.NewMetrics()
 	cfg := validated(t, &config.Config{
 		Version: 1,
 		Listeners: []config.ListenerConfig{{
@@ -716,58 +673,12 @@ func TestProxyStatefulHTTPBodyGuardStream(t *testing.T) {
 			DialTimeout:  time.Second,
 			Plugin: config.PluginConfig{
 				Path:     "../../plugins/examples/http_body_guard/http_body_guard.wasm",
-				DataMode: "stream",
+				DataMode: config.DataModeStream,
 			},
 		}},
 		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
 	})
-	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), m))
-
-	// 1. A request whose headers and JSON body are split across two writes is
-	// reassembled by the stateful plugin, forwarded to the echo backend, and
-	// scrubbed on the way back (dir == 1 masks "password":"secret" -> "******").
-	good := dial(t, addr)
-	defer good.Close()
-	part1 := []byte("POST /login HTTP/1.1\r\nHost: ex")
-	part2 := []byte("ample.com\r\nContent-Length: 21\r\n\r\n{\"password\":\"secret\"}")
-	if _, err := good.Write(part1); err != nil {
-		t.Fatalf("write part1: %v", err)
+	if _, err := NewRuntimeChecked(cfg); err == nil {
+		t.Fatal("ABI v3 stateful stream plugin was accepted in the ABI v4-only path")
 	}
-	time.Sleep(15 * time.Millisecond)
-	if _, err := good.Write(part2); err != nil {
-		t.Fatalf("write part2: %v", err)
-	}
-	_ = good.SetReadDeadline(time.Now().Add(2 * time.Second))
-	echoed := make([]byte, len(part1)+len(part2))
-	if _, err := io.ReadFull(good, echoed); err != nil {
-		t.Fatalf("read echoed response: %v", err)
-	}
-	if !bytes.Contains(echoed, []byte(`{"password":"******"}`)) {
-		t.Fatalf("expected scrubbed password in echoed stream, got %q", echoed)
-	}
-
-	// 2. An attack signature ("union select") split across two TCP writes in the
-	// request body must be caught on the second write and close the connection.
-	bad := dial(t, addr)
-	defer bad.Close()
-	chunk1 := []byte("POST /q HTTP/1.1\r\nHost: example.com\r\nContent-Length: 20\r\n\r\nx=1 union ")
-	chunk2 := []byte("select 123")
-	if _, err := bad.Write(chunk1); err != nil {
-		t.Fatalf("write chunk1: %v", err)
-	}
-	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
-	got1 := make([]byte, len(chunk1))
-	if _, err := io.ReadFull(bad, got1); err != nil {
-		t.Fatalf("read chunk1 echo: %v", err)
-	}
-	if _, err := bad.Write(chunk2); err != nil {
-		t.Fatalf("write chunk2: %v", err)
-	}
-	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := bad.Read(make([]byte, 1)); err == nil {
-		t.Fatal("expected connection to be closed when split body signature completed")
-	}
-	waitMetric(t, 2*time.Second, func() bool {
-		return m.Snapshot().ConnectionsPluginRejected >= 1
-	})
 }

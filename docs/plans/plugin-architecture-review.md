@@ -16,9 +16,12 @@
   ABI v3 `on_headers` modules are rejected at snapshot load. The request-header
   path preserves the complete-block collection, route verdicts and body
   `splice(2)` replay.
-- **Next:** port `once`/`stream` to v4 phases (or remove them from v1) and add
-  v4 lifecycle coverage. Until then those modes remain explicitly legacy ABI v3.
-- **Not in M1:** OUT mutations, request/response body policies, opaque+HTTP
+- **M2 — L7 cutover done:** `once` and `stream` also use ABI v4
+  (`OnOpaqueFirst`/`OnOpaqueChunk`), with direction flags and no v3 L7
+  fallback. ABI v3 remains only for L4 `on_accept`/`on_close`.
+- **Next:** M3 — v4 lifecycle, L4 cutover and removal of the v3 runtime from
+  the production path.
+- **Not in M2:** OUT mutations, request/response body policies, opaque+HTTP
   composition, HTTP/2 and WebSocket framing. Those stay separate milestones.
 - **Research artifacts:** the old `internal/plugin/v4` prototype and generated
   benchmark adapters were removed; they were not production code.
@@ -246,8 +249,9 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - Require explicit mode for L7 hooks (done).
 - Reject `on_headers`-only outside headers (done).
 - Fix example bypasses and lifecycle pairing (done in `stable`).
-- Cut `data_mode: headers` over to ABI v4 and reject legacy `on_headers`
-  modules (done). `once`/`stream` remain explicit legacy ABI v3 modes.
+- Cut all `data_mode` values over to ABI v4 and reject legacy v3 L7 modules
+  (done). `once`/`stream` now use `OnOpaqueFirst`/`OnOpaqueChunk`; only L4
+  `on_accept`/`on_close` remains on v3 until M3.
 
 ### Phase B — host pipeline abstraction (done as M0 core)
 
@@ -264,8 +268,8 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - Add `on_event` dispatch to the proxy for the request-header phase (done).
 - Resolve the plan and capabilities during snapshot validation; reject a module
   whose declared caps do not satisfy the plan (done through `abi4.New`).
-- `data_mode: headers` uses only ABI v4; v3 `on_headers` is rejected. `once` and
-  `stream` remain legacy ABI v3 adapters until their v4 phases land.
+- All `data_mode` values use ABI v4; v3 L7 modules are rejected. ABI v3 remains
+  only for L4 lifecycle until M3.
 - Defer request/response body phases, framing, keep-alive and OUT mutations to
   later milestones.
 - Integration tests cover allow/deny/route verdicts, malformed/oversized
@@ -286,11 +290,11 @@ bolted on later.
 
 Do **not** add another hook for the next feature (body/response). Instead:
 
-1. Use ABI v4 for `data_mode: headers`; legacy `on_headers` is no longer a
-   compatibility path (done).
-2. Port `once`/`stream` to v4 phases or remove them from v1.
+1. Use ABI v4 for every `data_mode`; v3 L7 hooks are no longer a compatibility
+   path (done).
+2. Cut L4 lifecycle over to v4 and remove the v3 runtime (M3).
 3. Migrate examples and plugin authors to phases.
 4. Leave `on_accept`/`on_close` as the only lifecycle hooks.
 
-The ABI v3 `headers` mode is gone; the remaining v3 modes are explicitly
-legacy and should not be used as the pattern for the next feature.
+The ABI v3 L7 modes are gone; only the L4 lifecycle remains on v3 as an
+explicit M3 item.

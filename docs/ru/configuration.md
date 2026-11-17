@@ -64,14 +64,15 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 | `path` | — | Файл `.wasm`; пусто отключает плагин |
 | `max_memory_pages` | `16` | Лимит линейной памяти на инстанс (16 × 64 KiB = 1 MiB) |
 | `timeout` | `1s` | Таймаут хука; отсутствие или `0` выбирает безопасный дефолт `1s`. Для `data_mode: headers` обязателен `> 0` |
-| `data_mode` | обязательно | `once` проверяет первый пакет клиента и сохраняет `splice`; `headers` — путь ABI v4 `on_event`, который собирает полный HTTP/1 request-header block и сохраняет `splice` для тела; `stream` проверяет каждый чанк на legacy-пути ABI v3. Обязателен, если модуль экспортирует L7-хук |
+| `data_mode` | обязательно | `once` проверяет первый пакет клиента и сохраняет `splice`; `headers` собирает полный HTTP/1 request-header block и сохраняет `splice` для тела; `stream` проверяет каждый чанк. Все три — пути ABI v4 `on_event`. Обязателен, если модуль экспортирует L7-хук |
 | `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389`. v4-индекс принимает не более 512 заголовков; больше — fail closed |
 | `inspect_timeout` | `3s` | Режим headers: общий дедлайн на один header block |
-| `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` или legacy v3 `on_data` `2..N` |
+| `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` `2..N`; поддерживаются для `once`/`headers`, запрещены для `stream` |
 
-Для `data_mode: headers` модуль обязан экспортировать ABI v4-контракт
+Для любого `data_mode` модуль обязан экспортировать ABI v4-контракт
 (`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). Legacy-модули
-ABI v3 с `on_headers` отвергаются при загрузке snapshot.
+ABI v3 с L7-хуками отвергаются при загрузке snapshot. ABI v3 остаётся только
+для L4 `on_accept`/`on_close` (модуль без `data_mode`).
 
 ABI и ограничения песочницы — в [плагинах](plugins.md).
 

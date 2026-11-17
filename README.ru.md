@@ -31,7 +31,7 @@
 | Устойчивость | Опциональный трёхсостоянийный circuit breaker (closed/open/half-open) |
 | Rate limiting | Скользящее окно по IP и подсети, лимиты одновременных, баны, allow-list CIDR |
 | TLS | Passthrough по SNI с выбором пула или терминация с hot reload сертификатов |
-| WASM | L4 `on_accept`/`on_close`, ABI v4 `on_event` для `data_mode: headers`; legacy-хуки ABI v3 `once`/`stream` (`on_data`, `on_data_ex`, `on_data_state`) |
+| WASM | ABI v4 `on_event` для `once`, `headers` и `stream`; legacy ABI v3 `on_accept`/`on_close` остаётся до M3 |
 | Наблюдаемость | Admin endpoint (`/metrics`, `/healthz`, `/reload`), структурные логи, pprof по запросу |
 | Control plane | Enrollment, сертификаты, неизменяемые конфиги, подписанные релизы, деплой волнами, rollback, аудит, admin UI |
 

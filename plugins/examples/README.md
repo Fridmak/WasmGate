@@ -10,9 +10,10 @@ Documentation:
 - [Plugins, ABI status, sandbox limits, build instructions](../../docs/en/plugins.md)
 - [Плагины, статус ABI, ограничения песочницы, сборка](../../docs/ru/plugins.md)
 
-`http_headers_guard` still exports the legacy ABI v3 `on_headers` hook. It is
-kept for reference, but `data_mode: headers` is now ABI v4-only and rejects it
-until the example is ported to `on_event`.
+`ipguard` remains runnable on the legacy ABI v3 L4 `on_accept` path. The L7
+examples (`http_guard`, `http_headers_guard`, `http_body_guard`, `path_router`,
+`sni_guard`, `protocol_router`, `redis_guard`, `stream_guard`) still export ABI
+v3 hooks and are not runnable in M2; they will be ported to `on_event` in M3/M4.
 
-[`configs/showcase.yaml`](../../configs/showcase.yaml) wires the supported
-plugins into one runnable configuration.
+[`configs/showcase.yaml`](../../configs/showcase.yaml) wires the currently
+runnable plugins.

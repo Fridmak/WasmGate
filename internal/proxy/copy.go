@@ -13,10 +13,14 @@ import (
 	"time"
 
 	"wasmgate/internal/observe"
-	"wasmgate/internal/plugin"
 )
 
-var errPluginDenied = errors.New("proxy: payload rejected by wasm on_data hook")
+var errPluginDenied = errors.New("proxy: payload rejected by wasm on_event hook")
+
+// streamInspector inspects one opaque chunk and returns the raw verdict
+// (0 allow, nonzero deny/error). ABI v3's on_data_state is not part of this
+// interface: M2 supports direction-aware, read-only v4 stream inspection.
+type streamInspector func(ctx context.Context, connID uint64, dir int32, chunk []byte) (int32, error)
 
 // idleBufferSize is the size of the pooled copy buffers. 32 KiB matches
 // io.Copy's own default and keeps syscalls amortised.
@@ -59,7 +63,7 @@ var bufferPool = sync.Pool{
 // join returns the number of bytes relayed in each direction (a<-b, b<-a). The
 // totals come from io.Copy's own return value, so counting them costs nothing
 // per chunk — one atomic add per finished direction is the whole price.
-func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *plugin.Plugin, connState *plugin.ConnState, metrics *observe.Metrics, connID uint64) (int64, int64) {
+func join(ctx context.Context, a, b net.Conn, idle time.Duration, inspect streamInspector, metrics *observe.Metrics, connID uint64) (int64, int64) {
 	// When ctx is cancelled (e.g. server shutdown), close both sides so the copy
 	// goroutines unblock and wg.Wait returns.
 	stop := context.AfterFunc(ctx, func() {
@@ -71,8 +75,8 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *
 	var fwd, rev atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(ctx, &wg, a, b, idle, streamPlugin, connState.Dir(1), metrics, &fwd, connID, 1) // a <- b (client <- server response)
-	go pipe(ctx, &wg, b, a, idle, streamPlugin, connState.Dir(0), metrics, &rev, connID, 0) // b <- a (server <- client request)
+	go pipe(ctx, &wg, a, b, idle, inspect, metrics, &fwd, connID, 1) // a <- b (client <- server response)
+	go pipe(ctx, &wg, b, a, idle, inspect, metrics, &rev, connID, 0) // b <- a (server <- client request)
 	wg.Wait()
 	return fwd.Load(), rev.Load()
 }
@@ -80,7 +84,7 @@ func join(ctx context.Context, a, b net.Conn, idle time.Duration, streamPlugin *
 // pipe copies src -> dst until EOF or error, then reports completion via wg.
 // A clean EOF half-closes dst's write side; any other outcome tears down both
 // connections so the peer direction cannot stay blocked.
-func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, state *plugin.StateBuf, metrics *observe.Metrics, total *atomic.Int64, connID uint64, dir int32) {
+func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.Duration, inspect streamInspector, metrics *observe.Metrics, total *atomic.Int64, connID uint64, dir int32) {
 	defer wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -94,8 +98,8 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.
 		n   int64
 		err error
 	)
-	if pl != nil {
-		n, err = copyInspected(ctx, dst, src, idle, pl, state, metrics, connID, dir)
+	if inspect != nil {
+		n, err = copyInspected(ctx, dst, src, idle, inspect, metrics, connID, dir)
 	} else {
 		n, err = copyConn(dst, src, idle)
 	}
@@ -112,8 +116,8 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, idle time.
 }
 
 // copyInspected relays src -> dst through a pooled buffer while invoking the
-// WASM on_data hook on every chunk before forwarding it.
-func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, pl *plugin.Plugin, state *plugin.StateBuf, metrics *observe.Metrics, connID uint64, dir int32) (int64, error) {
+// ABI v4 opaque stream inspector on every chunk before forwarding it.
+func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, inspect streamInspector, metrics *observe.Metrics, connID uint64, dir int32) (int64, error) {
 	bufp := bufferPool.Get().(*[]byte)
 	defer bufferPool.Put(bufp)
 	buf := *bufp
@@ -127,11 +131,11 @@ func copyInspected(ctx context.Context, dst, src net.Conn, idle time.Duration, p
 	for {
 		nr, rerr := r.Read(buf)
 		if nr > 0 {
-			verdict, perr := pl.OnDataState(ctx, connID, dir, buf[:nr], state)
+			verdict, perr := inspect(ctx, connID, dir, buf[:nr])
 			if perr != nil {
 				metrics.PluginDiscard()
 			}
-			if perr != nil || verdict != plugin.VerdictAllow {
+			if perr != nil || verdict != 0 {
 				metrics.RejectPlugin()
 				return total, errPluginDenied
 			}

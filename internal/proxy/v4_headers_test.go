@@ -31,9 +31,9 @@ func v4Entry(body []byte) []byte {
 
 // v4Module builds a minimal ABI v4 module exporting memory, on_event, wg_abi,
 // wg_caps, wg_buf_ptr and wg_buf_len. on_event returns the supplied i64 and the
-// module declares the default header-phase capabilities.
+// module declares all L7 capabilities (header + opaque).
 func v4Module(onEvent []byte) []byte {
-	return v4ModuleCaps(onEvent, 0x3f)
+	return v4ModuleCaps(onEvent, 0x7f)
 }
 
 func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
@@ -96,4 +96,22 @@ func v4Verdict(verdict byte) []byte {
 // the per-call timeout interrupts a hung guest.
 func v4Infinite() []byte {
 	return v4Module([]byte{0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x42, 0x00, 0x0b})
+}
+
+// v4DenyX inspects the first byte of the envelope blob and denies when it is
+// 'X'. It is used by once/stream parity tests.
+func v4DenyX() []byte {
+	body := []byte{
+		0x00,
+		0x20, 0x03, // local.get 3 (envelope ptr)
+		0x28, 0x02, 0x1c, // i32.load offset=28 (blob section offset)
+		0x20, 0x03, // local.get 3 (window base)
+		0x6a,             // i32.add -> absolute blob address
+		0x2d, 0x00, 0x00, // i32.load8_u offset=0
+		0x41, 0xd8, 0x00, // i32.const 'X'
+		0x46, // i32.eq
+		0xad, // i64.extend_i32_u
+		0x0b, // end
+	}
+	return v4Module(body)
 }

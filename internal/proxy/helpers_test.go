@@ -62,26 +62,26 @@ func wasmOnHeadersDenyX() []byte {
 	}
 }
 
-// wasmOnDataAllow returns a minimal WASM module exporting:
-//   - memory (1 page)
-//   - on_data_ptr() -> 0x8000
-//   - on_data(ptr: i32, len: i32) -> i32  { return 0 }
-func wasmOnDataAllow() []byte {
-	return []byte{
-		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0b, 0x02,
-		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-		0x60, 0x00, 0x01, 0x7f,
-		0x03, 0x03, 0x02, 0x00, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07, 0x22, 0x03,
-		0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00,
-		0x07, 'o', 'n', '_', 'd', 'a', 't', 'a', 0x00, 0x00,
-		0x0b, 'o', 'n', '_', 'd', 'a', 't', 'a', '_', 'p', 't', 'r', 0x00, 0x01,
-		0x0a, 0x0d, 0x02,
-		0x04, 0x00, 0x41, 0x00, 0x0b,
-		0x06, 0x00, 0x41, 0x80, 0x80, 0x02, 0x0b,
+// startBanner starts a TCP server that writes payload once per connection and
+// closes it. It is used to exercise server-to-client stream inspection.
+func startBanner(tb testing.TB, payload string) string {
+	tb.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatalf("listen banner: %v", err)
 	}
+	tb.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = io.WriteString(c, payload)
+			_ = c.Close()
+		}
+	}()
+	return ln.Addr().String()
 }
 
 // startEcho starts a trivial TCP echo server and returns its address; the
@@ -147,11 +147,6 @@ func edgeConfig(backends []string, mutate func(*config.ListenerConfig)) *config.
 	}
 	if mutate != nil {
 		mutate(&lc)
-	}
-	// Tests that attach an L7 plugin but do not care about the mode use the
-	// historical default explicitly; production configuration must choose.
-	if lc.Plugin.Enabled() && lc.Plugin.DataMode == "" {
-		lc.Plugin.DataMode = "once"
 	}
 	return &config.Config{
 		Version:   1,

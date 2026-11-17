@@ -64,14 +64,15 @@ duplicate addresses and references to missing pools fail validation.
 | `path` | — | `.wasm` file; empty disables the plugin |
 | `max_memory_pages` | `16` | Linear-memory cap per instance (16 × 64 KiB = 1 MiB) |
 | `timeout` | `1s` | Per-hook timeout; omitted or `0` selects the safe 1s default. Required (`> 0`) for `data_mode: headers` |
-| `data_mode` | required | `once` inspects the first client packet and keeps `splice`; `headers` is an ABI v4 `on_event` path that gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk on the legacy ABI v3 path. Required when the module exports an L7 hook |
+| `data_mode` | required | `once` inspects the first client packet and keeps `splice`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk. All three are ABI v4 `on_event` paths. Required when the module exports an L7 hook |
 | `max_header_bytes` | `16384` | Headers mode: maximum request header block; hard cap `16389`. The v4 header index accepts at most 512 headers; more fail closed |
 | `inspect_timeout` | `3s` | Headers mode: total deadline for one header block |
-| `route_pools` | empty | Pools selectable by a v4 `on_event` or legacy v3 `on_data` return value `2..N` |
+| `route_pools` | empty | Pools selectable by a v4 `on_event` return value `2..N`; supported for `once`/`headers`, rejected for `stream` |
 
-For `data_mode: headers`, the module must export the ABI v4 surface
+For every `data_mode`, the module must export the ABI v4 surface
 (`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). Legacy ABI v3
-`on_headers` modules are rejected at snapshot load.
+L7 modules are rejected at snapshot load. ABI v3 remains only for L4
+`on_accept`/`on_close` (module without `data_mode`).
 
 See [plugins](plugins.md) for the ABI and sandbox limits.
 

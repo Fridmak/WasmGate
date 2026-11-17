@@ -6,10 +6,9 @@
 #
 #   go run ./cmd/wasmgate -config configs/showcase.yaml -validate
 #
-# All plugins are committed as prebuilt .wasm files, so no Rust toolchain is
-# required to try this config. See ../plugins/examples/README.md for the ABI,
-# stateless L7 limits, and the ABI v3 host-managed state used by
-# http_body_guard.
+# All plugins are committed as prebuilt .wasm files. ABI v4 L7 ports are still
+# landing; see ../plugins/examples/README.md and
+# docs/plans/m2-v4-only-runtime.md for the current compatibility matrix.
 version: 1
 
 admin_addr: "127.0.0.1:9098"
@@ -26,99 +25,13 @@ listeners:
       path: "../plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16
       timeout: 1s            # per-hook timeout; 0 would select the 1s default
-      data_mode: "once"
 
-  # ABI v4 request-header example is pending. The old ABI v3
-  # http_headers_guard.wasm is intentionally not listed: data_mode: "headers"
-  # is now ABI v4-only and rejects v3 on_headers modules.
+  # ABI v3 L7 examples (http_guard, path_router, sni_guard, protocol_router,
+  # redis_guard, stream_guard, http_body_guard) are not runnable in M2: every
+  # data_mode is now ABI v4 and those committed .wasm files still export v3
+  # hooks. Ports are tracked in docs/plans/m2-v4-only-runtime.md.
   #
-  # - name: showcase-http-headers-guard
-  #   addr: "127.0.0.1:8110"
-  #   upstream_pool: web
-  #   plugin:
-  #     path: "../plugins/examples/http_headers_guard/http_headers_guard.wasm"
-  #     max_memory_pages: 16
-  #     timeout: 1s
-  #     data_mode: "headers"
-  #     max_header_bytes: 16384
-  #     inspect_timeout: 3s
-
-  # nginx `http` access rules + `proxy_hide_header`: auth, method/path policy,
-  # CL/TE smuggling checks, and Server/X-Powered-By masking. Needs both
-  # directions, so it runs in stream mode.
-  - name: showcase-http-guard
-    addr: "127.0.0.1:8101"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/http_guard/http_guard.wasm"
-      max_memory_pages: 16
-      timeout: 1s
-      data_mode: "stream"
-
-  # nginx `map $host/$uri $upstream`: route by Host and path after inspecting
-  # only the first packet, then return to splice(2) for the rest.
-  - name: showcase-path-router
-    addr: "127.0.0.1:8102"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/path_router/path_router.wasm"
-      timeout: 1s
-      data_mode: "once"
-      route_pools: ["api", "static", "ws"]   # verdict 2/3/4
-
-  # nginx `ssl_preread` + `map`: parse SNI without terminating TLS and select
-  # an upstream. The connection stays end-to-end encrypted.
-  - name: showcase-sni-guard
-    addr: "127.0.0.1:8103"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/sni_guard/sni_guard.wasm"
-      timeout: 1s
-      data_mode: "once"
-      route_pools: ["api", "static", "internal"]   # verdict 2/3/4
-
-  # nginx `stream` protocol dispatch: TLS/HTTP/SSH/PostgreSQL/Redis -> pool.
-  # Unknown first bytes are denied, which is the point of a protocol gateway.
-  - name: showcase-protocol-router
-    addr: "127.0.0.1:8104"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/protocol_router/protocol_router.wasm"
-      timeout: 1s
-      data_mode: "once"
-      route_pools: ["tls-backend", "http-backend", "ssh-backend", "postgres", "redis"]
-
-  # nginx `stream` ACL for Redis: parse RESP/inline commands and close the
-  # connection on CONFIG/FLUSHALL/EVAL/CLIENT KILL and friends.
-  - name: showcase-redis-guard
-    addr: "127.0.0.1:8105"
-    upstream_pool: redis
-    plugin:
-      path: "../plugins/examples/redis_guard/redis_guard.wasm"
-      timeout: 1s
-      data_mode: "stream"
-
-  # nginx `sub_filter` + a body-scanning WAF: detect attack signatures in the
-  # client body and mask JSON secrets in the response body in place.
-  - name: showcase-stream-guard
-    addr: "127.0.0.1:8106"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/stream_guard/stream_guard.wasm"
-      timeout: 1s
-      data_mode: "stream"
-
-  # Stateful ABI v3 (`on_data_state` + `on_state_ptr`): reassembles split HTTP
-  # headers across TCP reads, tracks Content-Length and per-connection request/
-  # body budgets across keep-alive requests, catches cross-chunk body attack
-  # signatures via a 64-byte rolling tail, and scrubs response secrets.
-  - name: showcase-http-body-guard
-    addr: "127.0.0.1:8109"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/http_body_guard/http_body_guard.wasm"
-      timeout: 1s
-      data_mode: "stream"
+  # ABI v4 examples for once/stream/headers will be added with the Rust v4 SDK.
 
   # The same ssl_preread routing without any WASM: useful as a baseline when
   # explaining what the plugin adds (arbitrary policy vs. a static map).
@@ -129,9 +42,8 @@ listeners:
       "api.example.com": api
       "*.example.com": web
 
-  # TLS termination makes on_data see plaintext. Uncomment after generating
-  # certs (`openssl req -x509 -newkey rsa:2048 -nodes -days 1 ...`) to compare
-  # the encrypted and decrypted paths:
+  # TLS termination examples are pending an ABI v4 plugin port. Uncomment after
+  # generating certs and adding a v4 module:
   #
   # - name: showcase-tls-termination
   #   addr: "127.0.0.1:8108"
@@ -141,10 +53,6 @@ listeners:
   #     key_file: "../certs/server.key"
   #     min_version: "1.2"
   #     handshake_timeout: 10s
-  #   plugin:
-  #     path: "../plugins/examples/http_guard/http_guard.wasm"
-  #     timeout: 1s
-  #     data_mode: "stream"
 
 pools:
   web:

@@ -13,16 +13,13 @@ import (
 // header decision, which is the path this feature is meant to keep fast.
 const benchmarkRequest = "GET /bench HTTP/1.1\r\nHost: bench.test\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n"
 
-// BenchmarkHeadersBody measures body relay throughput for the three plugin
-// modes. once/stream use the ABI v3 http_guard module; headers uses an ABI v4
-// allow module. The body path after the header decision is what this feature is
-// meant to keep fast.
+// BenchmarkHeadersBody measures body relay throughput for the three ABI v4
+// data modes. once/headers inspect one prefix and then splice; stream invokes
+// the event hook on every chunk. The body path after the header decision is what
+// this feature is meant to keep fast.
 func BenchmarkHeadersBody(b *testing.B) {
-	for _, mode := range []string{"", "headers", "stream"} {
+	for _, mode := range []string{config.DataModeOnce, config.DataModeHeaders, config.DataModeStream} {
 		name := mode
-		if name == "" {
-			name = "once"
-		}
 		b.Run(name, func(b *testing.B) {
 			benchBodyWithMode(b, mode)
 		})
@@ -33,14 +30,11 @@ func benchBodyWithMode(b *testing.B, mode string) {
 	const bodyChunk = 64 << 10
 	backend := startEcho(b)
 	pluginCfg := config.PluginConfig{
-		Wasm:           wasmOnDataAllow(),
+		Wasm:           v4Verdict(0),
 		DataMode:       mode,
 		Timeout:        time.Second,
 		MaxHeaderBytes: 1024,
 		InspectTimeout: time.Second,
-	}
-	if mode == config.DataModeHeaders {
-		pluginCfg.Wasm = v4Verdict(0)
 	}
 	cfg := validated(b, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
 		lc.Plugin = pluginCfg
