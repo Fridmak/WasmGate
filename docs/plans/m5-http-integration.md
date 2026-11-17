@@ -27,3 +27,8 @@ error.
 The remaining M5 work is the v4 Rust SDK and example ports. Until those ports
 exist, the committed v3 `.wasm` files remain intentionally rejected by the
 loader and are not used by showcase configurations.
+
+SDK groundwork is now present in `plugins/examples/common/src/v4.rs`: bounded
+envelope/index readers, fixed guest windows, phase/flag constants and OUT
+writer helpers. The individual policy ports and rebuilt `.wasm` artifacts still
+remain to be completed and validated with a Rust toolchain.

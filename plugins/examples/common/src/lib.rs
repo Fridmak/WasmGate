@@ -11,6 +11,10 @@
 
 #![no_std]
 
+/// ABI v4 envelope/event helpers. The existing helpers below are retained for
+/// legacy source compatibility; new examples should use `v4`.
+pub mod v4;
+
 /// The host guarantees a 32 KiB scratch region behind `on_data_ptr()`.
 pub const SCRATCH_CAP: usize = 32 * 1024;
 
