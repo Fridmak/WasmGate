@@ -5,6 +5,7 @@
 - **Base:** `main` after the metrics merge (`8aa95f5`)
 - **Scope owner:** data plane / plugin ABI
 - **Goal release:** next minor after the plan is approved
+- **Execution plan:** [`plugin-http-headers-implementation.md`](plugin-http-headers-implementation.md) — locked v1 decisions, tasks, tests and security gates
 
 ## 1. Problem
 
@@ -54,7 +55,7 @@ listeners:
       data_mode: headers      # new; default remains "once"
       max_header_bytes: 16384
       inspect_timeout: 3s
-      incomplete: deny        # deny (default) | fallback_once
+      # v1: incomplete headers always deny; no fallback option
       route_pools: ["canary"]
 ```
 
@@ -71,16 +72,13 @@ Validation rules:
   `5 + 16 KiB`). Default `16384`.
 - `inspect_timeout` must be positive. Default `3s`. It is a **total** deadline
   for the whole header block, not a per-read deadline.
-- `incomplete` controls what happens when the deadline expires, the client
-  closes, or the block does not fit:
-  - `deny` (default): close before dialing; safest;
-  - `fallback_once`: call the legacy `on_data`/`on_data_ex` hook with the bytes
-    collected so far, then continue like `once`. This is an explicit downgrade
-    and should be logged and counted.
+- Incomplete headers (timeout, EOF, oversized, no terminator) **always deny** in
+  v1 before dialing. There is no `fallback_once`: a fail-open fallback would
+  reintroduce exactly the bypass this mode exists to close.
 - The existing `plugin.timeout` stays the per-hook WASM timeout. For
-  `data_mode: headers` it must be non-zero (or gets a default of `1s`) because a
-  looping guest would otherwise freeze the process during header inspection;
-  this also links the feature to the WG-02 fix.
+  `data_mode: headers` it must be non-zero; validation rejects `timeout: 0`
+  because a looping guest would otherwise freeze the process during header
+  inspection. This also links the feature to the WG-02 fix.
 
 ### 3.2 New optional hook
 
@@ -314,7 +312,7 @@ Files:
   - `sni_routes` + headers is rejected at startup;
   - keep-alive second request is not inspected (documented assertion, not a
     security test);
-  - `fallback_once` behavior.
+  - all incomplete-header cases deny before dial.
 - `internal/proxy/copy_test.go` or a new benchmark file: verify the body path
   still uses the fast path on Linux.
 
@@ -385,7 +383,7 @@ the data-plane surface.
 | TLS passthrough | Startup validation rejects `headers` with `sni_routes` and no termination | TLS termination with ALPN h2 still needs the HTTP/2 check |
 | Slowloris / pre-dial hold | `max_header_bytes`, total `inspect_timeout`, existing per-IP/concurrency guards | Guards are off by default; recommend enabling them |
 | Oversized headers | Hard cap at the existing 16,389-byte peek buffer; fail closed | None; larger headers need a new buffer policy |
-| Incomplete headers | `deny` by default; `fallback_once` is opt-in and logged | `fallback_once` is fail-open by design |
+| Incomplete headers | Always deny in v1 before dial; no fallback option | None in v1; operators who need the old behavior keep `data_mode: once` |
 | Request smuggling / parser differential | Host does not normalise or parse; passes raw bytes; strict SDK parser | Upstream may still interpret CL/TE differently; `stream`/normalisation is the only complete answer |
 | Header mutation injection | In-place only; no length change; plugin is trusted policy code | A malicious plugin can already rewrite headers |
 | Plugin timeout 0 freezes process | `headers` mode requires a non-zero hook timeout; tie to WG-02 fix | Existing plugin loads/reloads still need WG-26 |
@@ -480,8 +478,7 @@ Host and proxy:
   before the final empty line;
 - body in the same read; body after headers; body absent;
 - `max_header_bytes - 1`, exactly max, max + 1;
-- EOF, timeout, reset, half-close;
-- `fallback_once` vs `deny`;
+- EOF, timeout, reset, half-close (all deny);
 - plugin allow/deny/route, invalid route;
 - plugin mutation of method/header;
 - plugin error/panic/trap;
@@ -538,24 +535,25 @@ Acceptance criteria:
 
 ## 10. Open questions
 
-1. Should the mode be named `headers` or `http_headers`? `headers` is shorter but
-   less explicit; `http_headers` makes the HTTP/1 assumption obvious.
-2. Should `fallback_once` exist at all? It is a deliberate fail-open and might be
-   better left out of v1.
-3. Should keep-alive connections be rejected in headers mode (closing after the
-   first request) to avoid the false-security gap? That breaks normal HTTP
-   keep-alive and is probably worse than documenting the limitation.
-4. Should `on_headers` be a separate hook or just `on_data` with a mode marker?
-   A separate hook is clearer for plugin authors; the cost is one more export in
-   the validator and docs.
-5. Should the block passed to the plugin include the trailing body bytes for
-   context? Recommended: no; pass exactly through `\r\n\r\n`.
+Resolved for v1 (see the execution plan):
+
+1. **Mode name:** `headers`.
+2. **`fallback_once`:** not implemented; all incomplete headers deny.
+3. **Keep-alive:** not rejected; the first-request-only limitation is documented,
+   and `stream` remains the per-request option.
+4. **`on_headers`:** a separate optional hook, with fallback to `on_data`.
+5. **Body bytes:** never passed to the header hook; pass exactly through
+   `\r\n\r\n`.
+
+Still open for later versions:
+
 6. Do we need a `max_header_lines` cap in addition to bytes? The byte cap is
-   sufficient for memory; a line cap helps some parsers, but the SDK can enforce
-   it.
+   sufficient for memory; the SDK can enforce a line cap.
 7. Is 16,389 bytes enough for real-world headers? If not, a separate 32 KiB
    header pool is a follow-up; do not silently grow the existing per-connection
    peek buffer.
+8. Do we need a per-request HTTP mode for keep-alive? That is a separate,
+   larger HTTP-aware proxy feature.
 
 ## 11. Future work
 
