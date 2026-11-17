@@ -120,6 +120,8 @@ services:
       - ${WASMGATE_AGENT_ID:-}
       - -cp-name
       - dp-01
+      - -cp-environment
+      - prod
       - -cp-labels
       - role=demo
       - -cp-state

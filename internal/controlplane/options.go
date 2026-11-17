@@ -44,6 +44,10 @@ type Options struct {
 	// pre-created with a per-agent enrollment token. Empty means the agent picks
 	// its own GUID, which is what shared registration tokens expect.
 	AgentID string
+	// Environment is the logical environment this agent belongs to. When set,
+	// signed releases for another environment are rejected before parsing. Empty
+	// keeps compatibility with single-environment deployments.
+	Environment string
 	// Labels are matched by deployment wave selectors. Labels configured by the
 	// operator on the control plane take precedence over these values.
 	Labels map[string]string
@@ -113,6 +117,7 @@ func (o *Options) normalize() error {
 			o.Name = host
 		}
 	}
+	o.Environment = strings.TrimSpace(o.Environment)
 	if o.Version == "" {
 		o.Version = buildVersion()
 	}

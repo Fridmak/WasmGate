@@ -46,6 +46,7 @@ func run() error {
 		cpState      = flag.String("cp-state", "state", "directory for the agent identity and applied-release state")
 		cpName       = flag.String("cp-name", "", "agent name reported to the control plane (default: host name)")
 		cpAgentID    = flag.String("cp-agent-id", "", "agent id assigned by the control plane (per-agent enrollment tokens)")
+		cpEnv        = flag.String("cp-environment", "", "environment this agent belongs to; releases for another environment are rejected")
 		cpLabels     = flag.String("cp-labels", "", "comma-separated k=v labels used by deployment selectors")
 		cpServerCA   = flag.String("cp-server-ca", "", "PEM file with the CA that signed the control-plane server certificate")
 		cpHeartbeat  = flag.Duration("cp-heartbeat", controlplane.DefaultHeartbeat, "heartbeat interval")
@@ -189,6 +190,7 @@ func run() error {
 			ConfigPath:  *configPath,
 			Name:        *cpName,
 			AgentID:     *cpAgentID,
+			Environment: *cpEnv,
 			Labels:      labels,
 			Heartbeat:   *cpHeartbeat,
 			ServerCA:    *cpServerCA,

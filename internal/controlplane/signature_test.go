@@ -129,7 +129,7 @@ func TestVerifyManifestSignature(t *testing.T) {
 	}
 
 	unsigned := &wasmgatepb.ApplyRelease{ReleaseId: "x"}
-	if err := verifyRelease(&key.PublicKey, unsigned); err == nil {
+	if _, err := verifyRelease(&key.PublicKey, unsigned); err == nil {
 		t.Fatal("accepted a release without a manifest")
 	}
 }

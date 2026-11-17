@@ -66,24 +66,26 @@ func loadReleaseKey(path string) (*ecdsa.PublicKey, error) {
 }
 
 // verifyRelease checks that the release was signed by the control plane and that
-// the signed manifest describes exactly this message.
-func verifyRelease(key *ecdsa.PublicKey, release *wasmgatepb.ApplyRelease) error {
+// the signed manifest describes exactly this message. It returns the parsed
+// manifest so callers can enforce environment scope.
+func verifyRelease(key *ecdsa.PublicKey, release *wasmgatepb.ApplyRelease) (releaseManifest, error) {
+	var zero releaseManifest
 	manifest := release.GetManifest()
 	signature := release.GetManifestSignature()
 
 	if len(manifest) == 0 || len(signature) == 0 {
-		return errors.New("release is not signed")
+		return zero, errors.New("release is not signed")
 	}
 	if err := verifyManifestSignature(key, manifest, signature); err != nil {
-		return err
+		return zero, err
 	}
 
 	parsed, err := parseReleaseManifest(manifest)
 	if err != nil {
-		return err
+		return zero, err
 	}
 
-	return parsed.matches(release)
+	return parsed, parsed.matches(release)
 }
 
 // verifyManifestSignature verifies an IEEE P1363 (r||s) ECDSA P-256 signature.

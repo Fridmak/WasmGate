@@ -54,8 +54,15 @@ func (a *Agent) applyRelease(
 
 	// The signature is checked before the document is parsed: an unsigned or
 	// altered release must not even reach the configuration parser.
-	if err := verifyRelease(a.releaseKey, release); err != nil {
+	manifest, err := verifyRelease(a.releaseKey, release)
+	if err != nil {
 		return fail(fmt.Errorf("verify release: %w", err))
+	}
+	if a.opts.Environment != "" && !strings.EqualFold(manifest.Environment, a.opts.Environment) {
+		return fail(fmt.Errorf(
+			"release environment %q does not match this agent's environment %q",
+			manifest.Environment,
+			a.opts.Environment))
 	}
 
 	cfg, dir, err := a.prepareConfig(release)
