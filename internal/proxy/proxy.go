@@ -115,6 +115,18 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	}
 
 	var connID uint64
+	var pluginAccepted bool
+	var closeRx, closeTx int64
+	defer func() {
+		if !pluginAccepted || rl.plugin == nil {
+			return
+		}
+		// Pair on_close with on_accept even when the connection exits before the
+		// relay starts (deny, TLS failure, header timeout, dial failure).
+		if err := rl.plugin.OnCloseConn(context.Background(), connID, peerIP, closeRx, closeTx); err != nil {
+			p.metrics.PluginDiscard()
+		}
+	}()
 	if rl.plugin != nil {
 		connID = p.nextID.Add(1)
 		verdict, err := rl.plugin.OnAccept(ctx, peerIP, peerPort)
@@ -132,6 +144,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 			}
 			return
 		}
+		pluginAccepted = true
 	}
 
 	if rl.tlsConfig != nil {
@@ -305,12 +318,8 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamPlugin, connState, p.metrics, connID)
 	tx += prefix
+	closeRx, closeTx = rx, tx
 	p.metrics.AddBytes(rx + tx)
-	if rl.plugin != nil {
-		if err := rl.plugin.OnCloseConn(ctx, connID, peerIP, rx, tx); err != nil {
-			p.metrics.PluginDiscard()
-		}
-	}
 }
 
 // selectRoutePool maps a plugin verdict to route_pools. It returns (nil, true)

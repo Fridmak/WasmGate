@@ -2,6 +2,7 @@
 
 - **Branch:** `feat/plugin-http-headers`
 - **Source report:** `WasmGate-security-report-round2.md` (review of `main` @ `4d9448f`)
+- **Plugin architecture:** [`plugin-architecture-review.md`](plugin-architecture-review.md)
 - **Status:** implemented in this branch; DPCP-1 remains a separate design item
 
 ## Accepted findings and fixes
@@ -16,6 +17,11 @@
 | **CPDATA-1** | `ArtifactDownloadService` verifies the client certificate CN, computes its thumbprint and requires `IsActiveAsync` before streaming any artifact. Revoked/expired certificates are rejected. | build; logic mirrors `AgentControlService` |
 | **CPDATA-2** | An apply result is accepted only when the reporting agent exists, belongs to the deployment environment, matches the deployment release id, and matches at least one wave selector. | build; `WaveSelector` tests |
 | **DPCP-2** | Agents can be started with `-cp-environment`; a signed manifest for another environment is rejected before parsing/applying the configuration. | build; manifest parser tests |
+| **WG-04 / S2** | `data_mode` is now required for modules exporting L7 hooks; `on_headers`-only plugins are rejected outside `headers` mode. No implicit `once`, no silent no-op. | proxy snapshot tests |
+| **S1** | `http_headers_guard` canonicalizes the target: rejects absolute-form, dot segments, `//` and percent-encoded path bypasses. | example tests |
+| **S7** | Agent command writes are bounded by a 10s deadline; a stalled agent closes its session instead of blocking a deployment request. | build; deployment e2e pending |
+| **S8** | `-cp-insecure` is accepted only for loopback HTTP endpoints. | controlplane options test |
+| **S9** | Legacy `OnData` (`connID=0`) clears the scratch window on every call. | plugin tests |
 
 ## Explicitly not changed here
 
