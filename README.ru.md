@@ -121,7 +121,7 @@ internal/ratelimit/    скользящее окно
 internal/observe/      логи, метрики, admin endpoint
 internal/controlplane/ клиент control plane (enroll, session, apply)
 control-plane/         C# control plane и тесты
-plugins/examples/      восемь эталонных плагинов (Rust, готовые .wasm)
+plugins/examples/      девять эталонных плагинов (Rust, готовые .wasm)
 configs/               пример и showcase-конфигурация
 deployments/           сценарии развёртывания, Dockerfile'ы, systemd, dev-сертификаты
 benchmarks/            сырой вывод бенчмарков

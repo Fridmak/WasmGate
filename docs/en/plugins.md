@@ -46,9 +46,10 @@ keeps its socket open. Headers are not rewritten to advertise the close.
 - A request without `Content-Length` has no body. A response must have a
   single valid `Content-Length`, except for HEAD and statuses 204, 205 and
   304. A length on HEAD or 304 describes a representation, not body bytes.
-  HTTP/1 upgrades, CONNECT, `Expect`, informational responses,
-  `Transfer-Encoding` (including chunked), close-delimited bodies, and
-  ambiguous lengths are not supported.
+  `max_body_bytes` (default 1 MiB) bounds the declared length in both
+  directions and is checked before any body bytes are read. HTTP/1 upgrades,
+  CONNECT, `Expect`, informational responses, `Transfer-Encoding` (including
+  chunked), close-delimited bodies, and ambiguous lengths are not supported.
 - Response heads are held until validated and, if selected, inspected. A
   split response head has its own `inspect_timeout` measured from its first
   byte; set a listener `idle_timeout` to also bound a silent peer. Reads
@@ -70,10 +71,28 @@ keeps its socket open. Headers are not rewritten to advertise the close.
 
 The guests have no WASI, sockets, filesystem, clocks, or randomness. The
 default memory limit is 17 pages (1.06 MiB) per instance. The extra page is
-needed by linker-aligned Rust wasm guests. The engine bounds idle
-instances and closes overflow; `max_conns` bounds listener concurrency when
-configured. Load has a 5s deadline and each hook has its own deadline (default
-1s). A trap or timeout fails closed and the instance is discarded.
+needed by linker-aligned Rust wasm guests. The engine bounds idle instances
+and `max_instances` (default 64, hard cap 1024) caps concurrent guest
+instances per listener; requests beyond the limit wait for a slot or fail on
+their deadline. `max_conns` bounds listener concurrency when configured. Load
+has a 5s deadline and each hook has its own deadline (default 1s). A trap or
+timeout fails closed and the instance is discarded.
+
+## Differences from the legacy v3 runtime
+
+ABI v4 is a smaller, fail-closed contract, not a drop-in reimplementation of
+every v3 feature. The following v3 behaviours are intentionally absent:
+
+- no mutation of opaque `stream` chunks; replacements are limited to
+  `body_policy` body events with `mutation_policy: replace`;
+- no persistent state passed between arbitrary stream chunks, and no
+  keep-alive request/response state across exchanges; state exists only for
+  the header/body phases selected by `body_policy`;
+- no fallback from `on_headers` to `on_data` hooks; a module must export the
+  v4 `on_event` surface for its declared plan.
+
+A v3 deployment that depends on these behaviours needs a guest or config
+redesign, not just a rebuild.
 
 To upgrade, rebuild v3 modules as v4: export `wg_abi` and `wg_caps`, replace
 L7 hooks with `on_event`, and use the OUT envelope for state/replacements.

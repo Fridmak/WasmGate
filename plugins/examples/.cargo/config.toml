@@ -1,4 +1,4 @@
 # Keep the Rust wasm stack small: the host caps an instance at 17 pages
-# (1 MiB) by default, and event plugins reserve bounded IN and OUT windows.
+# (1.06 MiB) by default, and event plugins reserve bounded IN and OUT windows.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=-zstack-size=16384"]

@@ -120,7 +120,7 @@ internal/ratelimit/    sliding-window limiter
 internal/observe/      logs, metrics, admin endpoint
 internal/controlplane/ control-plane client (enroll, session, apply)
 control-plane/         C# control plane and tests
-plugins/examples/      eight reference plugins (Rust, prebuilt .wasm)
+plugins/examples/      nine reference plugins (Rust, prebuilt .wasm)
 configs/               example and showcase configurations
 deployments/           deployment scenarios, Dockerfiles, systemd, dev certificates
 benchmarks/            raw benchmark output
