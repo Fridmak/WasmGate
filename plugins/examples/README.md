@@ -1,6 +1,6 @@
 # Reference plugins
 
-Eight reference plugins (Rust `#![no_std]`; `ipguard` also has a TinyGo
+Nine reference plugins (Rust `#![no_std]`; `ipguard` also has a TinyGo
 variant). They cover L4 filtering, HTTP guarding, body inspection, path and SNI
 routing, protocol detection, Redis ACL, and stream masking. The compiled `.wasm`
 files are committed, so Rust is not required to run them.

@@ -251,6 +251,96 @@ pub fn parse_request(payload: &[u8]) -> Option<Request<'_>> {
     })
 }
 
+/// Parses a complete HTTP/1.x request header block.
+///
+/// Unlike [`parse_request`], this function requires the final `\r\n\r\n`,
+/// rejects LF-only line endings, obs-fold continuation lines, invalid header
+/// names and control bytes in values. It is intended for
+/// `data_mode: headers`, where a partial block must fail closed.
+pub fn parse_request_headers(payload: &[u8]) -> Option<Request<'_>> {
+    if !payload.ends_with(b"\r\n\r\n") {
+        return None;
+    }
+    let line_end = find(payload, b"\r\n")?;
+    let line = &payload[..line_end];
+    let mut parts = line.split(|&b| b == b' ');
+    let method = parts.next()?;
+    let target = parts.next()?;
+    let version = parts.next()?;
+    if parts.next().is_some() || method.is_empty() || target.is_empty() {
+        return None;
+    }
+    if !is_http_method(method) || version.len() != 8 || !version.starts_with(b"HTTP/1.") {
+        return None;
+    }
+
+    let headers_start = line_end + 2;
+    let mut i = headers_start;
+    loop {
+        let rest = &payload[i..];
+        let nl = find(rest, b"\n")?;
+        if nl == 0 {
+            return None;
+        }
+        let line_end_abs = i + nl;
+        if payload[line_end_abs - 1] != b'\r' {
+            return None;
+        }
+        let content = &payload[i..line_end_abs - 1];
+        if content.is_empty() {
+            // The only empty line is the final CRLFCRLF and must end the block.
+            if line_end_abs + 1 != payload.len() {
+                return None;
+            }
+            break;
+        }
+        if content[0] == b' ' || content[0] == b'\t' {
+            return None; // obs-fold is not accepted in headers mode
+        }
+        let colon = content.iter().position(|&b| b == b':')?;
+        if colon == 0 || !is_token(&content[..colon]) {
+            return None;
+        }
+        for &b in &content[colon + 1..] {
+            if (b < 0x20 && b != b'\t') || b == 0x7f {
+                return None;
+            }
+        }
+        i = line_end_abs + 1;
+    }
+
+    Some(Request {
+        method,
+        target,
+        version,
+        headers: &payload[headers_start..],
+    })
+}
+
+fn is_token(b: &[u8]) -> bool {
+    !b.is_empty() && b.iter().all(|&c| c.is_ascii_alphanumeric() || is_token_char(c))
+}
+
+fn is_token_char(c: u8) -> bool {
+    matches!(
+        c,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+    )
+}
+
 /// Returns the first value of a header, with the name matched case-insensitively.
 pub fn header_value<'a>(headers: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
     for line in headers.split(|&b| b == b'\n') {

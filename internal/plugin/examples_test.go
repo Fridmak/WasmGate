@@ -23,20 +23,22 @@ func loadExample(t *testing.T, path string) *Plugin {
 
 func TestExamplePluginsLoad(t *testing.T) {
 	tests := []struct {
-		name   string
-		path   string
-		data   bool
-		state  bool
-		accept bool
+		name    string
+		path    string
+		data    bool
+		state   bool
+		accept  bool
+		headers bool
 	}{
-		{"ipguard", "../../plugins/examples/ipguard/ipguard.wasm", false, false, true},
-		{"http_guard", "../../plugins/examples/http_guard/http_guard.wasm", true, false, false},
-		{"http_body_guard", "../../plugins/examples/http_body_guard/http_body_guard.wasm", true, true, false},
-		{"path_router", "../../plugins/examples/path_router/path_router.wasm", true, false, false},
-		{"sni_guard", "../../plugins/examples/sni_guard/sni_guard.wasm", true, false, false},
-		{"protocol_router", "../../plugins/examples/protocol_router/protocol_router.wasm", true, false, false},
-		{"redis_guard", "../../plugins/examples/redis_guard/redis_guard.wasm", true, false, false},
-		{"stream_guard", "../../plugins/examples/stream_guard/stream_guard.wasm", true, false, false},
+		{"ipguard", "../../plugins/examples/ipguard/ipguard.wasm", false, false, true, false},
+		{"http_guard", "../../plugins/examples/http_guard/http_guard.wasm", true, false, false, false},
+		{"http_headers_guard", "../../plugins/examples/http_headers_guard/http_headers_guard.wasm", false, false, false, true},
+		{"http_body_guard", "../../plugins/examples/http_body_guard/http_body_guard.wasm", true, true, false, false},
+		{"path_router", "../../plugins/examples/path_router/path_router.wasm", true, false, false, false},
+		{"sni_guard", "../../plugins/examples/sni_guard/sni_guard.wasm", true, false, false, false},
+		{"protocol_router", "../../plugins/examples/protocol_router/protocol_router.wasm", true, false, false, false},
+		{"redis_guard", "../../plugins/examples/redis_guard/redis_guard.wasm", true, false, false, false},
+		{"stream_guard", "../../plugins/examples/stream_guard/stream_guard.wasm", true, false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,9 +49,38 @@ func TestExamplePluginsLoad(t *testing.T) {
 			if got := p.HasState(); got != tt.state {
 				t.Fatalf("HasState() = %v, want %v", got, tt.state)
 			}
+			if got := p.HasHeaders(); got != tt.headers {
+				t.Fatalf("HasHeaders() = %v, want %v", got, tt.headers)
+			}
 			// Modules without on_accept must be transparent on that hook.
 			if v, err := p.OnAccept(context.Background(), net.ParseIP("192.0.2.10"), 1234); err != nil || v != VerdictAllow {
 				t.Fatalf("OnAccept() = (%v, %v), want (allow, nil)", v, err)
+			}
+		})
+	}
+}
+
+func TestExampleHTTPHeadersGuard(t *testing.T) {
+	p := loadExample(t, "../../plugins/examples/http_headers_guard/http_headers_guard.wasm")
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		payload string
+		want    Verdict
+	}{
+		{"valid", "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", VerdictAllow},
+		{"trace", "TRACE / HTTP/1.1\r\nHost: example.test\r\n\r\n", VerdictDeny},
+		{"admin path", "GET /admin HTTP/1.1\r\nHost: example.test\r\n\r\n", VerdictDeny},
+		{"missing host", "GET / HTTP/1.1\r\n\r\n", VerdictDeny},
+		{"duplicate content length", "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n", VerdictDeny},
+		{"cl te", "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n", VerdictDeny},
+		{"lf only", "GET / HTTP/1.1\nHost: example.test\n\n", VerdictDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := p.OnHeaders(ctx, 1, []byte(tt.payload))
+			if err != nil || got != tt.want {
+				t.Fatalf("OnHeaders = (%v, %v), want (%v, nil)", got, err, tt.want)
 			}
 		})
 	}
