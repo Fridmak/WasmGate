@@ -51,6 +51,7 @@ deployments/observability/
 | `wasmgate_connections_rate_rejected_total` | counter | отказы по per-IP/concurrency лимитам |
 | `wasmgate_connections_plugin_rejected_total` | counter | отказы WASM-плагином |
 | `wasmgate_plugin_instances_discarded_total` | counter | уничтоженные WASM-инстансы после trap/timeout |
+| `wasmgate_plugin_header_incomplete_total` | counter | headers-запросы, отклонённые до dial (неполные/слишком большие/HTTP-2) |
 | `wasmgate_upstream_dial_failures_total` | counter | неудачные dial до upstream |
 | `wasmgate_upstream_retries_total` | counter | прозрачные retry по серверам пула |
 | `wasmgate_relayed_bytes_total` | counter | переданные байты в обе стороны |

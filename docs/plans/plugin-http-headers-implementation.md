@@ -1,4 +1,4 @@
-# HTTP header inspection — implementation plan (v1)
+# HTTP header inspection â€” implementation plan (v1)
 
 - **Status:** execution plan, ready to start
 - **Branch:** `feat/plugin-http-headers`
@@ -49,15 +49,15 @@ lists an option, the **v1 decision** below wins.
 ## 2. Work breakdown
 
 Each task has a concrete file target, tests and acceptance criteria. Tasks are
-ordered by dependency; commit boundaries are suggested in §5.
+ordered by dependency; commit boundaries are suggested in Â§5.
 
-### T0 — prerequisites and baseline (0.5 day)
+### T0 â€” prerequisites and baseline (0.5 day)
 
 **T0.1 Baseline benchmark harness**
 
 - Add `internal/proxy/bench_headers_test.go` (or extend an existing benchmark)
   with four cases: no plugin, `once`, `headers`, `stream`.
-- Payloads: 1 KiB request, 16 KiB headers split into 2–3 writes, 1 MiB upload.
+- Payloads: 1 KiB request, 16 KiB headers split into 2â€“3 writes, 1 MiB upload.
 - Record `ns/op`, allocs/op, bytes/op and, on Linux, whether the body path used
   `splice(2)` (counter or `strace` during the manual run).
 - Acceptance: numbers are reproducible and committed only as a comment/PR
@@ -73,18 +73,18 @@ ordered by dependency; commit boundaries are suggested in §5.
 
 **T0.3 Decision record**
 
-- Keep this file and the design file in sync; add any new decisions to §1.
+- Keep this file and the design file in sync; add any new decisions to Â§1.
 - Acceptance: no implementation detail contradicts the locked decisions.
 
-### T1 — buffered prefix support in `tlspeek` (1 day)
+### T1 â€” buffered prefix support in `tlspeek` (1 day)
 
 Files: `internal/tlspeek/sni.go`, `internal/tlspeek/sni_test.go`.
 
-**T1.1 Add `Buffered()`**
+**T1.1 Add `Bytes()`**
 
 ```go
-// Buffered returns the unread prefix without consuming it.
-func (c *Conn) Buffered() []byte
+// Bytes returns the unread prefix without consuming it.
+func (c *Conn) Bytes() []byte
 ```
 
 - Returns `nil` or an empty slice when the buffer is released.
@@ -147,7 +147,7 @@ func readHeaderBlock(c *tlspeek.Conn, max int, deadline time.Time) (prefix, head
 Acceptance: no new allocation per connection beyond the existing peek buffer;
 `go test ./internal/tlspeek ./internal/proxy` passes.
 
-### T2 — configuration and validation (0.5 day)
+### T2 â€” configuration and validation (0.5 day)
 
 Files: `internal/config/listener_config.go`,
 `internal/config/listener_config_test.go`, `internal/config/config_test.go`,
@@ -164,14 +164,14 @@ InspectTimeout time.Duration `yaml:"inspect_timeout"`
 
 **T2.2 Defaults**
 
-- `MaxHeaderBytes == 0` → `16384`.
-- `InspectTimeout == 0` → `3s`.
+- `MaxHeaderBytes == 0` â†’ `16384`.
+- `InspectTimeout == 0` â†’ `3s`.
 - Reject negative values and values outside `1..16389`.
-- `data_mode: headers` + `plugin.timeout == 0` → error with a message pointing
+- `data_mode: headers` + `plugin.timeout == 0` â†’ error with a message pointing
   to `plugin.timeout` and WG-02.
-- `data_mode: headers` + no plugin → error.
-- `data_mode: headers` + `sni_routes` and no TLS termination → error.
-- `data_mode: headers` + `sni_routes` and TLS termination → allowed, because
+- `data_mode: headers` + no plugin â†’ error.
+- `data_mode: headers` + `sni_routes` and no TLS termination â†’ error.
+- `data_mode: headers` + `sni_routes` and TLS termination â†’ allowed, because
   `sni_routes` is ignored on terminated listeners; document this.
 
 **T2.3 Cache identity**
@@ -189,7 +189,7 @@ would reuse the old compiled plugin and the old config semantics.
 
 Acceptance: `-validate` fails fast with a useful message; no partial snapshot.
 
-### T3 — plugin ABI and snapshot validation (1 day)
+### T3 â€” plugin ABI and snapshot validation (1 day)
 
 Files: `internal/plugin/sandbox.go`, `internal/plugin/sandbox_test.go`,
 `internal/proxy/snapshot.go`, `internal/proxy/state.go`.
@@ -247,7 +247,7 @@ func (p *Plugin) OnHeaders(ctx context.Context, connID uint64, payload []byte) (
 
 Acceptance: `go test ./internal/plugin` and race tests pass.
 
-### T4 — proxy integration (1.5 days)
+### T4 â€” proxy integration (1.5 days)
 
 Files: `internal/proxy/proxy.go`, `internal/proxy/proxy_test.go`,
 `internal/proxy/headers.go`, `internal/proxy/copy_test.go` (bench).
@@ -284,9 +284,9 @@ if plugin != nil && plugin.CanInspectHeaders():
 
 **T4.2 Failure handling**
 
-- Overflow, timeout, EOF, HTTP/2 preface → deny/close before dial.
-- Plugin error/trap → `PluginDiscard`, `RejectPlugin`, close.
-- Unknown route → deny and reject.
+- Overflow, timeout, EOF, HTTP/2 preface â†’ deny/close before dial.
+- Plugin error/trap â†’ `PluginDiscard`, `RejectPlugin`, close.
+- Unknown route â†’ deny and reject.
 - No upstream dial in any failure path.
 - Log through `p.sampler` to avoid log flooding.
 - Add `wasmgate_plugin_header_incomplete_total` (no labels) to `observe.Metrics`
@@ -318,7 +318,7 @@ if plugin != nil && plugin.CanInspectHeaders():
 - Acceptance: `headers` is close to `once` for one-read headers and clearly
   cheaper than `stream` for large uploads; record the numbers in the PR.
 
-### T5 — strict SDK parser and example (1 day)
+### T5 â€” strict SDK parser and example (1 day)
 
 Files: `plugins/examples/common/src/lib.rs`, new
 `plugins/examples/http_headers_guard/`, `plugins/examples/Cargo.toml`,
@@ -361,7 +361,7 @@ pub fn parse_request_headers(payload: &[u8]) -> Option<Request<'_>>;
   - build command for the new example;
   - warning that `stream` is required for body/response/per-request policy.
 
-### T6 — documentation and config samples (0.5 day)
+### T6 â€” documentation and config samples (0.5 day)
 
 - `docs/en/configuration.md` / `docs/ru/configuration.md`: new fields and
   defaults.
@@ -371,7 +371,7 @@ pub fn parse_request_headers(payload: &[u8]) -> Option<Request<'_>>;
   `wasmgate_plugin_header_incomplete_total` is added.
 - Update `docs/plans/plugin-http-headers.md` if any decision changes.
 
-### T7 — verification and hardening (1 day)
+### T7 â€” verification and hardening (1 day)
 
 Run in this order:
 
@@ -442,7 +442,7 @@ Before opening the PR:
 - [ ] Body bytes are forwarded unchanged when the plugin does not mutate headers.
 - [ ] New hook has no host imports; sandbox limits unchanged.
 - [ ] Fuzz tests for the host header reader and the strict parser.
-- [ ] Docs explicitly say “first request only, HTTP/1.x, no body/response”.
+- [ ] Docs explicitly say â€œfirst request only, HTTP/1.x, no body/responseâ€.
 - [ ] No `fallback_once` in v1.
 
 ## 5. Risks and fallbacks
@@ -450,7 +450,7 @@ Before opening the PR:
 | Risk | Mitigation |
 |---|---|
 | Header mode creates a false sense of full L7 security | Docs and PR text state the scope; `stream` remains the full filter |
-| Dial latency increases for split headers | Measure; if unacceptable, add a separate non-routing “dial in parallel” optimization, not a semantic change |
+| Dial latency increases for split headers | Measure; if unacceptable, add a separate non-routing â€œdial in parallelâ€ optimization, not a semantic change |
 | 16 KiB cap too small | Fail closed; a 32 KiB header pool is a separate design with memory accounting |
 | Plugin parser differs from upstream | Host does not parse or normalise; SDK parser is strict; recommend `stream` where differential risk matters |
 | Keep-alive bypass | Document; do not claim WAF coverage; future `requests` mode |
@@ -471,7 +471,7 @@ Before opening the PR:
 | 6 | T5 example build, T6 docs |
 | 7 | T7 fuzz/race/bench/e2e, PR cleanup |
 
-Total: **5–7 working days**; add buffer for review and for any WG-02/NEW-2
+Total: **5â€“7 working days**; add buffer for review and for any WG-02/NEW-2
 interaction.
 
 ## 7. Definition of done
@@ -479,7 +479,7 @@ interaction.
 - `data_mode: headers` works end to end on plain HTTP and TLS termination.
 - Complete headers are delivered once; body is untouched and uses the fast path
   where available.
-- All security gates in §4 pass.
+- All security gates in Â§4 pass.
 - Old plugins and configurations are unchanged.
 - English and Russian docs describe the exact scope and limitations.
 - Benchmarks are recorded and the PR explains the trade-off versus `once` and

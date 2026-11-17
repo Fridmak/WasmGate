@@ -51,6 +51,7 @@ See [`deployments/observability/README.md`](../../deployments/observability/READ
 | `wasmgate_connections_rate_rejected_total` | counter | refused by per-IP/concurrency limits |
 | `wasmgate_connections_plugin_rejected_total` | counter | refused by a WASM hook |
 | `wasmgate_plugin_instances_discarded_total` | counter | WASM instances destroyed after trap/timeout |
+| `wasmgate_plugin_header_incomplete_total` | counter | headers-mode requests rejected before dial (incomplete/oversized/HTTP-2) |
 | `wasmgate_upstream_dial_failures_total` | counter | failed upstream dials |
 | `wasmgate_upstream_retries_total` | counter | transparent retries across pool servers |
 | `wasmgate_relayed_bytes_total` | counter | bytes relayed in both directions |

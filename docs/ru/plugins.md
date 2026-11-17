@@ -5,13 +5,14 @@
 генератора случайных чисел. Это детерминированная функция от метаданных
 соединения.
 
-Восемь эталонных плагинов лежат в [`plugins/examples/`](../../plugins/examples/);
+Девять эталонных плагинов лежат в [`plugins/examples/`](../../plugins/examples/);
 их `.wasm` уже закоммичены, Rust для запуска не нужен.
 
 | Плагин | Что демонстрирует | Режим | Вердикт |
 |---|---|---|---|
 | `ipguard` | `on_accept`: L4 allow/deny до `dial` | L4 | `0` allow, `≠0` deny |
 | `http_guard` | `on_data_ex`: методы/пути, Basic auth, CL+TE-smuggling, маскировка заголовков | `stream` | `0` / `1` |
+| `http_headers_guard` | `on_headers`: полный request-header block за один вызов, тело остаётся на `splice` | `headers` | `0` / `1` |
 | `http_body_guard` | `on_data_state` (ABI v3): разорванные заголовки, `Content-Length`, сигнатуры в теле, keep-alive счётчики | `stream` | `0` / `1` |
 | `path_router` | `route_pools` по `Host` и пути | `once` | `2..4` → пулы |
 | `sni_guard` | SNI из ClientHello без терминации TLS | `once` | `2..4` → пулы |
@@ -32,8 +33,10 @@ listeners:
       path: "plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB на инстанс
       timeout: 0s             # 0 = без таймера (только доверенные плагины)
-      data_mode: "once"       # "once" (по умолчанию) или "stream"
-      route_pools: ["canary"] # on_data >= 2 -> route_pools[ret-2]
+      data_mode: "once"       # "once" (по умолчанию), "headers" или "stream"
+      max_header_bytes: 16384 # headers: максимум request-header block
+      inspect_timeout: 3s     # headers: общий дедлайн на блок
+      route_pools: ["canary"] # on_data/on_headers >= 2 -> route_pools[ret-2]
 ```
 
 ## Контракт хуков
@@ -44,6 +47,7 @@ listeners:
 | Экспорт | Сигнатура | Аргументы | Результат |
 |---|---|---|---|
 | `on_accept` | `(i64, i64, i32) -> i32` | `ip_hi`, `ip_lo` (16-байтный канонический IP, big-endian; IPv4 — `::ffff:a.b.c.d`), порт клиента | `0` allow, любой ненулевой запрещает до `dial` |
+| `on_headers` | `(i64, i32, i32) -> i32` | `conn_id`, `ptr`, `len`; один полный HTTP/1 request-header block, включая `\r\n\r\n`; нужен `on_data_ptr()` | Те же вердикты, что у `on_data`; вызывается только в `data_mode: headers` |
 | `on_data` | `(i32, i32) -> i32` | `ptr`, `len` в линейной памяти (**обязателен `on_data_ptr() -> i32`**); до 32 KiB, можно менять на месте | `0` allow, `1` deny, `>= 2` → `route_pools[ret-2]` (только `once`) |
 | `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 client→server, 1 server→client), `ptr`, `len` | Как `on_data` |
 | `on_data_state` | `(i64, i32, i32, i32, i32, i32, i32) -> i64` | `conn_id`, `dir`, `state_ptr`, `state_len`, `state_cap` (4 KiB), `data_ptr`, `data_len`; нужны `on_data_ptr()` и `on_state_ptr()` | Младшие 32 бита — вердикт; старшие — новая длина состояния (`0..4096`) |
@@ -73,6 +77,13 @@ listeners:
   байт) до `dial`, затем возвращает `splice(2)`. Это подсказка для маршрутизации
   и мутации первого пакета, а не полноценный фильтр: для фильтрации нужен
   `stream`.
+- `data_mode: headers` собирает один полный HTTP/1.x request-header block
+  (до `\r\n\r\n`) до `dial`, вызывает плагин один раз и возвращает `splice(2)`
+  для тела. Это политика уровня соединения: маршрутизация, auth, заголовки.
+  Инспектируется только первый запрос keep-alive соединения. Неполный,
+  превышающий лимит, просроченный блок и HTTP/2-preface отклоняются до `dial`.
+  `plugin.timeout` должен быть больше нуля; `sni_routes` без терминации TLS
+  запрещены.
 - `data_mode: stream` вызывает хук на каждый чанк в обе стороны (через
   `on_data_ex`), отключает `splice` и не применяет `route_pools`.
 - Терминация TLS расшифровывает поток до `on_data`; passthrough оставляет его

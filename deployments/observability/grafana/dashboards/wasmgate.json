@@ -608,6 +608,15 @@
           "expr": "sum(rate(wasmgate_plugin_instances_discarded_total{job=\"wasmgate-data-plane\"}[$__rate_interval]))",
           "legendFormat": "plugin discards",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(wasmgate_plugin_header_incomplete_total{job=\"wasmgate-data-plane\"}[$__rate_interval])",
+          "legendFormat": "header incomplete",
+          "refId": "D"
         }
       ],
       "title": "Upstream and plugin failures",
