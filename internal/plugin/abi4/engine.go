@@ -18,7 +18,10 @@ import (
 )
 
 const (
-	DefaultMaxMemoryPages = 16
+	// Rust wasm32 guests reserve linker-aligned data/stack segments that need
+	// one page above the nominal 1 MiB boundary. Keep the default explicit and
+	// documented so reference guests load without per-listener overrides.
+	DefaultMaxMemoryPages = 17
 	DefaultHookTimeout    = time.Second
 	DefaultLoadTimeout    = 5 * time.Second
 	DefaultInCap          = 40 * 1024

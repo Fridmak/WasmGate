@@ -461,7 +461,9 @@ pub fn encode_output(
 mod guest {
     use super::*;
 
-    pub const IN_LEN: usize = 48 * 1024;
+    // The host's default IN capacity is 40 KiB and the OUT capacity is 4 KiB;
+    // the exported IN window must cover both capacities in the ABI contract.
+    pub const IN_LEN: usize = 44 * 1024;
     pub const OUT_LEN: usize = 4 * 1024;
     static mut IN_WINDOW: [u8; IN_LEN] = [0; IN_LEN];
     static mut OUT_WINDOW: [u8; OUT_LEN] = [0; OUT_LEN];

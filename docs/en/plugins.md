@@ -69,7 +69,8 @@ keeps its socket open. Headers are not rewritten to advertise the close.
 ## Sandbox and migration
 
 The guests have no WASI, sockets, filesystem, clocks, or randomness. The
-default memory limit is 16 pages (1 MiB) per instance. The engine bounds idle
+default memory limit is 17 pages (1.06 MiB) per instance. The extra page is
+needed by linker-aligned Rust wasm guests. The engine bounds idle
 instances and closes overflow; `max_conns` bounds listener concurrency when
 configured. Load has a 5s deadline and each hook has its own deadline (default
 1s). A trap or timeout fails closed and the instance is discarded.
