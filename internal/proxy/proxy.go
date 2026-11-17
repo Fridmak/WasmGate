@@ -50,7 +50,14 @@ func New(log *slog.Logger, rt *Runtime, metrics *observe.Metrics) *Proxy {
 func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn) {
 	defer func() { _ = client.Close() }()
 
-	snap := p.rt.Load()
+	// Pin the snapshot for the whole connection. A reload may retire it while
+	// the connection is still running, but its engines stay alive until this
+	// release.
+	snap := p.rt.Acquire()
+	if snap == nil {
+		return
+	}
+	defer snap.Release()
 
 	rl, ok := snap.listeners[listenerName]
 	if !ok {

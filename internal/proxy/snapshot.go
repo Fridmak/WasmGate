@@ -53,6 +53,70 @@ type Snapshot struct {
 	Version   uint64
 	Config    *config.Config
 	listeners map[string]resolvedListener
+
+	// refs counts the publication reference plus every acquired connection.
+	// When the snapshot is retired and the last connection releases it, the
+	// engines it holds are released. This is what lets reloads reclaim Wasm
+	// runtimes without breaking connections that still use the old config.
+	lifecycle snapshotLifecycle
+	engines   []*abi4.Engine
+}
+
+type snapshotLifecycle struct {
+	mu      sync.Mutex
+	refs    int
+	retired bool
+	closed  bool
+}
+
+// Acquire pins the snapshot for the lifetime of one connection. It returns nil
+// once the snapshot has been retired and drained; callers must fall back to the
+// current snapshot.
+func (s *Snapshot) Acquire() *Snapshot {
+	s.lifecycle.mu.Lock()
+	defer s.lifecycle.mu.Unlock()
+	if s.lifecycle.closed {
+		return nil
+	}
+	s.lifecycle.refs++
+	return s
+}
+
+// Release drops one acquired reference.
+func (s *Snapshot) Release() {
+	s.lifecycle.mu.Lock()
+	s.lifecycle.refs--
+	closeNow := s.lifecycle.refs == 0 && s.lifecycle.retired && !s.lifecycle.closed
+	if closeNow {
+		s.lifecycle.closed = true
+	}
+	s.lifecycle.mu.Unlock()
+	if closeNow {
+		s.closeEngines()
+	}
+}
+
+// retire drops the publication reference. It is called after the snapshot has
+// been replaced in Runtime.cur.
+func (s *Snapshot) retire() {
+	s.lifecycle.mu.Lock()
+	s.lifecycle.retired = true
+	s.lifecycle.refs--
+	closeNow := s.lifecycle.refs == 0 && !s.lifecycle.closed
+	if closeNow {
+		s.lifecycle.closed = true
+	}
+	s.lifecycle.mu.Unlock()
+	if closeNow {
+		s.closeEngines()
+	}
+}
+
+func (s *Snapshot) closeEngines() {
+	for _, eng := range s.engines {
+		eng.Release()
+	}
+	s.engines = nil
 }
 
 // Runtime publishes Snapshots atomically.
@@ -97,8 +161,26 @@ func NewRuntimeChecked(cfg *config.Config) (*Runtime, error) {
 	return r, nil
 }
 
-// Load returns the current snapshot. Lock-free and allocation-free.
+// Load returns the current snapshot for read-only inspection. It is lock-free
+// and allocation-free, but does not pin the snapshot: callers that use plugin
+// engines or keep the snapshot past the current request must use Acquire.
 func (r *Runtime) Load() *Snapshot { return r.cur.Load() }
+
+// Acquire returns a pinned snapshot. The caller must call Release when done.
+// If a reload retires the snapshot concurrently, Acquire retries against the
+// newly published one instead of returning a snapshot whose engines may be
+// closing.
+func (r *Runtime) Acquire() *Snapshot {
+	for {
+		snap := r.cur.Load()
+		if snap == nil {
+			return nil
+		}
+		if pinned := snap.Acquire(); pinned != nil {
+			return pinned
+		}
+	}
+}
 
 // UpstreamStats returns the live in-flight connection count per backend
 // address, sorted by address. Cold path (the admin /metrics endpoint): it takes
@@ -137,21 +219,28 @@ func (r *Runtime) ReloadChecked(cfg *config.Config) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	r.cur.Store(next)
+	prev := r.cur.Swap(next)
+	if prev != nil {
+		prev.retire()
+	}
 	return next.Version, nil
 }
 
-// ValidatePlugins compiles and caches every listener's WASM plugin (and loads
-// any configured TLS certificate pair) before a server starts, reloads or runs
-// in -validate mode, so a missing file or invalid module/certificate fails fast
-// before any socket is bound or any snapshot is swapped.
+// ValidatePlugins compiles every listener's WASM plugin (and loads any
+// configured TLS certificate pair) before a server starts, reloads or runs in
+// -validate mode, so a missing file or invalid module/certificate fails fast
+// before any socket is bound or any snapshot is swapped. Prepared engines are
+// released immediately; the build that follows compiles or reuses its own
+// references.
 func (r *Runtime) ValidatePlugins(cfg *config.Config) error {
 	for _, lc := range cfg.Listeners {
 		lc = resolvePaths(cfg, lc)
 		if lc.Plugin.Enabled() {
-			if _, err := r.registry.preparePlugin(lc.Name, lc.Plugin); err != nil {
+			cp, err := r.registry.preparePlugin(lc.Name, lc.Plugin)
+			if err != nil {
 				return fmt.Errorf("listener %q: %w", lc.Name, err)
 			}
+			cp.release()
 		}
 		if lc.TLS.Enabled() {
 			if _, err := buildTLSConfig(lc.TLS); err != nil {
@@ -207,6 +296,12 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 	// parameters, connection limiters, rate limiters, concurrency guards). That
 	// way a failed reload is truly atomic and leaves live state untouched.
 	var preparedPlugins map[string]cachedPlugin
+	committed := false
+	defer func() {
+		if !committed {
+			releasePrepared(preparedPlugins)
+		}
+	}()
 	var preparedTLS map[string]*tls.Config
 	for _, lc := range cfg.Listeners {
 		lc = resolvePaths(cfg, lc)
@@ -232,6 +327,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 		}
 	}
 	r.registry.commitPlugins(preparedPlugins)
+	committed = true
 
 	pools := make(map[string]*pool, len(cfg.Pools))
 	for name, pc := range cfg.Pools {
@@ -281,6 +377,27 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 		listeners[lc.Name] = rl
 	}
 
+	// Pin every engine used by this snapshot before it becomes publishable.
+	// Snapshot.Release drops these references once the snapshot is retired and
+	// no connection can still reach it.
+	unique := make(map[*abi4.Engine]struct{}, len(preparedPlugins))
+	for _, cp := range preparedPlugins {
+		if cp.v4 != nil {
+			unique[cp.v4] = struct{}{}
+		}
+	}
+	engines := make([]*abi4.Engine, 0, len(unique))
+	for eng := range unique {
+		eng.Retain()
+		engines = append(engines, eng)
+	}
+
 	r.registry.prune(cfg)
-	return &Snapshot{Version: version, Config: cfg, listeners: listeners}, nil
+	return &Snapshot{
+		Version:   version,
+		Config:    cfg,
+		listeners: listeners,
+		engines:   engines,
+		lifecycle: snapshotLifecycle{refs: 1}, // publication reference
+	}, nil
 }

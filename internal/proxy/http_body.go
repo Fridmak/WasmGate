@@ -20,6 +20,7 @@ import (
 
 var (
 	errBodyFraming        = errors.New("proxy: unsupported or invalid HTTP/1 body framing")
+	errBodyTooLarge       = errors.New("proxy: body exceeds max_body_bytes")
 	errBodyMutation       = errors.New("proxy: body mutation changed chunk length")
 	errBodyMutationPolicy = errors.New("proxy: body mutation requires mutation_policy replace")
 )
@@ -41,6 +42,7 @@ type httpExchange struct {
 	request        bodyFlow
 	response       bodyFlow
 	maxHeader      int
+	maxBody        int64
 	inspectTimeout time.Duration
 	metrics        *observe.Metrics
 }
@@ -73,8 +75,13 @@ func newBodyFlow(engine *abi4.Engine, connID uint64, phase abi4.Phase, replace b
 }
 
 func newHTTPExchange(engine *abi4.Engine, connID uint64, pc config.PluginConfig, replace bool, metrics *observe.Metrics) *httpExchange {
+	maxBody := pc.MaxBodyBytes
+	if maxBody == 0 {
+		maxBody = config.DefaultMaxBodyBytes
+	}
 	return &httpExchange{
-		engine: engine, connID: connID, maxHeader: pc.MaxHeaderBytes, inspectTimeout: pc.InspectTimeout, metrics: metrics,
+		engine: engine, connID: connID, maxHeader: pc.MaxHeaderBytes, maxBody: maxBody,
+		inspectTimeout: pc.InspectTimeout, metrics: metrics,
 		request:  newBodyFlow(engine, connID, abi4.PhaseRequestBody, replace, metrics),
 		response: newBodyFlow(engine, connID, abi4.PhaseResponseBody, replace, metrics),
 	}
@@ -127,6 +134,9 @@ func (x *httpExchange) prepareRequest(ctx context.Context, head, body []byte) (a
 	if err != nil {
 		return abi4.VerdictDeny, err
 	}
+	if x.request.left > x.maxBody {
+		return abi4.VerdictDeny, fmt.Errorf("%w: request content-length %d", errBodyTooLarge, x.request.left)
+	}
 	v, err := x.inspectHeaders(ctx, abi4.PhaseRequestHeaders, head, index[:n], &line, x.request.state)
 	if err != nil || v == abi4.VerdictDeny {
 		return v, err
@@ -158,6 +168,9 @@ func (x *httpExchange) prepareResponse(ctx context.Context, head []byte) error {
 		length = 0
 	case !present:
 		return fmt.Errorf("%w: response requires content-length", errBodyFraming)
+	}
+	if length > x.maxBody {
+		return fmt.Errorf("%w: response content-length %d", errBodyTooLarge, length)
 	}
 	x.response.left = length
 	if !x.engine.Plan().Has(abi4.PhaseResponseHeaders) {

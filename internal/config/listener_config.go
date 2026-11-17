@@ -37,6 +37,20 @@ const (
 	// DefaultInspectTimeout bounds all reads that make up one header block.
 	// It is a total deadline, not a per-read deadline.
 	DefaultInspectTimeout = 3 * time.Second
+
+	// DefaultMaxBodyBytes bounds a Content-Length body inspected through
+	// body_policy. It prevents a declared length from parking a connection
+	// indefinitely and caps the memory/work attributable to one exchange.
+	DefaultMaxBodyBytes int64 = 1 << 20
+
+	// DefaultMaxInstances bounds concurrent ABI v4 guest instances per plugin.
+	DefaultMaxInstances = 64
+
+	// MaxInstancesLimit is a configuration sanity ceiling. Each active
+	// instance may reserve max_memory_pages of linear memory, so allowing an
+	// unbounded value would recreate the exhaustion problem this limit exists
+	// to prevent.
+	MaxInstancesLimit = 1024
 )
 
 const (
@@ -94,10 +108,12 @@ func (t TLSConfig) Enabled() bool {
 // PluginConfig configures an optional WebAssembly plugin attached to a listener.
 type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
-	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
+	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 17 pages = 1.06 MiB)
+	MaxInstances   int           `yaml:"max_instances"`    // max concurrent guest instances per listener (0 = default 64)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
 	DataMode       string        `yaml:"data_mode"`        // "once" (first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk); all three are ABI v4
 	BodyPolicy     string        `yaml:"body_policy"`      // "request", "response" or "both"; requires data_mode: headers
+	MaxBodyBytes   int64         `yaml:"max_body_bytes"`   // max Content-Length body inspected by body_policy (0 = default 1 MiB)
 	MutationPolicy string        `yaml:"mutation_policy"`  // "none" (default) or "replace"; replace requires body_policy
 	MaxHeaderBytes int           `yaml:"max_header_bytes"` // max bytes per HTTP head (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
@@ -217,6 +233,21 @@ func (l *ListenerConfig) Validate() error {
 	}
 	if l.Plugin.MaxMemoryPages > 65536 {
 		return errors.New("plugin.max_memory_pages cannot exceed 65536")
+	}
+	if l.Plugin.MaxInstances < 0 {
+		return errors.New("plugin.max_instances cannot be negative")
+	}
+	if l.Plugin.MaxInstances > MaxInstancesLimit {
+		return fmt.Errorf("plugin.max_instances cannot exceed %d", MaxInstancesLimit)
+	}
+	if l.Plugin.MaxInstances == 0 {
+		l.Plugin.MaxInstances = DefaultMaxInstances
+	}
+	if l.Plugin.MaxBodyBytes < 0 {
+		return errors.New("plugin.max_body_bytes cannot be negative")
+	}
+	if l.Plugin.MaxBodyBytes == 0 {
+		l.Plugin.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	switch l.Plugin.DataMode {
 	case "", DataModeOnce, DataModeStream:

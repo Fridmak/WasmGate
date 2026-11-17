@@ -441,6 +441,67 @@ func TestEngineConcurrent(t *testing.T) {
 	}
 }
 
+func TestEngineRetainRelease(t *testing.T) {
+	ctx := context.Background()
+	e, err := New(ctx, allowModule(), Options{Plan: InspectRequestHeaders, InCap: 4096, OutCap: 1024})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	e.Retain()
+	e.Release()
+	if v, err := e.OnRequestHeaders(ctx, 1, testEngineEvent().Block); err != nil || v != VerdictAllow {
+		t.Fatalf("shared engine before final release: (%v, %v)", v, err)
+	}
+	e.Release() // last reference: closes the runtime
+	if _, err := e.OnRequestHeaders(ctx, 2, testEngineEvent().Block); err == nil {
+		t.Fatal("event succeeded after the last reference was released")
+	}
+}
+
+func TestEngineMaxInstances(t *testing.T) {
+	ctx := context.Background()
+	e, err := New(ctx, infiniteModule(), Options{
+		Plan: InspectRequestHeaders, InCap: 4096, OutCap: 1024,
+		Timeout: 500 * time.Millisecond, MaxInstances: 1,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close(ctx)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.OnRequestHeaders(context.Background(), 1, testEngineEvent().Block)
+		first <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(e.sem) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("first event never occupied the instance slot")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	_, err = e.OnRequestHeaders(waitCtx, 2, testEngineEvent().Block)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second event = %v, want context deadline", err)
+	}
+	if err := <-first; err == nil {
+		t.Fatal("blocking event unexpectedly succeeded")
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for len(e.sem) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("instance slot was not released")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestEngineCloseIdempotent(t *testing.T) {
 	ctx := context.Background()
 	e, err := New(ctx, allowModule(), Options{Plan: InspectRequestHeaders, InCap: 4096, OutCap: 1024})

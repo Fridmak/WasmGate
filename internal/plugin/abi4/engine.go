@@ -27,6 +27,15 @@ const (
 	DefaultInCap          = 40 * 1024
 	DefaultOutCap         = 4 * 1024
 	maxIdleInstances      = 16
+	// DefaultMaxInstances bounds concurrent live instances per engine. Idle
+	// instances are capped separately. Each instance can reserve up to
+	// MaxMemoryPages of linear memory, so this is a hard memory ceiling under
+	// concurrent load rather than a tuning knob for throughput alone.
+	DefaultMaxInstances = 64
+	// MaxInstancesLimit is the largest accepted MaxInstances value. It keeps a
+	// misconfigured caller from allocating an absurd semaphore or a memory
+	// ceiling far beyond the host's budget.
+	MaxInstancesLimit = 1024
 	// DefaultHeaderIndexCap bounds the pooled header index used by
 	// OnRequestHeaders. 512 entries is already far above real-world HTTP
 	// requests and keeps the per-event buffer at 8 KiB.
@@ -47,6 +56,10 @@ type Options struct {
 	// HeaderIndexCap is the maximum number of headers accepted by
 	// OnRequestHeaders. Zero selects DefaultHeaderIndexCap.
 	HeaderIndexCap int
+	// MaxInstances bounds concurrent borrowed instances. Zero selects
+	// DefaultMaxInstances. Callers beyond the limit wait for a free slot or
+	// for their context/load deadline to expire.
+	MaxInstances int
 }
 
 type instance struct {
@@ -86,7 +99,9 @@ type Engine struct {
 	hasCloseEx  bool
 	nextID      atomic.Uint64
 	discarded   atomic.Int64
+	refs        atomic.Int64
 	pool        chan *instance
+	sem         chan struct{}
 	idxPool     sync.Pool
 	closeOnce   sync.Once
 }
@@ -124,6 +139,11 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	}
 	if opts.HeaderIndexCap < 1 || opts.HeaderIndexCap > maxEntries {
 		return nil, fmt.Errorf("abi4: header index cap must be between 1 and %d", maxEntries)
+	}
+	if opts.MaxInstances == 0 {
+		opts.MaxInstances = DefaultMaxInstances
+	} else if opts.MaxInstances < 1 || opts.MaxInstances > MaxInstancesLimit {
+		return nil, fmt.Errorf("abi4: max instances must be between 1 and %d", MaxInstancesLimit)
 	}
 	if opts.MaxMemoryPages == 0 {
 		opts.MaxMemoryPages = DefaultMaxMemoryPages
@@ -164,7 +184,9 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		routePools:  opts.RoutePools,
 		headerCap:   opts.HeaderIndexCap,
 		pool:        make(chan *instance, maxIdleInstances),
+		sem:         make(chan struct{}, opts.MaxInstances),
 	}
+	e.refs.Store(1)
 	warm, err := e.instantiate(loadCtx)
 	if err != nil {
 		_ = rt.Close(loadCtx)
@@ -670,24 +692,31 @@ func (e *Engine) OnStream(ctx context.Context, connID uint64, chunk []byte) (Ver
 func (e *Engine) discard(inst *instance) {
 	e.discarded.Add(1)
 	_ = inst.mod.Close(context.Background())
+	<-e.sem
 }
 
-// A sync.Pool can drop instances at any GC without invoking Close. Keep a
-// bounded free list instead, and release overflow even if the engine lives
-// for the rest of the process. It bounds idle, not concurrent, instances.
+// borrow reserves one of the engine's concurrent instance slots, then reuses a
+// pooled instance or instantiates a new one. The slot is released by release or
+// discard. Waiting is bounded by the caller's context and the load deadline.
 func (e *Engine) borrow(ctx context.Context) (*instance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, e.loadTimeout)
+	defer cancel()
+	select {
+	case e.sem <- struct{}{}:
+	case <-loadCtx.Done():
+		return nil, loadCtx.Err()
 	}
 	select {
 	case inst := <-e.pool:
 		return inst, nil
 	default:
 	}
-	loadCtx, cancel := context.WithTimeout(ctx, e.loadTimeout)
-	defer cancel()
 	inst, err := e.instantiate(loadCtx)
 	if err != nil {
+		<-e.sem
 		return nil, err
 	}
 	if inst.abi != e.abi || inst.caps != e.caps {
@@ -703,6 +732,7 @@ func (e *Engine) release(inst *instance) {
 	default:
 		_ = inst.mod.Close(context.Background())
 	}
+	<-e.sem
 }
 
 // ABI returns the validated ABI version reported by the guest.
@@ -718,7 +748,29 @@ func (e *Engine) Plan() Plan { return e.plan }
 // timeout, invalid output, or inconsistent instance metadata.
 func (e *Engine) Discarded() int64 { return e.discarded.Load() }
 
-// Close stops the runtime. Idempotent.
+// Retain takes a shared reference to the engine. Every Retain must be paired
+// with one Release. The engine started with a single reference owned by its
+// creator.
+func (e *Engine) Retain() {
+	if e == nil {
+		return
+	}
+	e.refs.Add(1)
+}
+
+// Release drops a shared reference and closes the engine when the last one is
+// gone. It is safe to call after Close: the runtime close is idempotent.
+func (e *Engine) Release() {
+	if e == nil {
+		return
+	}
+	if e.refs.Add(-1) == 0 {
+		_ = e.Close(context.Background())
+	}
+}
+
+// Close stops the runtime. Idempotent. Callers that share an engine through
+// Retain/Release should use Release instead of closing a shared reference.
 func (e *Engine) Close(_ context.Context) error {
 	if e == nil {
 		return nil

@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"wasmgate/internal/config"
 )
@@ -115,6 +117,100 @@ func TestReloadCheckedFailClosedPreservesLiveState(t *testing.T) {
 	}
 	if got := rt.Load().listeners["l1"].limiter.limit(); got != 5 {
 		t.Fatalf("live limiter was mutated on failed reload: got %d, want 5", got)
+	}
+}
+
+func TestReloadRetiresOldEngineAfterPinnedSnapshot(t *testing.T) {
+	pluginCfg := func(verdict byte) config.PluginConfig {
+		return config.PluginConfig{
+			Wasm:     v4Verdict(verdict),
+			Timeout:  time.Second,
+			DataMode: config.DataModeHeaders,
+		}
+	}
+	cfg := edgeConfig([]string{"127.0.0.1:9000"}, func(lc *config.ListenerConfig) {
+		lc.Plugin = pluginCfg(0)
+	})
+	rt, err := NewRuntimeChecked(cfg)
+	if err != nil {
+		t.Fatalf("NewRuntimeChecked: %v", err)
+	}
+
+	pinned := rt.Acquire()
+	released := false
+	defer func() {
+		if !released {
+			pinned.Release()
+		}
+	}()
+	oldEngine := pinned.listeners["edge"].pluginV4
+	if oldEngine == nil {
+		t.Fatal("listener has no plugin engine")
+	}
+
+	next := edgeConfig([]string{"127.0.0.1:9000"}, func(lc *config.ListenerConfig) {
+		lc.Plugin = pluginCfg(1)
+	})
+	if _, err := rt.ReloadChecked(next); err != nil {
+		t.Fatalf("ReloadChecked: %v", err)
+	}
+	if got := rt.Load().listeners["edge"].pluginV4; got == oldEngine {
+		t.Fatal("reload reused the old engine for changed module bytes")
+	}
+
+	// The old snapshot is still pinned, so its engine must remain usable even
+	// though the registry and the current snapshot no longer reference it.
+	block := []byte("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+	if v, err := oldEngine.OnRequestHeaders(context.Background(), 1, block); err != nil || v != 0 {
+		t.Fatalf("pinned old engine = (%v, %v)", v, err)
+	}
+
+	pinned.Release()
+	released = true
+	if _, err := oldEngine.OnRequestHeaders(context.Background(), 2, block); err == nil {
+		t.Fatal("retired engine still accepts events after its last snapshot was released")
+	}
+}
+
+func TestReloadRemovingPluginRetiresEngine(t *testing.T) {
+	cfg := edgeConfig([]string{"127.0.0.1:9000"}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:     v4Verdict(0),
+			Timeout:  time.Second,
+			DataMode: config.DataModeHeaders,
+		}
+	})
+	rt, err := NewRuntimeChecked(cfg)
+	if err != nil {
+		t.Fatalf("NewRuntimeChecked: %v", err)
+	}
+	pinned := rt.Acquire()
+	released := false
+	defer func() {
+		if !released {
+			pinned.Release()
+		}
+	}()
+	oldEngine := pinned.listeners["edge"].pluginV4
+	if oldEngine == nil {
+		t.Fatal("listener has no plugin engine")
+	}
+
+	if _, err := rt.ReloadChecked(edgeConfig([]string{"127.0.0.1:9000"}, nil)); err != nil {
+		t.Fatalf("ReloadChecked: %v", err)
+	}
+	if got := rt.Load().listeners["edge"].pluginV4; got != nil {
+		t.Fatal("plugin remained attached after removal from the listener")
+	}
+	if _, ok := rt.registry.plugins["edge"]; ok {
+		t.Fatal("removed plugin engine stayed cached in the registry")
+	}
+
+	pinned.Release()
+	released = true
+	if _, err := oldEngine.OnRequestHeaders(context.Background(), 2,
+		[]byte("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")); err == nil {
+		t.Fatal("removed plugin engine still accepts events after its snapshot was released")
 	}
 }
 

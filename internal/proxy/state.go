@@ -67,7 +67,7 @@ type pluginPipeline struct {
 
 func resolvePluginPlan(pc config.PluginConfig) (pluginPipeline, abi4.Options, error) {
 	var p pluginPipeline
-	opts := abi4.Options{MaxMemoryPages: pc.MaxMemoryPages, Timeout: pc.Timeout}
+	opts := abi4.Options{MaxMemoryPages: pc.MaxMemoryPages, MaxInstances: pc.MaxInstances, Timeout: pc.Timeout}
 	switch pc.DataMode {
 	case "":
 		p.mode, opts.Plan = pluginLifecycle, abi4.InspectLifecycle
@@ -124,9 +124,11 @@ func newRegistry() *registry {
 	}
 }
 
-// preparePlugin compiles pc (or reuses the cached instance when config and
+// preparePlugin compiles pc (or reuses the cached engine when config and
 // content hash match) without mutating g.plugins, so a multi-listener reload
 // can validate every listener before committing any change to the registry.
+// The returned cachedPlugin owns one engine reference; the caller must either
+// commit it or call release.
 func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlugin, error) {
 	wasmBytes := pc.Wasm
 	if len(wasmBytes) == 0 {
@@ -140,10 +142,12 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 
 	g.mu.Lock()
 	cur, ok := g.plugins[name]
-	g.mu.Unlock()
 	if ok && samePluginConfig(cur.cfg, pc) && cur.hash == hash {
+		cur.v4.Retain()
+		g.mu.Unlock()
 		return cur, nil
 	}
+	g.mu.Unlock()
 
 	pipeline, opts, err := resolvePluginPlan(pc)
 	if err != nil {
@@ -156,20 +160,48 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	return cachedPlugin{cfg: pc, hash: hash, v4: eng, pipeline: pipeline}, nil
 }
 
+// release drops the reference owned by a prepared or cached plugin.
+func (cp cachedPlugin) release() {
+	if cp.v4 != nil {
+		cp.v4.Release()
+	}
+}
+
+// releasePrepared drops references for plugins that a failed or abandoned
+// build did not commit.
+func releasePrepared(prepared map[string]cachedPlugin) {
+	for _, cp := range prepared {
+		cp.release()
+	}
+}
+
+// commitPlugins transfers ownership of prepared plugins to the registry and
+// releases the registry's references to the engines they replace. Retirement
+// is deferred until every snapshot that still references an old engine is
+// released; an in-flight connection therefore never loses its guest.
 func (g *registry) commitPlugins(prepared map[string]cachedPlugin) {
 	if len(prepared) == 0 {
 		return
 	}
+	var replaced []cachedPlugin
 	g.mu.Lock()
 	for name, cp := range prepared {
+		if old, ok := g.plugins[name]; ok {
+			replaced = append(replaced, old)
+		}
 		g.plugins[name] = cp
 	}
 	g.mu.Unlock()
+
+	for _, cp := range replaced {
+		cp.release()
+	}
 }
 
 func samePluginConfig(a, b config.PluginConfig) bool {
 	return a.Path == b.Path &&
 		a.MaxMemoryPages == b.MaxMemoryPages &&
+		a.MaxInstances == b.MaxInstances &&
 		a.Timeout == b.Timeout &&
 		a.DataMode == b.DataMode &&
 		a.BodyPolicy == b.BodyPolicy &&
@@ -286,8 +318,12 @@ func (g *registry) upstream(addr string) *upstream {
 // bounded without ever resetting a live counter.
 func (g *registry) prune(cfg *config.Config) {
 	liveListeners := make(map[string]bool, len(cfg.Listeners))
+	livePlugins := make(map[string]bool, len(cfg.Listeners))
 	for _, l := range cfg.Listeners {
 		liveListeners[l.Name] = true
+		if l.Plugin.Enabled() {
+			livePlugins[l.Name] = true
+		}
 	}
 	liveUpstreams := make(map[string]bool)
 	for _, p := range cfg.Pools {
@@ -297,7 +333,6 @@ func (g *registry) prune(cfg *config.Config) {
 	}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	for name, l := range g.limiters {
 		if !liveListeners[name] && l.cur.Load() == 0 {
 			delete(g.limiters, name)
@@ -313,8 +348,10 @@ func (g *registry) prune(cfg *config.Config) {
 			delete(g.guards, name)
 		}
 	}
-	for name := range g.plugins {
-		if !liveListeners[name] {
+	var retired []cachedPlugin
+	for name, cp := range g.plugins {
+		if !livePlugins[name] {
+			retired = append(retired, cp)
 			delete(g.plugins, name)
 		}
 	}
@@ -322,6 +359,11 @@ func (g *registry) prune(cfg *config.Config) {
 		if !liveUpstreams[addr] && u.active.Load() == 0 {
 			delete(g.upstreams, addr)
 		}
+	}
+	g.mu.Unlock()
+
+	for _, cp := range retired {
+		cp.release()
 	}
 }
 

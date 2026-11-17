@@ -55,7 +55,9 @@ type Options struct {
 	// Version is the data-plane version reported in Hello. Empty means the
 	// module version from the build info.
 	Version string
-	// AbiVersions are the plugin ABI versions this build supports.
+	// AbiVersions are the plugin ABI versions this build supports. It is not
+	// the control-plane protocol version: agents and control planes negotiate
+	// that separately. The data plane now ships only the ABI v4 runtime.
 	AbiVersions []string
 	// Heartbeat is the interval between Heartbeat messages.
 	Heartbeat time.Duration
@@ -132,7 +134,7 @@ func (o *Options) normalize() error {
 		o.Version = buildVersion()
 	}
 	if len(o.AbiVersions) == 0 {
-		o.AbiVersions = []string{"v1", "v2", "v3"}
+		o.AbiVersions = []string{"v4"}
 	}
 	if o.Heartbeat <= 0 {
 		o.Heartbeat = DefaultHeartbeat

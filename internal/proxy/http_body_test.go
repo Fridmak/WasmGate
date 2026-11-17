@@ -96,6 +96,33 @@ func TestResponseBodyFraming(t *testing.T) {
 	}
 }
 
+func TestBodyLengthLimit(t *testing.T) {
+	engine := httpTestEngine(t, v4Verdict(0), bodyTestPlan)
+	pc := config.PluginConfig{MaxBodyBytes: 10}
+
+	x := newHTTPExchange(engine, 1, pc, false, nil)
+	_, err := x.prepareRequest(context.Background(),
+		[]byte("POST / HTTP/1.1\r\nContent-Length: 11\r\n\r\n"), nil)
+	if !errors.Is(err, errBodyTooLarge) {
+		t.Fatalf("oversized request = %v, want %v", err, errBodyTooLarge)
+	}
+
+	x = newHTTPExchange(engine, 1, pc, false, nil)
+	if err := x.prepareResponse(context.Background(),
+		[]byte("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n")); !errors.Is(err, errBodyTooLarge) {
+		t.Fatalf("oversized response = %v, want %v", err, errBodyTooLarge)
+	}
+
+	x = newHTTPExchange(engine, 1, pc, false, nil)
+	if err := x.prepareResponse(context.Background(),
+		[]byte("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")); err != nil {
+		t.Fatalf("boundary response: %v", err)
+	}
+	if x.response.left != 10 {
+		t.Fatalf("boundary response length = %d, want 10", x.response.left)
+	}
+}
+
 func TestBodyFlowRejectsInvalidReplacementBeforeStateCommit(t *testing.T) {
 	wasm := fixtureBodyGuest(t, abi4.PhaseRequestBody, nil, abi4.Output{Mutation: []byte("longer"), State: []byte("new")}, abi4.VerdictAllow)
 	e := httpTestEngine(t, wasm, bodyTestPlan)
