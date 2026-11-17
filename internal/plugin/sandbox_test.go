@@ -140,6 +140,27 @@ func TestPluginTimeoutStopsInfiniteLoop(t *testing.T) {
 	}
 }
 
+func TestPluginDefaultTimeoutStopsInfiniteLoop(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(ctx, wasmInfiniteLoop, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close(ctx)
+
+	start := time.Now()
+	v, err := p.OnAccept(ctx, net.ParseIP("192.0.2.1"), 8080)
+	if err == nil {
+		t.Fatal("default timeout did not stop an infinite loop")
+	}
+	if v != VerdictDeny {
+		t.Fatalf("verdict on default timeout = %v, want VerdictDeny", v)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("default timeout took %s, want <= 3s", elapsed)
+	}
+}
+
 func TestPluginOnDataRequiresDataPtr(t *testing.T) {
 	// Same on_data module without on_data_ptr: it must fail at load time, not
 	// overwrite guest memory at the fixed 32768 offset.

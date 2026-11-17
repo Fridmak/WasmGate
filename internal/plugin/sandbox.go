@@ -28,7 +28,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"runtime"
@@ -56,6 +55,14 @@ const (
 	// (16 * 64 KiB = 1 MiB) when Options.MaxMemoryPages is 0.
 	DefaultMaxMemoryPages = 16
 
+	// DefaultHookTimeout bounds one hook call when Options.Timeout is zero.
+	// A looping guest must never freeze the whole proxy by default.
+	DefaultHookTimeout = time.Second
+
+	// DefaultLoadTimeout bounds compilation and instance warm-up, including a
+	// module whose start function loops forever.
+	DefaultLoadTimeout = 5 * time.Second
+
 	// ScratchOffset is the byte offset used when a module exports on_data but
 	// fails to export on_data_ptr. It is retained only as documentation: L7
 	// plugins must export on_data_ptr so the host never overwrites guest data.
@@ -81,9 +88,9 @@ const (
 type Options struct {
 	// MaxMemoryPages caps the WASM linear memory in 64 KiB pages (default 16 = 1 MiB).
 	MaxMemoryPages uint32
-	// Timeout bounds a single hook execution. 0 disables the per-call timer
-	// (preserving 0 allocs/op on the fast path). A zero value is an accepted
-	// operator risk: a guest loop can freeze the process, so New logs a warning.
+	// Timeout bounds a single hook execution. Zero selects DefaultHookTimeout.
+	// A zero-length timer is deliberately not supported: a guest loop would
+	// otherwise freeze the process.
 	Timeout time.Duration
 }
 
@@ -95,6 +102,7 @@ type Plugin struct {
 	rt           wazero.Runtime
 	compiled     wazero.CompiledModule
 	timeout      time.Duration
+	loadTimeout  time.Duration
 	hasAccept    bool
 	hasHeaders   bool
 	hasData      bool
@@ -188,6 +196,7 @@ type instance struct {
 	onCloseEx   api.Function
 	dataPtr     uint32
 	dataCap     uint32
+	lastConnID  uint64
 	statePtr    uint32
 	stateCap    uint32
 	stack       [8]uint64
@@ -212,29 +221,38 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 	if maxPages == 0 {
 		maxPages = DefaultMaxMemoryPages
 	}
-
-	rtCfg := wazero.NewRuntimeConfig().WithMemoryLimitPages(maxPages)
-	if opts.Timeout > 0 {
-		rtCfg = rtCfg.WithCloseOnContextDone(true)
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultHookTimeout
 	}
-	rt := wazero.NewRuntimeWithConfig(ctx, rtCfg)
 
-	compiled, err := rt.CompileModule(ctx, wasmBytes)
+	// Compilation and the start function are untrusted code too. A module whose
+	// start function loops must not hang a reload forever.
+	loadCtx, cancel := context.WithTimeout(ctx, DefaultLoadTimeout)
+	defer cancel()
+
+	rtCfg := wazero.NewRuntimeConfig().
+		WithMemoryLimitPages(maxPages).
+		WithCloseOnContextDone(true)
+	rt := wazero.NewRuntimeWithConfig(loadCtx, rtCfg)
+
+	compiled, err := rt.CompileModule(loadCtx, wasmBytes)
 	if err != nil {
-		_ = rt.Close(ctx)
+		_ = rt.Close(loadCtx)
 		return nil, fmt.Errorf("plugin: compile: %w", err)
 	}
 
 	flags, err := validateExports(compiled)
 	if err != nil {
-		_ = rt.Close(ctx)
+		_ = rt.Close(loadCtx)
 		return nil, err
 	}
 
 	p := &Plugin{
 		rt:           rt,
 		compiled:     compiled,
-		timeout:      opts.Timeout,
+		timeout:      timeout,
+		loadTimeout:  DefaultLoadTimeout,
 		hasAccept:    flags.hasAccept,
 		hasHeaders:   flags.hasHeaders,
 		hasData:      flags.hasData,
@@ -243,14 +261,10 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		hasClose:     flags.hasClose,
 		hasCloseEx:   flags.hasCloseEx,
 	}
-	if p.timeout == 0 {
-		// This is an accepted operator risk, not a silent default: a guest loop
-		// without WithCloseOnContextDone can freeze the whole process.
-		slog.Default().Warn("wasm plugin has no call timeout; a looping hook can freeze the process",
-			"hint", "set plugin.timeout or ensure the plugin is trusted")
-	}
 	p.pool.New = func() any {
-		inst, err := p.instantiate(context.Background())
+		instCtx, instCancel := context.WithTimeout(context.Background(), p.loadTimeout)
+		defer instCancel()
+		inst, err := p.instantiate(instCtx)
 		if err != nil {
 			p.initErr.Store(&err)
 			return nil
@@ -259,9 +273,9 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 	}
 
 	// Warm one instance now so any instantiation failure is caught at load time.
-	warm, err := p.instantiate(ctx)
+	warm, err := p.instantiate(loadCtx)
 	if err != nil {
-		_ = rt.Close(ctx)
+		_ = rt.Close(loadCtx)
 		return nil, err
 	}
 	p.pool.Put(warm)
@@ -564,7 +578,7 @@ func (p *Plugin) onDataPlain(ctx context.Context, connID uint64, dir int32, payl
 		defer cancel()
 	}
 
-	if clearScratch {
+	if clearScratch || inst.lastConnID != connID {
 		scratch, ok := inst.mod.Memory().Read(inst.dataPtr, inst.dataCap)
 		if !ok {
 			p.discarded.Add(1)
@@ -572,6 +586,7 @@ func (p *Plugin) onDataPlain(ctx context.Context, connID uint64, dir int32, payl
 			return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
 		}
 		clear(scratch)
+		inst.lastConnID = connID
 	}
 
 	n := uint32(len(payload)) // #nosec G115 -- capped by inst.dataCap below
@@ -665,6 +680,7 @@ func (p *Plugin) OnHeaders(ctx context.Context, connID uint64, payload []byte) (
 		return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
 	}
 	clear(scratch)
+	inst.lastConnID = connID
 	n := uint32(len(payload)) // #nosec G115 -- bounded by ScratchCapacity above
 	copy(scratch[:n], payload)
 
@@ -731,6 +747,23 @@ func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payl
 		n = inst.dataCap
 	}
 	mem := inst.mod.Memory()
+	if inst.lastConnID != connID {
+		scratch, ok := mem.Read(inst.dataPtr, inst.dataCap)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
+		}
+		clear(scratch)
+		stateMem, ok := mem.Read(inst.statePtr, inst.stateCap)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: state memory out of bounds")
+		}
+		clear(stateMem)
+		inst.lastConnID = connID
+	}
 	dst, ok := mem.Read(inst.dataPtr, n)
 	if !ok {
 		p.discarded.Add(1)
@@ -745,15 +778,20 @@ func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payl
 		if stateLen > inst.stateCap {
 			stateLen = inst.stateCap
 		}
-		if stateLen > 0 {
-			stateDst, ok := mem.Read(inst.statePtr, stateLen)
-			if !ok {
-				p.discarded.Add(1)
-				_ = inst.mod.Close(context.Background())
-				return VerdictDeny, errors.New("plugin: state memory out of bounds")
-			}
-			copy(stateDst, state.buf[:stateLen])
+		stateDst, ok := mem.Read(inst.statePtr, inst.stateCap)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: state memory out of bounds")
 		}
+		clear(stateDst)
+		if stateLen > 0 {
+			copy(stateDst[:stateLen], state.buf[:stateLen])
+		}
+	} else if stateMem, ok := mem.Read(inst.statePtr, inst.stateCap); ok {
+		// A state-only module still receives a zeroed state window even when the
+		// host did not attach a ConnState.
+		clear(stateMem)
 	}
 
 	inst.stack[0] = connID
@@ -773,10 +811,6 @@ func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payl
 	v := int32(uint32(raw))                 // #nosec G115 -- low 32 bits: signed verdict
 	newStateLen := int32(uint32(raw >> 32)) // #nosec G115 -- high 32 bits: new state_len
 
-	uMax := stateLen
-	if newStateLen > 0 && uint32(newStateLen) <= inst.stateCap && uint32(newStateLen) > uMax {
-		uMax = uint32(newStateLen)
-	}
 	freshState, ok := inst.mod.Memory().Read(inst.statePtr, inst.stateCap)
 	if !ok {
 		p.discarded.Add(1)
@@ -784,13 +818,13 @@ func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payl
 		return VerdictDeny, errors.New("plugin: state memory out of bounds after hook")
 	}
 	if newStateLen < 0 || uint32(newStateLen) > inst.stateCap {
-		clear(freshState[:uMax])
+		clear(freshState)
 		p.pool.Put(inst)
 		return VerdictDeny, fmt.Errorf("plugin: on_data_state returned invalid state length %d (cap %d)", newStateLen, inst.stateCap)
 	}
 
 	if v < int32(VerdictAllow) {
-		clear(freshState[:uMax])
+		clear(freshState)
 		p.pool.Put(inst)
 		return VerdictDeny, nil
 	}
@@ -811,7 +845,7 @@ func (p *Plugin) OnDataState(ctx context.Context, connID uint64, dir int32, payl
 			state.len = uLen
 		}
 	}
-	clear(freshState[:uMax])
+	clear(freshState)
 	p.pool.Put(inst)
 	return Verdict(v), nil
 }

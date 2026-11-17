@@ -108,6 +108,42 @@ func TestPluginOnHeadersRequiresDataPtr(t *testing.T) {
 	}
 }
 
+func TestPluginScratchClearedAcrossConnections(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(ctx, wasmDenyFirstByteX, Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close(ctx)
+
+	inst, ok := p.pool.Get().(*instance)
+	if !ok || inst == nil {
+		t.Fatal("no instance")
+	}
+	if !inst.mod.Memory().Write(inst.dataPtr+1000, []byte{0xab}) {
+		t.Fatal("write marker")
+	}
+	inst.lastConnID = 1
+	p.pool.Put(inst)
+
+	if v, err := p.OnDataConn(ctx, 2, 0, []byte("a")); err != nil || v != VerdictAllow {
+		t.Fatalf("OnDataConn: (%v, %v), want allow", v, err)
+	}
+
+	inst, ok = p.pool.Get().(*instance)
+	if !ok || inst == nil {
+		t.Fatal("no instance after call")
+	}
+	defer p.pool.Put(inst)
+	got, ok := inst.mod.Memory().Read(inst.dataPtr+1000, 1)
+	if !ok {
+		t.Fatal("read marker")
+	}
+	if got[0] != 0 {
+		t.Fatalf("scratch byte at +1000 = 0x%02x, want 0 (NEW-2)", got[0])
+	}
+}
+
 func TestPluginOnHeadersFallsBackToOnData(t *testing.T) {
 	// http_guard exports on_data_ex but no on_headers; headers mode must use the
 	// stateless fallback with dir=0 and the complete block.
