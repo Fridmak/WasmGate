@@ -27,6 +27,10 @@ const (
 	FlagFirst Flags = 1 << iota
 	FlagLast
 	FlagTruncated
+	// Direction bits are set on opaque-stream events. They are deliberately
+	// part of Flags so the envelope shape does not need another field.
+	FlagClientToServer
+	FlagServerToClient
 )
 
 // Plan is the set of phases a listener wants to inspect. A plan is resolved

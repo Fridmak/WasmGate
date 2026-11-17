@@ -338,8 +338,11 @@ func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags 
 	if !e.plan.Has(phase) {
 		return VerdictDeny, fmt.Errorf("abi4: phase %d is not in the inspection plan", phase)
 	}
-	if flags&^(FlagFirst|FlagLast|FlagTruncated) != 0 {
+	if flags&^(FlagFirst|FlagLast|FlagTruncated|FlagClientToServer|FlagServerToClient) != 0 {
 		return VerdictDeny, fmt.Errorf("abi4: unknown event flags %b", flags)
+	}
+	if flags&(FlagClientToServer|FlagServerToClient) == (FlagClientToServer | FlagServerToClient) {
+		return VerdictDeny, errors.New("abi4: event cannot carry both directions")
 	}
 	if len(ev.Block) == 0 {
 		return VerdictDeny, errors.New("abi4: empty event")
@@ -411,12 +414,28 @@ func (e *Engine) OnRequestHeaders(ctx context.Context, connID uint64, block []by
 
 // OnOpaqueFirst is the pre-dial opaque first-chunk entry point.
 func (e *Engine) OnOpaqueFirst(ctx context.Context, connID uint64, chunk []byte) (Verdict, error) {
-	return e.OnEvent(ctx, connID, PhaseOpaqueStream, FlagFirst, Event{Block: chunk})
+	return e.OnEvent(ctx, connID, PhaseOpaqueStream, FlagFirst|FlagClientToServer, Event{Block: chunk})
 }
 
-// OnStream is the post-dial opaque chunk entry point.
+// OnOpaqueChunk is the direction-aware opaque entry point. dir 0 is
+// client-to-server, dir 1 is server-to-client. The direction is encoded into
+// Flags; an event carrying both directions is rejected.
+func (e *Engine) OnOpaqueChunk(ctx context.Context, connID uint64, dir int32, flags Flags, chunk []byte) (Verdict, error) {
+	switch dir {
+	case 0:
+		flags |= FlagClientToServer
+	case 1:
+		flags |= FlagServerToClient
+	default:
+		return VerdictDeny, fmt.Errorf("abi4: invalid opaque direction %d", dir)
+	}
+	return e.OnEvent(ctx, connID, PhaseOpaqueStream, flags, Event{Block: chunk})
+}
+
+// OnStream is the post-dial client-to-server opaque chunk entry point. Use
+// OnOpaqueChunk when the host needs direction-aware stream inspection.
 func (e *Engine) OnStream(ctx context.Context, connID uint64, chunk []byte) (Verdict, error) {
-	return e.OnEvent(ctx, connID, PhaseOpaqueStream, 0, Event{Block: chunk})
+	return e.OnOpaqueChunk(ctx, connID, 0, 0, chunk)
 }
 
 func (e *Engine) discard(inst *instance) {

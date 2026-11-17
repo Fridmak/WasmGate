@@ -358,6 +358,16 @@ func TestEngineOpaquePlan(t *testing.T) {
 	if v, err := e.OnStream(ctx, 1, []byte("more")); err != nil || v != VerdictAllow {
 		t.Fatalf("opaque stream = (%v, %v)", v, err)
 	}
+	if v, err := e.OnOpaqueChunk(ctx, 1, 1, FlagLast, []byte("response")); err != nil || v != VerdictAllow {
+		t.Fatalf("opaque response direction = (%v, %v)", v, err)
+	}
+	if v, err := e.OnOpaqueChunk(ctx, 1, 2, 0, []byte("bad")); err == nil || v != VerdictDeny {
+		t.Fatalf("invalid opaque direction = (%v, %v), want deny/error", v, err)
+	}
+	if v, err := e.OnEvent(ctx, 1, PhaseOpaqueStream,
+		FlagClientToServer|FlagServerToClient, Event{Block: []byte("both")}); err == nil || v != VerdictDeny {
+		t.Fatalf("both directions = (%v, %v), want deny/error", v, err)
+	}
 	if _, err := e.OnEvent(ctx, 1, PhaseRequestHeaders, 0, testEngineEvent()); err == nil {
 		t.Fatal("HTTP phase accepted on an opaque-only plan")
 	}
@@ -393,6 +403,35 @@ func manyHeaders(n int) []byte {
 		block = append(block, []byte("X: y\r\n")...)
 	}
 	return append(block, '\r', '\n')
+}
+
+func TestEngineOpaqueDirectionReachesGuest(t *testing.T) {
+	// on_event returns 1 when FlagClientToServer is set, 0 otherwise. This
+	// proves the direction bit is actually part of the envelope call.
+	body := []byte{
+		0x00,       // no locals
+		0x20, 0x02, // local.get 2 (flags)
+		0x41, 0x08, // i32.const FlagClientToServer (1 << 3)
+		0x71, // i32.and
+		0x45, // i32.eqz
+		0x45, // i32.eqz (normalize non-zero to 1)
+		0xad, // i64.extend_i32_u
+		0x0b, // end
+	}
+	ctx := context.Background()
+	e, err := New(ctx, module(body, 0x0400, 0x7f, 4096, 49152), Options{
+		Plan: InspectOpaqueStream, InCap: 4096, OutCap: 1024,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close(ctx)
+	if v, err := e.OnOpaqueChunk(ctx, 1, 0, 0, []byte("request")); err != nil || v != VerdictDeny {
+		t.Fatalf("client direction = (%v, %v), want deny", v, err)
+	}
+	if v, err := e.OnOpaqueChunk(ctx, 1, 1, 0, []byte("response")); err != nil || v != VerdictAllow {
+		t.Fatalf("server direction = (%v, %v), want allow", v, err)
+	}
 }
 
 func TestEngineEnvelopeTooLarge(t *testing.T) {
