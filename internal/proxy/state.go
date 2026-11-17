@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -41,11 +42,76 @@ type registry struct {
 }
 
 type cachedPlugin struct {
-	cfg  config.PluginConfig
-	hash [32]byte
+	cfg      config.PluginConfig
+	hash     [32]byte
+	pipeline pluginPipeline
 	// All production plugins are ABI v4. L4 lifecycle and L7 events share the
 	// same Engine type; the plan decides which hooks are required.
 	v4 *abi4.Engine
+}
+
+type pluginMode uint8
+
+const (
+	pluginLifecycle pluginMode = iota
+	pluginHeaders
+	pluginOnce
+	pluginStream
+)
+
+type pluginPipeline struct {
+	mode        pluginMode
+	body        bool
+	replaceBody bool
+}
+
+func resolvePluginPlan(pc config.PluginConfig) (pluginPipeline, abi4.Options, error) {
+	var p pluginPipeline
+	opts := abi4.Options{MaxMemoryPages: pc.MaxMemoryPages, Timeout: pc.Timeout}
+	switch pc.DataMode {
+	case "":
+		p.mode, opts.Plan = pluginLifecycle, abi4.InspectLifecycle
+	case config.DataModeHeaders:
+		p.mode, opts.Plan = pluginHeaders, abi4.InspectRequestHeaders
+	case config.DataModeOnce:
+		p.mode, opts.Plan = pluginOnce, abi4.InspectOpaqueStream
+	case config.DataModeStream:
+		p.mode, opts.Plan = pluginStream, abi4.InspectOpaqueStream
+	default:
+		return p, opts, fmt.Errorf("unsupported data_mode %q", pc.DataMode)
+	}
+	if p.mode == pluginHeaders || p.mode == pluginOnce {
+		opts.RoutePools = len(pc.RoutePools)
+	} else if len(pc.RoutePools) != 0 {
+		return p, opts, errors.New("route_pools requires data_mode once or headers")
+	}
+	if pc.BodyPolicy != "" && p.mode != pluginHeaders {
+		return p, opts, errors.New("body_policy requires data_mode headers")
+	}
+	switch pc.BodyPolicy {
+	case "":
+	case config.BodyPolicyRequest:
+		opts.Plan |= abi4.InspectRequestBody
+	case config.BodyPolicyResponse:
+		opts.Plan |= abi4.InspectResponseHeaders | abi4.InspectResponseBody
+	case config.BodyPolicyBoth:
+		opts.Plan |= abi4.InspectRequestBody | abi4.InspectResponseHeaders | abi4.InspectResponseBody
+	default:
+		return p, opts, fmt.Errorf("unsupported body_policy %q", pc.BodyPolicy)
+	}
+	p.body = opts.Plan&(abi4.InspectRequestBody|abi4.InspectResponseBody) != 0
+	switch pc.MutationPolicy {
+	case "", config.MutationPolicyNone:
+	case config.MutationPolicyReplace:
+		if !p.body {
+			return p, opts, errors.New("mutation_policy replace requires body_policy")
+		}
+		p.replaceBody = true
+		opts.RequiredCaps |= abi4.CapMutation
+	default:
+		return p, opts, fmt.Errorf("unsupported mutation_policy %q", pc.MutationPolicy)
+	}
+	return p, opts, nil
 }
 
 func newRegistry() *registry {
@@ -79,60 +145,15 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 		return cur, nil
 	}
 
-	// ABI v4 cutover: every L7 mode uses abi4.Engine. A v3 L7 module is
-	// rejected here instead of silently falling back to the legacy runtime.
-	switch pc.DataMode {
-	case config.DataModeHeaders:
-		plan := abi4.InspectRequestHeaders
-		switch pc.BodyPolicy {
-		case config.BodyPolicyRequest:
-			plan |= abi4.InspectRequestBody
-		case config.BodyPolicyResponse:
-			plan |= abi4.InspectResponseHeaders | abi4.InspectResponseBody
-		case config.BodyPolicyBoth:
-			plan |= abi4.InspectRequestBody | abi4.InspectResponseHeaders | abi4.InspectResponseBody
-		}
-		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
-			MaxMemoryPages: pc.MaxMemoryPages,
-			Timeout:        pc.Timeout,
-			Plan:           plan,
-			RoutePools:     len(pc.RoutePools),
-			HeaderIndexCap: abi4.DefaultHeaderIndexCap,
-		})
-		if err != nil {
-			return cachedPlugin{}, fmt.Errorf("plugin: v4 headers: %w", err)
-		}
-		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
-
-	case config.DataModeOnce, config.DataModeStream:
-		routePools := len(pc.RoutePools)
-		if pc.DataMode == config.DataModeStream {
-			routePools = 0 // stream is allow/deny only in ABI v4
-		}
-		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
-			MaxMemoryPages: pc.MaxMemoryPages,
-			Timeout:        pc.Timeout,
-			Plan:           abi4.InspectOpaqueStream,
-			RoutePools:     routePools,
-		})
-		if err != nil {
-			return cachedPlugin{}, fmt.Errorf("plugin: v4 %s: %w", pc.DataMode, err)
-		}
-		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
-	}
-
-	// No data_mode: L4-only lifecycle module. It must export on_accept,
-	// on_close or on_close_ex plus the v4 ABI exports; no legacy v3 runtime is
-	// involved.
-	eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
-		MaxMemoryPages: pc.MaxMemoryPages,
-		Timeout:        pc.Timeout,
-		Plan:           abi4.InspectLifecycle,
-	})
+	pipeline, opts, err := resolvePluginPlan(pc)
 	if err != nil {
-		return cachedPlugin{}, fmt.Errorf("plugin: v4 lifecycle: %w", err)
+		return cachedPlugin{}, err
 	}
-	return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
+	eng, err := abi4.New(context.Background(), wasmBytes, opts)
+	if err != nil {
+		return cachedPlugin{}, fmt.Errorf("ABI v4: %w", err)
+	}
+	return cachedPlugin{cfg: pc, hash: hash, v4: eng, pipeline: pipeline}, nil
 }
 
 func (g *registry) commitPlugins(prepared map[string]cachedPlugin) {
@@ -152,6 +173,7 @@ func samePluginConfig(a, b config.PluginConfig) bool {
 		a.Timeout == b.Timeout &&
 		a.DataMode == b.DataMode &&
 		a.BodyPolicy == b.BodyPolicy &&
+		a.MutationPolicy == b.MutationPolicy &&
 		a.MaxHeaderBytes == b.MaxHeaderBytes &&
 		a.InspectTimeout == b.InspectTimeout &&
 		slices.Equal(a.RoutePools, b.RoutePools) &&

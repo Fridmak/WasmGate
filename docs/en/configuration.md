@@ -68,7 +68,8 @@ duplicate addresses and references to missing pools fail validation.
 | `max_header_bytes` | `16384` | Headers mode: maximum request header block; hard cap `16389`. The v4 header index accepts at most 512 headers; more fail closed |
 | `inspect_timeout` | `3s` | Headers mode: total deadline for one header block |
 | `route_pools` | empty | Pools selectable by a v4 `on_event` return value `2..N`; supported for `once`/`headers`, rejected for `stream` |
-| `body_policy` | empty | `request`, `response` or `both`; opt-in Content-Length body/response phases with `data_mode: headers` |
+| `body_policy` | empty | `request`, `response` or `both`; limits `headers` mode to one framed HTTP/1 exchange ([rules](plugins.md#http-body-policy)) |
+| `mutation_policy` | `none` | `replace` allows same-length body replacement; requires `body_policy` and a guest with `CapMutation` |
 
 For every `data_mode` the module must export the ABI v4 surface
 (`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only modules

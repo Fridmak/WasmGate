@@ -32,10 +32,11 @@ type resolvedListener struct {
 	// pluginV4 is the ABI v4 engine for this listener; nil means disabled.
 	// L4 lifecycle and every L7 data mode use the same Engine type.
 	pluginV4 *abi4.Engine
+	pipeline pluginPipeline
 	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
 	// SNI routing is not configured on this listener.
 	sniRoutes map[string]*pool
-	// routePools are additional pools selectable by a WASM on_data hook return
+	// routePools are additional pools selectable by a WASM on_event hook return
 	// value (verdict >= 2 selects routePools[verdict-2]).
 	routePools []*pool
 	// tlsConfig terminates TLS on this listener when non-nil.
@@ -260,6 +261,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 		}
 		if cp, ok := preparedPlugins[lc.Name]; ok {
 			rl.pluginV4 = cp.v4
+			rl.pipeline = cp.pipeline
 		}
 		if len(lc.SNIRoutes) > 0 {
 			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))

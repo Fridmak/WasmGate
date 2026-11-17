@@ -1,6 +1,7 @@
 package abi4
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 )
@@ -57,7 +58,8 @@ var (
 )
 
 // Ent is one AoS header-index entry. Offsets are relative to the blob start
-// during building and are rebased to the window by Write.
+// during building and are rebased to the window by Write. Parsed entries carry
+// absolute offsets from the envelope base.
 type Ent struct {
 	NameOff, ValOff uint32
 	NameLen, ValLen uint16
@@ -80,11 +82,11 @@ func align4(n int) int { return (n + 3) &^ 3 }
 func align8(n int) int { return (n + 7) &^ 7 }
 
 // planLayout is the single source of truth for the arena and for total_len.
-func planLayout(n, blobLen, stateLen int, withStart, withConn bool) (Layout, error) {
+func planLayout(n, blobLen, stateLen int, withStart, withConn, withState bool) (Layout, error) {
 	if n < 0 || blobLen < 0 || stateLen < 0 || n > maxEntries {
 		return Layout{}, errBadCount
 	}
-	if blobLen > maxPayload || stateLen > maxPayload || blobLen+stateLen > maxPayload {
+	if blobLen > maxPayload || stateLen > maxPayload-blobLen {
 		return Layout{}, errTooLarge
 	}
 	l := Layout{N: n, BlobLen: blobLen, StateLen: stateLen}
@@ -98,7 +100,7 @@ func planLayout(n, blobLen, stateLen int, withStart, withConn bool) (Layout, err
 	if withConn {
 		l.Sections++
 	}
-	if stateLen > 0 {
+	if withState {
 		l.Sections++
 	}
 	if l.Sections > maxSections {
@@ -126,7 +128,7 @@ func planLayout(n, blobLen, stateLen int, withStart, withConn bool) (Layout, err
 }
 
 // Event is one IN envelope. Offsets in Index, Start and Conn are relative to
-// Block; Write rebases them into the window.
+// Block; Write rebases them into the window. A nil State omits the section.
 type Event struct {
 	Block []byte
 	Index []Ent
@@ -145,7 +147,7 @@ func Write(dst []byte, ev Event) (int, error) {
 	if err := validateEvent(block, idx, start, conn); err != nil {
 		return 0, err
 	}
-	l, err := planLayout(len(idx), len(block), len(state), start != nil, conn != nil)
+	l, err := planLayout(len(idx), len(block), len(state), start != nil, conn != nil, state != nil)
 	if err != nil {
 		return 0, err
 	}
@@ -164,24 +166,12 @@ func Write(dst []byte, ev Event) (int, error) {
 	}
 
 	// Header.
-	le.PutUint32(dst[0:], magicIn)
-	le.PutUint16(dst[4:], 1)
-	le.PutUint16(dst[6:], hdrLen)
-	le.PutUint32(dst[8:], uint32(l.Total))
-	le.PutUint16(dst[12:], uint16(l.Sections))
-	le.PutUint16(dst[14:], secStride)
-	le.PutUint32(dst[16:], uint32(l.ArenaOff))
-	le.PutUint32(dst[20:], uint32(l.ArenaLen))
+	writeEnvelopeHeader(dst, magicIn, l.Total, l.Sections, l.ArenaOff, l.ArenaLen)
 
 	// Section table, ascending by type (ids are assigned in that order).
 	sec := 0
 	putSection := func(typ int, off, ln, count int) {
-		w := dst[hdrLen+sec*secStride:]
-		le.PutUint16(w[0:], uint16(typ))
-		le.PutUint16(w[2:], 0)
-		le.PutUint32(w[4:], uint32(off))
-		le.PutUint32(w[8:], uint32(ln))
-		le.PutUint32(w[12:], uint32(count))
+		writeSection(dst, sec, typ, off, ln, count)
 		sec++
 	}
 	putSection(secBlob, l.ArenaOff, len(block), 0)
@@ -194,16 +184,16 @@ func Write(dst []byte, ev Event) (int, error) {
 	if conn != nil {
 		putSection(secConn, l.ConnOff, connInfoLen, 0)
 	}
-	if len(state) > 0 {
+	if state != nil {
 		putSection(secState, l.StateOff, len(state), 0)
 	}
 
 	// Fixed structs.
 	if start != nil {
 		w := dst[l.StartOff:]
-		le.PutUint32(w[0:], uint32(l.ArenaOff)+start.MethodOff)
-		le.PutUint32(w[4:], uint32(l.ArenaOff)+start.PathOff)
-		le.PutUint32(w[8:], uint32(l.ArenaOff)+start.ProtoOff)
+		le.PutUint32(w[0:], uint32(l.ArenaOff)+start.MethodOff) // #nosec G115 -- layout total is bounded by maxU32
+		le.PutUint32(w[4:], uint32(l.ArenaOff)+start.PathOff)   // #nosec G115 -- layout total is bounded by maxU32
+		le.PutUint32(w[8:], uint32(l.ArenaOff)+start.ProtoOff)  // #nosec G115 -- layout total is bounded by maxU32
 		le.PutUint16(w[12:], start.MethodLen)
 		le.PutUint16(w[14:], start.PathLen)
 		le.PutUint16(w[16:], start.ProtoLen)
@@ -218,15 +208,15 @@ func Write(dst []byte, ev Event) (int, error) {
 		le.PutUint16(w[40:], conn.RemotePort)
 		le.PutUint16(w[42:], conn.LocalPort)
 		le.PutUint16(w[44:], conn.UpstreamPort)
-		le.PutUint32(w[48:], uint32(l.ArenaOff)+conn.SNIOff)
+		le.PutUint32(w[48:], uint32(l.ArenaOff)+conn.SNIOff) // #nosec G115 -- layout total is bounded by maxU32
 		le.PutUint32(w[52:], conn.SNILen)
-		le.PutUint32(w[56:], uint32(l.ArenaOff)+conn.ALPNOff)
+		le.PutUint32(w[56:], uint32(l.ArenaOff)+conn.ALPNOff) // #nosec G115 -- layout total is bounded by maxU32
 		le.PutUint32(w[60:], conn.ALPNLen)
 		copy(w[64:80], conn.UpstreamIP[:])
 	}
 
 	// Index: rebase once, no per-entry branches.
-	base := uint32(l.ArenaOff)
+	base := uint32(l.ArenaOff) // #nosec G115 -- layout total is bounded by maxU32
 	for i := range idx {
 		w := dst[l.IndexOff+i*entLen:]
 		le.PutUint32(w[0:], base+idx[i].NameOff)
@@ -246,7 +236,7 @@ func within(off, ln, base, limit uint64) bool {
 }
 
 func withinBlob(off, ln uint32, arenaOff, blobLen int) bool {
-	return within(uint64(off), uint64(ln), uint64(arenaOff), uint64(arenaOff+blobLen))
+	return within(uint64(off), uint64(ln), uint64(arenaOff), uint64(arenaOff+blobLen)) // #nosec G115 -- validated blob span within the window
 }
 
 func withinOptionalBlob(off, ln uint32, arenaOff, blobLen int) bool {
@@ -290,14 +280,17 @@ func validateEvent(block []byte, idx []Ent, start *StartLine, conn *ConnInfo) er
 	return nil
 }
 
-// StartLine and ConnInfo are fixed-struct payloads. Their offset fields are
-// relative to the blob.
+// StartLine is a fixed-struct payload with offsets relative to the blob when
+// building an event. For response headers, the protocol fields point at the
+// HTTP version, the path fields at the three-digit status, and the method
+// fields at the reason phrase. That phase uses the same wire layout as a request.
 type StartLine struct {
 	MethodOff, PathOff, ProtoOff uint32
 	MethodLen, PathLen, ProtoLen uint16
 	TargetForm, Flags            byte
 }
 
+// ConnInfo describes optional connection and upstream metadata in an envelope.
 type ConnInfo struct {
 	Flags        uint32
 	Family       byte
@@ -313,7 +306,7 @@ type ConnInfo struct {
 	UpstreamIP   [16]byte
 }
 
-// Parsed is the reference reader used by tests and conformance checks.
+// Parsed is a validated, zero-copy view of an IN envelope.
 type Parsed struct {
 	Total      int
 	Blob       []byte
@@ -329,102 +322,62 @@ type Parsed struct {
 // fixed struct before returning a Parsed value.
 func Parse(win []byte) (*Parsed, error) {
 	le := binary.LittleEndian
-	if len(win) < hdrLen || le.Uint32(win[0:]) != magicIn {
-		return nil, errCorrupt
-	}
-	if le.Uint16(win[4:]) != 1 || le.Uint16(win[6:]) != hdrLen || le.Uint16(win[14:]) != secStride {
-		return nil, errCorrupt
-	}
-	total := uint64(le.Uint32(win[8:]))
-	count := int(le.Uint16(win[12:]))
-	arenaOff := uint64(le.Uint32(win[16:]))
-	arenaLen := uint64(le.Uint32(win[20:]))
-	if total < hdrLen || total > uint64(len(win)) || total%8 != 0 {
-		return nil, errCorrupt
-	}
-	if count == 0 || count > maxSections || arenaOff%8 != 0 {
-		return nil, errCorrupt
-	}
-	tableEnd := uint64(hdrLen) + uint64(count)*secStride
-	if tableEnd > arenaOff || arenaOff > total || arenaLen > total-arenaOff {
+	table, ok := readSectionTable(win, magicIn)
+	if !ok || table.n == 0 || table.sections[0].kind != secBlob {
 		return nil, errCorrupt
 	}
 
-	p := &Parsed{Total: int(total)}
-	seen := 0
-	blobSeen := false
-	var spans [maxSections]struct{ start, end uint64 }
-	spanN := 0
-	for i := 0; i < count; i++ {
-		w := win[hdrLen+i*secStride:]
-		typ := int(le.Uint16(w[0:]))
-		off := uint64(le.Uint32(w[4:]))
-		ln := uint64(le.Uint32(w[8:]))
-		cnt := uint64(le.Uint32(w[12:]))
-		if typ <= 0 || typ <= seen || off < tableEnd || off%4 != 0 || off > total || ln > total-off {
-			return nil, errCorrupt
-		}
-		if ln > 0 {
-			for k := 0; k < spanN; k++ {
-				if off < spans[k].end && spans[k].start < off+ln {
-					return nil, errCorrupt
-				}
-			}
-			spans[spanN] = struct{ start, end uint64 }{off, off + ln}
-			spanN++
-		}
-		seen = typ
-		p.SectionIDs = append(p.SectionIDs, typ)
-		switch typ {
+	p := &Parsed{Total: table.total, SectionIDs: make([]int, 0, table.n)}
+	for _, s := range table.sections[:table.n] {
+		p.SectionIDs = append(p.SectionIDs, s.kind)
+		switch s.kind {
 		case secBlob:
-			if blobSeen || off != arenaOff || ln > arenaLen {
+			if s.count != 0 || s.off != table.arenaOff || s.off+s.size > table.arenaEnd {
 				return nil, errCorrupt
 			}
-			blobSeen = true
-			p.Blob = win[int(off):int(off+ln)]
+			p.Blob = s.bytes(win)
 		case secState:
-			if !blobSeen || off < arenaOff+uint64(len(p.Blob)) ||
-				!within(off, ln, arenaOff, arenaOff+arenaLen) {
+			if s.count != 0 || s.off < table.arenaOff+len(p.Blob) || s.off+s.size > table.arenaEnd {
 				return nil, errCorrupt
 			}
-			p.State = win[int(off):int(off+ln)]
+			p.State = s.bytes(win)
 		case secIndex:
-			if off < arenaOff+arenaLen || cnt == 0 || cnt > maxEntries || ln != cnt*entLen {
+			if s.off < table.arenaEnd || s.count == 0 || s.count > maxEntries || s.size != int(s.count)*entLen {
 				return nil, errCorrupt
 			}
-			p.Index = make([]Ent, int(cnt))
+			p.Index = make([]Ent, int(s.count))
 			for j := range p.Index {
-				e := win[int(off)+j*entLen:]
+				e := win[s.off+j*entLen:]
 				p.Index[j] = Ent{
 					NameOff: le.Uint32(e[0:]), ValOff: le.Uint32(e[4:]),
 					NameLen: le.Uint16(e[8:]), ValLen: le.Uint16(e[10:]),
 					Aux: le.Uint32(e[12:]),
 				}
 				if p.Index[j].NameLen == 0 ||
-					!withinBlob(p.Index[j].NameOff, uint32(p.Index[j].NameLen), int(arenaOff), len(p.Blob)) ||
-					!withinBlob(p.Index[j].ValOff, uint32(p.Index[j].ValLen), int(arenaOff), len(p.Blob)) {
+					!withinBlob(p.Index[j].NameOff, uint32(p.Index[j].NameLen), table.arenaOff, len(p.Blob)) ||
+					!withinBlob(p.Index[j].ValOff, uint32(p.Index[j].ValLen), table.arenaOff, len(p.Blob)) {
 					return nil, errCorrupt
 				}
 			}
 		case secStart:
-			if ln != startLineLen || off < arenaOff+arenaLen {
+			if s.count != 0 || s.size != startLineLen || s.off < table.arenaEnd {
 				return nil, errCorrupt
 			}
-			w := win[int(off):]
+			w := s.bytes(win)
 			s := &StartLine{
 				MethodOff: le.Uint32(w[0:]), PathOff: le.Uint32(w[4:]), ProtoOff: le.Uint32(w[8:]),
 				MethodLen: le.Uint16(w[12:]), PathLen: le.Uint16(w[14:]), ProtoLen: le.Uint16(w[16:]),
 				TargetForm: w[18], Flags: w[19],
 			}
-			if !validStart(s, int(arenaOff), len(p.Blob)) {
+			if !validStart(s, table.arenaOff, len(p.Blob)) {
 				return nil, errCorrupt
 			}
 			p.Start = s
 		case secConn:
-			if ln != connInfoLen || off < arenaOff+arenaLen {
+			if s.count != 0 || s.size != connInfoLen || s.off < table.arenaEnd {
 				return nil, errCorrupt
 			}
-			w := win[int(off):]
+			w := s.bytes(win)
 			c := &ConnInfo{Flags: le.Uint32(w[0:]), Family: w[4]}
 			copy(c.RemoteIP[:], w[8:24])
 			copy(c.LocalIP[:], w[24:40])
@@ -432,17 +385,14 @@ func Parse(win []byte) (*Parsed, error) {
 			c.SNIOff, c.SNILen = le.Uint32(w[48:]), le.Uint32(w[52:])
 			c.ALPNOff, c.ALPNLen = le.Uint32(w[56:]), le.Uint32(w[60:])
 			copy(c.UpstreamIP[:], w[64:80])
-			if !withinOptionalBlob(c.SNIOff, c.SNILen, int(arenaOff), len(p.Blob)) ||
-				!withinOptionalBlob(c.ALPNOff, c.ALPNLen, int(arenaOff), len(p.Blob)) {
+			if !withinOptionalBlob(c.SNIOff, c.SNILen, table.arenaOff, len(p.Blob)) ||
+				!withinOptionalBlob(c.ALPNOff, c.ALPNLen, table.arenaOff, len(p.Blob)) {
 				return nil, errCorrupt
 			}
 			p.Conn = c
 		default:
 			// Unknown sections are skipped by design (forward compatibility).
 		}
-	}
-	if !blobSeen {
-		return nil, errCorrupt
 	}
 	return p, nil
 }
@@ -481,53 +431,48 @@ func (p *Parsed) Header(win []byte, name string) ([]byte, bool) {
 	return nil, false
 }
 
-// SplitHeaders fills idx with name/value offsets relative to block and returns
-// the count plus the request-line split. One pass, no allocation.
-//
-// It rejects malformed lines, control characters, header names that are not
-// valid HTTP tokens and an index that is too small for the request. Rejecting
-// is deliberate: silently dropping headers is a request-smuggling vector.
-func SplitHeaders(block []byte, idx []Ent) (n int, sl StartLine, err error) {
+// SplitHeaders indexes a complete CRLF-terminated HTTP/1 request head. All
+// offsets are relative to block. It never silently drops headers or allocates.
+func SplitHeaders(block []byte, idx []Ent) (int, StartLine, error) {
+	return splitHeaders(block, idx, splitStartLine)
+}
+
+// SplitResponseHeaders indexes a complete HTTP/1 response head. See StartLine
+// for the response's version, status, and reason phrase field mapping.
+func SplitResponseHeaders(block []byte, idx []Ent) (int, StartLine, error) {
+	return splitHeaders(block, idx, splitStatusLine)
+}
+
+func splitHeaders(block []byte, idx []Ent, splitLine func([]byte) (StartLine, error)) (n int, sl StartLine, err error) {
 	if len(block) > maxPayload {
 		return 0, StartLine{}, errTooLarge
 	}
-	pos := 0
-	for pos < len(block) && block[pos] != '\n' {
-		pos++
+	lineEnd := bytes.IndexByte(block, '\n')
+	if lineEnd < 1 || block[lineEnd-1] != '\r' {
+		return 0, StartLine{}, errMalformedHeader
 	}
-	lineEnd := pos
-	if pos < len(block) {
-		pos++
-	}
-	line := block[:lineEnd]
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		line = line[:len(line)-1]
-	}
-	sl, err = splitStartLine(line)
+	sl, err = splitLine(block[:lineEnd-1])
 	if err != nil {
 		return 0, StartLine{}, err
 	}
 
-	n = 0
-	for pos < len(block) {
+	for pos := lineEnd + 1; pos < len(block); {
 		start := pos
-		for pos < len(block) && block[pos] != '\n' {
-			pos++
+		lineEnd := bytes.IndexByte(block[start:], '\n')
+		if lineEnd < 1 || block[start+lineEnd-1] != '\r' {
+			return 0, StartLine{}, errMalformedHeader
 		}
-		end := pos
-		if pos < len(block) {
-			pos++
-		}
-		if end > start && block[end-1] == '\r' {
-			end--
-		}
-		if end == start {
-			break // final CRLF
+		pos += lineEnd + 1
+		if lineEnd == 1 {
+			if pos != len(block) {
+				return 0, StartLine{}, errMalformedHeader
+			}
+			return n, sl, nil
 		}
 		if n >= len(idx) {
 			return 0, StartLine{}, errTooManyHeaders
 		}
-		line := block[start:end]
+		line := block[start : pos-2]
 		colon := -1
 		for i := 0; i < len(line); i++ {
 			if line[i] == ':' {
@@ -551,12 +496,12 @@ func SplitHeaders(block []byte, idx []Ent) (n int, sl StartLine, err error) {
 			return 0, StartLine{}, errTooLarge
 		}
 		idx[n] = Ent{
-			NameOff: uint32(start), NameLen: uint16(nameLen),
-			ValOff: uint32(start + vs), ValLen: uint16(valLen),
+			NameOff: uint32(start), NameLen: uint16(nameLen), // #nosec G115 -- block length is maxPayload and lengths fit wire fields
+			ValOff: uint32(start + vs), ValLen: uint16(valLen), // #nosec G115 -- block length is maxPayload and lengths fit wire fields
 		}
 		n++
 	}
-	return n, sl, nil
+	return 0, StartLine{}, errMalformedHeader
 }
 
 func validFieldName(name []byte) bool {
@@ -608,6 +553,9 @@ func splitStartLine(line []byte) (StartLine, error) {
 	if sp1 <= 0 || sp2 <= sp1+1 || sp2 >= len(line)-1 {
 		return StartLine{}, errMalformedHeader
 	}
+	if !validFieldName(line[:sp1]) || !isHTTP1(line[sp2+1:]) {
+		return StartLine{}, errMalformedHeader
+	}
 	methodLen, pathLen, protoLen := sp1, sp2-sp1-1, len(line)-sp2-1
 	if methodLen > maxU16 || pathLen > maxU16 || protoLen > maxU16 {
 		return StartLine{}, errTooLarge
@@ -617,4 +565,27 @@ func splitStartLine(line []byte) (StartLine, error) {
 		PathOff: uint32(sp1 + 1), PathLen: uint16(pathLen),
 		ProtoOff: uint32(sp2 + 1), ProtoLen: uint16(protoLen),
 	}, nil
+}
+
+func isHTTP1(version []byte) bool {
+	return string(version) == "HTTP/1.1" || string(version) == "HTTP/1.0"
+}
+
+func splitStatusLine(line []byte) (StartLine, error) {
+	if len(line) < 12 || !isHTTP1(line[:8]) || line[8] != ' ' ||
+		line[9] < '1' || line[9] > '5' || line[10] < '0' || line[10] > '9' || line[11] < '0' || line[11] > '9' {
+		return StartLine{}, errMalformedHeader
+	}
+	reason := len(line)
+	if len(line) > 12 {
+		if line[12] != ' ' || !validFieldValue(line[13:]) {
+			return StartLine{}, errMalformedHeader
+		}
+		reason = 13
+	}
+	reasonLen := len(line) - reason
+	if reasonLen > maxU16 {
+		return StartLine{}, errTooLarge
+	}
+	return StartLine{ProtoLen: 8, PathOff: 9, PathLen: 3, MethodOff: uint32(reason), MethodLen: uint16(reasonLen)}, nil // #nosec G115 -- reason length checked above
 }

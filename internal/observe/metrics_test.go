@@ -134,7 +134,7 @@ func TestWritePrometheusBuildInfo(t *testing.T) {
 	}
 }
 
-func TestBuildVersionIsRaceFree(t *testing.T) {
+func TestBuildVersionIsRaceFree(_ *testing.T) {
 	m := NewMetrics()
 	var wg sync.WaitGroup
 	wg.Add(2)

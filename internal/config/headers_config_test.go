@@ -103,3 +103,26 @@ func TestHeadersModeAllowsSNIRoutesWithTLS(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 }
+
+func TestHTTPPolicyConfig(t *testing.T) {
+	for _, tc := range []struct {
+		mode, body, mutation string
+		ok                   bool
+	}{
+		{config.DataModeHeaders, "", "", true},
+		{config.DataModeHeaders, config.BodyPolicyRequest, "", true},
+		{config.DataModeHeaders, config.BodyPolicyResponse, config.MutationPolicyNone, true},
+		{config.DataModeHeaders, config.BodyPolicyBoth, config.MutationPolicyReplace, true},
+		{config.DataModeHeaders, "unknown", "", false},
+		{config.DataModeHeaders, config.BodyPolicyRequest, "append", false},
+		{config.DataModeHeaders, "", config.MutationPolicyReplace, false},
+		{config.DataModeOnce, config.BodyPolicyResponse, "", false},
+	} {
+		l := config.ListenerConfig{Name: "edge", Addr: "127.0.0.1:0", UpstreamPool: "web",
+			Plugin: config.PluginConfig{Wasm: []byte{0}, Timeout: time.Second,
+				DataMode: tc.mode, BodyPolicy: tc.body, MutationPolicy: tc.mutation}}
+		if err := l.Validate(); (err == nil) != tc.ok {
+			t.Errorf("mode/body/mutation %q/%q/%q: %v", tc.mode, tc.body, tc.mutation, err)
+		}
+	}
+}

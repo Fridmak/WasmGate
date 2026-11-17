@@ -6,9 +6,8 @@
 #
 #   go run ./cmd/wasmgate -config configs/showcase.yaml -validate
 #
-# All plugins are committed as prebuilt .wasm files. ABI v4 L7 ports are still
-# landing; see ../plugins/examples/README.md and
-# docs/plans/m2-v4-only-runtime.md for the current compatibility matrix.
+# The prebuilt plugins below use ABI v4. See ../plugins/examples/README.md
+# for each policy's limits before using it outside a loopback demo.
 version: 1
 
 admin_addr: "127.0.0.1:9098"
@@ -16,23 +15,62 @@ admin_pprof: false
 admin_allow_remote: false
 
 listeners:
-  # ABI v4 L4 example is pending. The committed ipguard.wasm is v3 and is
-  # rejected by M3; the v4 lifecycle path is covered by proxy tests.
-  #
-  # - name: showcase-ipguard
-  #   addr: "127.0.0.1:8100"
-  #   upstream_pool: web
-  #   plugin:
-  #     path: "../plugins/examples/ipguard/ipguard.wasm"
-  #     max_memory_pages: 16
-  #     timeout: 1s
+  - name: showcase-ipguard
+    addr: "127.0.0.1:8100"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/ipguard/ipguard.wasm"
 
-  # ABI v3 L7 examples (http_guard, path_router, sni_guard, protocol_router,
-  # redis_guard, stream_guard, http_body_guard) are not runnable in M2: every
-  # data_mode is now ABI v4 and those committed .wasm files still export v3
-  # hooks. Ports are tracked in docs/plans/m2-v4-only-runtime.md.
-  #
-  # ABI v4 examples for once/stream/headers will be added with the Rust v4 SDK.
+  # The Basic credentials in http_guard are public demo credentials.
+  - name: showcase-http-guard
+    addr: "127.0.0.1:8101"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/http_guard/http_guard.wasm"
+      data_mode: headers
+      timeout: 1s
+
+  - name: showcase-path-router
+    addr: "127.0.0.1:8102"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/path_router/path_router.wasm"
+      data_mode: headers
+      timeout: 1s
+      route_pools: [api, static, ws]
+
+  - name: showcase-sni-guard
+    addr: "127.0.0.1:8103"
+    upstream_pool: web
+    # A native SNI route also enables the full initial TLS record peek.
+    sni_routes:
+      "*.example.com": web
+    plugin:
+      path: "../plugins/examples/sni_guard/sni_guard.wasm"
+      data_mode: once
+      route_pools: [api, static, internal]
+
+  - name: showcase-protocol-router
+    addr: "127.0.0.1:8104"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/protocol_router/protocol_router.wasm"
+      data_mode: once
+      route_pools: [tls-backend, http-backend, ssh-backend, postgres, redis]
+
+  - name: showcase-redis-guard
+    addr: "127.0.0.1:8105"
+    upstream_pool: redis
+    plugin:
+      path: "../plugins/examples/redis_guard/redis_guard.wasm"
+      data_mode: stream
+
+  - name: showcase-stream-guard
+    addr: "127.0.0.1:8106"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/stream_guard/stream_guard.wasm"
+      data_mode: stream
 
   # The same ssl_preread routing without any WASM: useful as a baseline when
   # explaining what the plugin adds (arbitrary policy vs. a static map).
@@ -43,8 +81,8 @@ listeners:
       "api.example.com": api
       "*.example.com": web
 
-  # TLS termination examples are pending an ABI v4 plugin port. Uncomment after
-  # generating certs and adding a v4 module:
+  # TLS termination can be combined with headers inspection. Uncomment after
+  # generating certs:
   #
   # - name: showcase-tls-termination
   #   addr: "127.0.0.1:8108"
@@ -54,6 +92,29 @@ listeners:
   #     key_file: "../certs/server.key"
   #     min_version: "1.2"
   #     handshake_timeout: 10s
+  #   plugin:
+  #     path: "../plugins/examples/http_headers_guard/http_headers_guard.wasm"
+  #     data_mode: headers
+  #     timeout: 1s
+
+  - name: showcase-http-body
+    addr: "127.0.0.1:8109"
+    upstream_pool: web
+    idle_timeout: 30s
+    plugin:
+      path: "../plugins/examples/http_body_guard/http_body_guard.wasm"
+      data_mode: headers
+      timeout: 1s
+      body_policy: both
+      mutation_policy: replace
+
+  - name: showcase-http-headers
+    addr: "127.0.0.1:8110"
+    upstream_pool: web
+    plugin:
+      path: "../plugins/examples/http_headers_guard/http_headers_guard.wasm"
+      data_mode: headers
+      timeout: 1s
 
 pools:
   web:
@@ -76,4 +137,3 @@ pools:
     servers: ["127.0.0.1:5432"]
   redis:
     servers: ["127.0.0.1:6379"]
-

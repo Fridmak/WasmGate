@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -112,7 +114,7 @@ func TestProxyHeadersModeRejectsInertHeadersPlugin(t *testing.T) {
 	}
 }
 
-func TestProxyHeadersModeRejectsStateOnlyPlugin(t *testing.T) {
+func TestProxyHeadersModeLoadsBodyGuardWithReadOnlyPlan(t *testing.T) {
 	backend := startEcho(t)
 	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
 		lc.Plugin = config.PluginConfig{
@@ -123,8 +125,12 @@ func TestProxyHeadersModeRejectsStateOnlyPlugin(t *testing.T) {
 			InspectTimeout: time.Second,
 		}
 	}))
-	if _, err := NewRuntimeChecked(cfg); err == nil {
-		t.Fatal("headers mode accepted a state-only plugin")
+	rt, err := NewRuntimeChecked(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Load().listeners["edge"].pipeline.body {
+		t.Fatal("guest capabilities enabled unrequested body inspection")
 	}
 }
 
@@ -295,18 +301,29 @@ func TestProxyHeadersModeRejectsPartialAndHTTP2(t *testing.T) {
 }
 
 func TestProxyHeadersBodyPolicyRequestContentLength(t *testing.T) {
-	addr := startHeadersProxy(t, config.PluginConfig{
-		Wasm:       v4Verdict(0),
-		BodyPolicy: config.BodyPolicyRequest,
-	})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || string(body) != "hello" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	cfg := validated(t, edgeConfig([]string{backend.Listener.Addr().String()}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: v4Verdict(0), DataMode: config.DataModeHeaders,
+			BodyPolicy: config.BodyPolicyRequest, Timeout: time.Second}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
 	conn := dial(t, addr)
 	defer conn.Close()
 	request := "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello"
 	if _, err := io.WriteString(conn, request); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := readAllEcho(t, conn, len(request)); got != request {
-		t.Fatalf("echo = %q, want %q", got, request)
+	const status = "HTTP/1.1 204 No Content\r\n"
+	if got := readAllEcho(t, conn, len(status)); got != status {
+		t.Fatalf("status = %q, want %q", got, status)
 	}
 }
 

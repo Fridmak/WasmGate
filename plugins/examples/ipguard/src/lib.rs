@@ -6,12 +6,9 @@
 //   cp target/wasm32-unknown-unknown/release/ipguard.wasm ./ipguard.wasm
 #![no_std]
 
-use core::panic::PanicInfo;
+use wg_common::{v4, wg_v4_metadata};
 
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg_v4_metadata!(v4::CAP_LIFECYCLE);
 
 // Host ABI:
 //   ip_hi, ip_lo — canonical 16-byte IP in big-endian (IPv4 is IPv4-mapped IPv6 ::ffff:a.b.c.d)

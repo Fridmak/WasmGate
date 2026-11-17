@@ -1,10 +1,7 @@
 //! `http_headers_guard` — request-header policy for `data_mode: headers`.
 //!
-//! The host calls `on_headers` exactly once with a complete HTTP/1.x request
-//! header block, then splices the body. This is a connection-level policy hook:
-//! it protects the first request of a connection, not every keep-alive request,
-//! and it does not inspect bodies or responses. Use `data_mode: stream` when
-//! those guarantees are required.
+//! The v4 request-header event carries a complete HTTP/1 head and its index.
+//! Without a body policy only the opening request is inspected.
 //!
 //! The example blocks unsafe methods, sensitive paths, malformed headers,
 //! duplicate `Content-Length` and `Content-Length` + `Transfer-Encoding`
@@ -12,13 +9,9 @@
 
 #![no_std]
 
-use core::panic::PanicInfo;
-use wg_common as wg;
+use wg_common::{self as wg, v4};
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg::wg_v4_plugin!(v4::CAP_HTTP_HEADERS, inspect);
 
 const ALLOWED_METHODS: &[&[u8]] = &[
     b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS",
@@ -69,7 +62,7 @@ fn target_blocked(target: &[u8]) -> bool {
     let mut out = [0u8; 2048];
     let mut olen = 0usize;
     let mut j = 1usize;
-    while j <= dlen {
+    while j < dlen {
         let start = j;
         while j < dlen && decoded[j] != b'/' {
             j += 1;
@@ -123,19 +116,14 @@ fn hex(c: u8) -> Option<u8> {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn on_data_ptr() -> i32 {
-    wg::scratch_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn on_headers(_conn_id: i64, ptr: i32, len: i32) -> i32 {
-    let Some(buf) = (unsafe { wg::payload(ptr, len) }) else {
+fn inspect(call: v4::Call, event: v4::Event<'_>, _: &mut v4::Output<'_>) -> i32 {
+    if call.phase != v4::Phase::RequestHeaders {
+        return v4::DENY;
+    }
+    let Some(req) = event.request_line() else {
         return 1;
     };
-    let Some(req) = wg::parse_request_headers(buf) else {
-        return 1;
-    };
+    let headers = event.headers();
 
     if !ALLOWED_METHODS.iter().any(|m| *m == req.method) {
         return 1;
@@ -143,12 +131,18 @@ pub extern "C" fn on_headers(_conn_id: i64, ptr: i32, len: i32) -> i32 {
     if target_blocked(req.target) {
         return 1;
     }
-    if req.version == b"HTTP/1.1" && wg::header_value(req.headers, b"Host").is_none() {
+    if req.version == b"HTTP/1.1"
+        && headers
+            .first(b"Host")
+            .map(wg::trim_ascii)
+            .filter(|v| !v.is_empty())
+            .is_none()
+    {
         return 1;
     }
 
-    let content_length = wg::header_count(req.headers, b"Content-Length");
-    let transfer_encoding = wg::header_count(req.headers, b"Transfer-Encoding");
+    let content_length = headers.count(b"Content-Length");
+    let transfer_encoding = headers.count(b"Transfer-Encoding");
     if content_length > 1 || (content_length > 0 && transfer_encoding > 0) {
         return 1;
     }

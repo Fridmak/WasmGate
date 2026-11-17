@@ -30,6 +30,6 @@
 //   - Per-IP connection-flood rate limiting (internal/ratelimit) runs in
 //     Proxy.Handle right after max_conns and before the upstream dial, with its
 //     sliding windows kept in the registry across reloads.
-//   - WASM plugin hooks (on_accept / on_data / on_close) attach around the
-//     accept/data/close stages in Proxy.Handle.
+//   - ABI v4 WASM hooks (on_accept / on_event / on_close) attach around the
+//     accept, opaque/HTTP, and close stages in Proxy.Handle.
 package proxy

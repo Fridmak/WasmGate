@@ -7,6 +7,12 @@
 //	tinygo build -o ipguard.wasm -target=wasm-unknown -no-debug ./tinygo
 package main
 
+//go:wasmexport wg_abi
+func abi() int32 { return 0x0400 }
+
+//go:wasmexport wg_caps
+func caps() int64 { return 1 << 8 } // CapLifecycle
+
 //go:wasmexport on_accept
 func onAccept(ipHi int64, ipLo int64, port int32) int32 {
 	_ = port

@@ -9,6 +9,7 @@ func TestPlanValidate(t *testing.T) {
 		InspectRequestHeaders | InspectResponseHeaders,
 		InspectRequestHeaders | InspectResponseHeaders | InspectResponseBody,
 		InspectOpaqueStream,
+		InspectLifecycle,
 	}
 	for _, p := range valid {
 		if err := p.Validate(); err != nil {
@@ -20,6 +21,7 @@ func TestPlanValidate(t *testing.T) {
 		InspectOpaqueStream | InspectRequestHeaders,
 		InspectRequestBody,
 		InspectResponseBody,
+		InspectLifecycle | (1 << 7),
 	}
 	for _, p := range invalid {
 		if err := p.Validate(); err == nil {
@@ -31,12 +33,15 @@ func TestPlanValidate(t *testing.T) {
 func TestPlanRequiredCaps(t *testing.T) {
 	p := InspectRequestHeaders | InspectResponseHeaders | InspectRequestBody
 	got := p.RequiredCaps()
-	want := CapHeaderIndex | CapStartLine | CapStateIn | CapStateOut
+	want := CapBlob | CapHeaderIndex | CapStartLine
 	if got != want {
 		t.Fatalf("caps = %b, want %b", got, want)
 	}
 	if (CapBlob | CapHeaderIndex).Has(got) {
 		t.Fatal("Has reported capabilities that are not present")
+	}
+	if got := (p | InspectLifecycle).RequiredCaps(); got != want|CapLifecycle {
+		t.Fatalf("combined plan requires %#x", got)
 	}
 }
 

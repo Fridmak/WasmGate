@@ -72,12 +72,13 @@ Linux, `0 B/op, 0 allocs/op` everywhere:
 | `ratelimit/BenchmarkAllow` | 65.4 ns/op (parallel: 20.4 ns/op) |
 | `plugin/BenchmarkOnAccept` | 81.3 ns/op (parallel: 24.7 ns/op) |
 | `plugin/BenchmarkOnData` (L7) | 76.0 ns/op |
-| `plugin/BenchmarkOnDataState` (ABI v3) | 111–122 ns/op |
+| `plugin/BenchmarkOnDataState` (historical ABI v3 fixture) | 111–122 ns/op |
 | `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
 
-ABI v3 adds roughly 30 ns over stateless `on_data`: the cost of copying up to
-4 KiB of state, not a second proxy. A complete stateful plugin
-(`http_body_guard`) costs about 2.29 µs per chunk because it parses HTTP.
+The historical stateful fixture added roughly 30 ns over stateless `on_data`.
+It is retained only as an old benchmark record; production guests use the ABI
+v4 envelope and host-owned state. A complete HTTP body policy costs more
+because it parses framing and dispatches typed phases.
 
 ## What the numbers mean
 

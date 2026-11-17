@@ -18,7 +18,7 @@ var (
 
 var (
 	errHeaderIncomplete = errors.New("proxy: incomplete HTTP request header block")
-	errHeaderTooLarge   = errors.New("proxy: HTTP request header block exceeds the configured limit")
+	errHeaderTooLarge   = errors.New("proxy: HTTP header block exceeds the configured limit")
 	errHTTP2Preface     = errors.New("proxy: HTTP/2 preface on a headers-mode listener")
 )
 

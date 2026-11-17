@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
 	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/tlspeek"
@@ -32,7 +31,7 @@ type Proxy struct {
 	rt      *Runtime         // source of the current snapshot
 	sampler *observe.Limiter // rate-limits per-connection log events
 	metrics *observe.Metrics // per-connection counters; nil = disabled
-	nextID  atomic.Uint64    // connection id exposed to ABI v2 plugin hooks
+	nextID  atomic.Uint64    // connection id exposed to ABI v4 plugin hooks
 }
 
 // New returns a Proxy that reads configuration from rt on every connection.
@@ -124,8 +123,8 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		if !pluginAccepted || rl.pluginV4 == nil {
 			return
 		}
-		// Pair on_close with on_accept even when the connection exits before the
-		// relay starts (deny, TLS failure, header timeout, dial failure).
+		// Pair on_close with an accepted connection even if TLS, inspection, or
+		// the upstream dial fails before the relay starts.
 		if err := rl.pluginV4.OnCloseConn(context.Background(), connID, peerIP, closeRx, closeTx); err != nil {
 			p.metrics.PluginDiscard()
 		}
@@ -179,14 +178,13 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
-	// L7 inspection before dialing. All data modes are ABI v4; ABI v3 is used
-	// only for the L4 on_accept/on_close lifecycle path.
+	// L7 inspection before dialing. The HTTP exchange path is opt-in and does
+	// not participate in the opaque relay or the header-only splice path.
 	var streamHook streamInspector
-	var bodyInspector *httpBodyInspector
-	var requestHeaders []byte
+	var exchange *httpExchange
 	if rl.pluginV4 != nil {
-		switch rl.cfg.Plugin.DataMode {
-		case config.DataModeHeaders:
+		switch rl.pipeline.mode {
+		case pluginHeaders:
 			_, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
 			if err != nil {
 				return
@@ -197,7 +195,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				return
 			}
 			client = pc
-			_, headers, err := readHeaderBlock(pc, rl.cfg.Plugin.MaxHeaderBytes, rl.cfg.Plugin.InspectTimeout)
+			prefix, headers, err := readHeaderBlock(pc, rl.cfg.Plugin.MaxHeaderBytes, rl.cfg.Plugin.InspectTimeout)
 			if err != nil {
 				p.metrics.HeaderIncomplete()
 				if ok, dropped := p.sampler.Allow("headers:" + listenerName); ok {
@@ -209,15 +207,20 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
-			requestHeaders = headers
-			verdict, err := rl.pluginV4.OnRequestHeaders(ctx, connID, headers)
-			if err != nil {
-				p.metrics.PluginDiscard()
+			var verdict abi4.Verdict
+			if rl.pipeline.body {
+				exchange = newHTTPExchange(rl.pluginV4, connID, rl.cfg.Plugin, rl.pipeline.replaceBody, p.metrics)
+				verdict, err = exchange.prepareRequest(ctx, headers, prefix[len(headers):])
+			} else {
+				verdict, err = rl.pluginV4.OnRequestHeaders(ctx, connID, headers)
+				if err != nil {
+					p.metrics.PluginDiscard()
+				}
 			}
 			if err != nil || verdict == abi4.VerdictDeny {
 				p.metrics.RejectPlugin()
 				if ok, dropped := p.sampler.Allow("headers_plugin:" + listenerName); ok {
-					p.log.Warn("request headers rejected by wasm on_event hook",
+					p.log.Warn("request rejected during HTTP inspection",
 						"listener", listenerName,
 						"err", err,
 						"suppressed", dropped,
@@ -232,19 +235,8 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 			} else if routed != nil {
 				targetPool = routed
 			}
-			if rl.cfg.Plugin.BodyPolicy != "" {
-				bodyInspector, err = newHTTPBodyInspector(rl.pluginV4, connID, headers,
-					rl.cfg.Plugin.BodyPolicy, rl.cfg.Plugin.MaxHeaderBytes)
-				if err != nil {
-					p.metrics.RejectPlugin()
-					return
-				}
-				streamHook = func(ctx context.Context, _ uint64, dir int32, chunk []byte) (int32, error) {
-					return bodyInspector.inspect(ctx, dir, chunk)
-				}
-			}
 
-		case config.DataModeOnce:
+		case pluginOnce:
 			chunk, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
 			if err != nil {
 				return
@@ -273,18 +265,18 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				targetPool = routed
 			}
 
-		case config.DataModeStream:
+		case pluginStream:
 			eng := rl.pluginV4
 			streamHook = func(ctx context.Context, connID uint64, dir int32, chunk []byte) (int32, error) {
 				verdict, err := eng.OnOpaqueChunk(ctx, connID, dir, 0, chunk)
 				return int32(verdict), err
 			}
 
-		case "":
+		case pluginLifecycle:
 			// L4-only lifecycle listener: on_accept already ran, no L7 phase.
 
 		default:
-			p.log.Error("unsupported ABI v4 data_mode", "listener", listenerName, "data_mode", rl.cfg.Plugin.DataMode)
+			p.log.Error("unsupported resolved plugin mode", "listener", listenerName, "mode", rl.pipeline.mode)
 			return
 		}
 	}
@@ -303,13 +295,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	var prefix int64
 	if pc, ok := client.(*tlspeek.Conn); ok {
 		if streamHook != nil && len(pc.Bytes()) > 0 {
-			var verdict int32
-			var err error
-			if bodyInspector != nil {
-				verdict, err = bodyInspector.inspectRequestPrefix(ctx, pc.Bytes(), requestHeaders)
-			} else {
-				verdict, err = streamHook(ctx, connID, 0, pc.Bytes())
-			}
+			verdict, err := streamHook(ctx, connID, 0, pc.Bytes())
 			if err != nil {
 				p.metrics.PluginDiscard()
 			}
@@ -334,7 +320,12 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	p.log.Debug("proxying", "listener", listenerName, "pool", targetPool.Name(), "upstream", up.addr)
 
-	rx, tx := join(ctx, client, server, rl.cfg.IdleTimeout, streamHook, p.metrics, connID)
+	var rx, tx int64
+	if exchange != nil {
+		rx, tx = exchange.join(ctx, client, server, rl.cfg.IdleTimeout)
+	} else {
+		rx, tx = join(ctx, client, server, rl.cfg.IdleTimeout, streamHook, p.metrics, connID)
+	}
 	tx += prefix
 	closeRx, closeTx = rx, tx
 	p.metrics.AddBytes(rx + tx)

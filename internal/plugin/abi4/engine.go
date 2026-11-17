@@ -1,6 +1,7 @@
 package abi4
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -22,6 +23,7 @@ const (
 	DefaultLoadTimeout    = 5 * time.Second
 	DefaultInCap          = 40 * 1024
 	DefaultOutCap         = 4 * 1024
+	maxIdleInstances      = 16
 	// DefaultHeaderIndexCap bounds the pooled header index used by
 	// OnRequestHeaders. 512 entries is already far above real-world HTTP
 	// requests and keeps the per-event buffer at 8 KiB.
@@ -34,9 +36,11 @@ type Options struct {
 	MaxMemoryPages uint32
 	Timeout        time.Duration
 	Plan           Plan
-	InCap          int
-	OutCap         int
-	RoutePools     int
+	// RequiredCaps adds policy-specific requirements to Plan.RequiredCaps.
+	RequiredCaps Caps
+	InCap        int
+	OutCap       int
+	RoutePools   int
 	// HeaderIndexCap is the maximum number of headers accepted by
 	// OnRequestHeaders. Zero selects DefaultHeaderIndexCap.
 	HeaderIndexCap int
@@ -50,7 +54,6 @@ type instance struct {
 	onCloseEx api.Function
 	mem       api.Memory
 	bufPtr    uint32
-	bufLen    uint32
 	outPtr    uint32
 	outLen    uint32
 	abi       uint32
@@ -60,32 +63,28 @@ type instance struct {
 
 // Engine is a compiled v4 module plus a pool of reusable instances. It is safe
 // for concurrent event calls; Close must not race with in-flight events. After
-// warm-up, payload writes and header indexing avoid allocations; hook deadlines
-// currently allocate one context per event (tracked as the P1 wazero
-// follow-up, not part of ABI correctness).
+// warm-up, payload writes and header indexing avoid allocations. Hook deadlines
+// allocate a context per event; accepted OUT effects allocate host-owned bytes.
 type Engine struct {
 	rt          wazero.Runtime
 	compiled    wazero.CompiledModule
 	plan        Plan
+	required    Caps
 	caps        Caps
 	abi         uint32
 	inCap       uint32
 	outCap      uint32
-	bufPtr      uint32
-	bufLen      uint32
 	timeout     time.Duration
 	loadTimeout time.Duration
 	routePools  int
 	headerCap   int
-	output      bool
 	hasAccept   bool
 	hasClose    bool
 	hasCloseEx  bool
 	nextID      atomic.Uint64
 	discarded   atomic.Int64
-	pool        sync.Pool
+	pool        chan *instance
 	idxPool     sync.Pool
-	initErr     atomic.Pointer[error]
 	closeOnce   sync.Once
 }
 
@@ -125,6 +124,8 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	}
 	if opts.MaxMemoryPages == 0 {
 		opts.MaxMemoryPages = DefaultMaxMemoryPages
+	} else if opts.MaxMemoryPages > 65536 {
+		return nil, errors.New("abi4: memory limit exceeds Wasm32 address space")
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultHookTimeout
@@ -152,12 +153,14 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		rt:          rt,
 		compiled:    compiled,
 		plan:        opts.Plan,
+		required:    opts.Plan.RequiredCaps() | opts.RequiredCaps,
 		inCap:       uint32(opts.InCap),  // #nosec G115 -- positive config value
 		outCap:      uint32(opts.OutCap), // #nosec G115 -- positive config value
 		timeout:     opts.Timeout,
 		loadTimeout: DefaultLoadTimeout,
 		routePools:  opts.RoutePools,
 		headerCap:   opts.HeaderIndexCap,
+		pool:        make(chan *instance, maxIdleInstances),
 	}
 	warm, err := e.instantiate(loadCtx)
 	if err != nil {
@@ -169,50 +172,12 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	e.hasAccept = warm.onAccept != nil
 	e.hasClose = warm.onClose != nil
 	e.hasCloseEx = warm.onCloseEx != nil
-	e.output = warm.outLen != 0
-	if e.plan.HasEventPhases() {
-		e.bufPtr = warm.bufPtr
-		e.bufLen = warm.bufLen
-		if !e.caps.Has(CapBlob) {
-			_ = warm.close()
-			_ = rt.Close(loadCtx)
-			return nil, errors.New("abi4: module must declare CapBlob")
-		}
-		if need := opts.Plan.RequiredCaps(); !e.caps.Has(need) {
-			_ = warm.close()
-			_ = rt.Close(loadCtx)
-			return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, e.caps)
-		}
-		if e.bufLen < e.inCap+e.outCap {
-			_ = warm.close()
-			_ = rt.Close(loadCtx)
-			return nil, fmt.Errorf("abi4: window is %d bytes, need %d", e.bufLen, e.inCap+e.outCap)
-		}
-		if uint64(e.bufPtr)+uint64(e.bufLen) > uint64(warm.mem.Size()) {
-			_ = warm.close()
-			_ = rt.Close(loadCtx)
-			return nil, errors.New("abi4: window is outside linear memory")
-		}
-	}
 
-	e.pool.New = func() any {
-		if e.initErr.Load() != nil {
-			return nil
-		}
-		instCtx, instCancel := context.WithTimeout(context.Background(), e.loadTimeout)
-		defer instCancel()
-		inst, err := e.instantiate(instCtx)
-		if err != nil {
-			e.initErr.Store(&err)
-			return nil
-		}
-		return inst
-	}
 	e.idxPool.New = func() any {
 		buf := make([]Ent, e.headerCap)
 		return &buf
 	}
-	e.pool.Put(warm)
+	e.pool <- warm
 	runtime.AddCleanup(e, func(rt wazero.Runtime) {
 		_ = rt.Close(context.Background())
 	}, e.rt)
@@ -309,7 +274,7 @@ func equalTypes(a, b []api.ValueType) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i] != b[i] { // #nosec G602 -- i is bounded by len(a)==len(b)
 			return false
 		}
 	}
@@ -340,7 +305,7 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		_ = mod.Close(ctx)
 		return nil, err
 	}
-	abi := uint32(stack[0])
+	abi := uint32(stack[0]) // #nosec G115 -- wg_abi returns an i32
 	if abi>>8 != 4 {
 		_ = mod.Close(ctx)
 		return nil, fmt.Errorf("abi4: unsupported ABI major %d", abi>>8)
@@ -350,15 +315,17 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		return nil, err
 	}
 	caps := Caps(stack[0])
+	if !caps.Has(e.required) {
+		_ = mod.Close(ctx)
+		return nil, fmt.Errorf("abi4: plan/policy requires caps %#x, module declares %#x", e.required, caps)
+	}
 	inst := &instance{
-		mod:       mod,
-		onEvent:   mod.ExportedFunction("on_event"),
-		onAccept:  mod.ExportedFunction("on_accept"),
-		onClose:   mod.ExportedFunction("on_close"),
-		onCloseEx: mod.ExportedFunction("on_close_ex"),
-		mem:       mem,
-		abi:       abi,
-		caps:      caps,
+		mod: mod, mem: mem, abi: abi, caps: caps,
+	}
+	if e.plan.HasLifecycle() {
+		inst.onAccept = mod.ExportedFunction("on_accept")
+		inst.onClose = mod.ExportedFunction("on_close")
+		inst.onCloseEx = mod.ExportedFunction("on_close_ex")
 	}
 	if e.plan.HasEventPhases() {
 		if err := call("wg_buf_ptr", stack[:]); err != nil {
@@ -371,14 +338,6 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 			return nil, err
 		}
 		length := uint32(stack[0]) // #nosec G115 -- module-provided i32
-		if !caps.Has(CapBlob) {
-			_ = mod.Close(ctx)
-			return nil, errors.New("abi4: module must declare CapBlob")
-		}
-		if need := e.plan.RequiredCaps(); !caps.Has(need) {
-			_ = mod.Close(ctx)
-			return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, caps)
-		}
 		if uint64(length) < uint64(e.inCap)+uint64(e.outCap) {
 			_ = mod.Close(ctx)
 			return nil, fmt.Errorf("abi4: window is %d bytes, need %d", length, uint64(e.inCap)+uint64(e.outCap))
@@ -393,11 +352,7 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 			return nil, errors.New("abi4: missing on_event")
 		}
 		inst.bufPtr = ptr
-		inst.bufLen = length
-		// Body/response plans require state output. Mutation is enabled by those
-		// opt-in plans in M4; opaque/header plans stay read-only until then.
-		needsOutput := e.plan.RequiredCaps().Has(CapStateOut) || caps.Has(CapMutation)
-		if needsOutput {
+		if caps&(CapStateOut|CapMutation) != 0 {
 			outPtrFn := mod.ExportedFunction("wg_out_ptr")
 			outLenFn := mod.ExportedFunction("wg_out_len")
 			if outPtrFn == nil || outLenFn == nil {
@@ -414,9 +369,14 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 				return nil, err
 			}
 			outLen := uint32(stack[0]) // #nosec G115 -- module-provided i32
-			if uint64(outLen) < uint64(e.outCap) || uint64(outPtr)+uint64(outLen) > uint64(mem.Size()) {
+			outEnd := uint64(outPtr) + uint64(outLen)
+			if e.outCap < hdrLen || outLen < e.outCap || outEnd > uint64(mem.Size()) {
 				_ = mod.Close(ctx)
 				return nil, errors.New("abi4: output window is invalid or too small")
+			}
+			if uint64(outPtr) < uint64(ptr)+uint64(e.inCap) && uint64(ptr) < outEnd {
+				_ = mod.Close(ctx)
+				return nil, errors.New("abi4: IN and OUT windows overlap")
 			}
 			inst.outPtr = outPtr
 			inst.outLen = outLen
@@ -429,9 +389,9 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 	return inst, nil
 }
 
-// EventResult is the validated result of one event. Mutation and State are
-// zero-copy views into the guest OUT window and must be consumed before the
-// next event on the same instance.
+// EventResult is the validated result of one event. Mutation and State, if
+// present, are owned by the caller and do not alias guest memory. The presence
+// flags distinguish an explicitly empty section from an omitted section.
 type EventResult struct {
 	Verdict         Verdict
 	Mutation        []byte
@@ -440,10 +400,13 @@ type EventResult struct {
 	StatePresent    bool
 }
 
-// OnEvent writes one envelope and invokes on_event. It is the compatibility
-// convenience API for callers that only need a verdict.
+// OnEvent is the read-only entry point: it rejects effects that this caller
+// has no policy for, rather than silently dropping successful guest output.
 func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags Flags, ev Event) (Verdict, error) {
 	result, err := e.OnEventResult(ctx, connID, phase, flags, ev)
+	if err == nil && (result.MutationPresent || result.StatePresent) {
+		return VerdictDeny, errors.New("abi4: effects are not enabled for this event")
+	}
 	return result.Verdict, err
 }
 
@@ -466,15 +429,20 @@ func (e *Engine) OnEventResult(ctx context.Context, connID uint64, phase Phase, 
 	if flags&(FlagClientToServer|FlagServerToClient) == (FlagClientToServer | FlagServerToClient) {
 		return deny(errors.New("abi4: event cannot carry both directions"))
 	}
-	if len(ev.Block) == 0 {
+	truncatedBody := (phase == PhaseRequestBody || phase == PhaseResponseBody) &&
+		flags&(FlagLast|FlagTruncated) == FlagLast|FlagTruncated
+	if len(ev.Block) == 0 && !truncatedBody {
 		return deny(errors.New("abi4: empty event"))
 	}
 	if err := ctx.Err(); err != nil {
 		return deny(err)
 	}
-	inst, ok := e.pool.Get().(*instance)
-	if !ok || inst == nil {
-		return deny(fmt.Errorf("abi4: instantiate failed: %v", e.initError()))
+	if ev.State != nil && !e.caps.Has(CapStateIn) {
+		return deny(errors.New("abi4: input state requires CapStateIn"))
+	}
+	inst, err := e.borrow(ctx)
+	if err != nil {
+		return deny(err)
 	}
 	win, ok := inst.mem.Read(inst.bufPtr, e.inCap)
 	if !ok {
@@ -483,13 +451,11 @@ func (e *Engine) OnEventResult(ctx context.Context, connID uint64, phase Phase, 
 	}
 	total, err := Write(win, ev)
 	if err != nil {
-		e.pool.Put(inst)
+		e.release(inst)
 		return deny(err)
 	}
-	var out []byte
-	if e.output {
-		var outputOK bool
-		out, outputOK = inst.mem.Read(inst.outPtr, e.outCap)
+	if inst.outLen != 0 {
+		out, outputOK := inst.mem.Read(inst.outPtr, e.outCap)
 		if !outputOK {
 			e.discard(inst)
 			return deny(errors.New("abi4: OUT window out of bounds"))
@@ -501,7 +467,7 @@ func (e *Engine) OnEventResult(ctx context.Context, connID uint64, phase Phase, 
 	inst.stack[1] = uint64(phase)
 	inst.stack[2] = uint64(flags)
 	inst.stack[3] = uint64(inst.bufPtr)
-	inst.stack[4] = uint64(total)
+	inst.stack[4] = uint64(total) // #nosec G115 -- Write validated a nonnegative envelope size
 	callCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	callErr := inst.onEvent.CallWithStack(callCtx, inst.stack[:])
 	cancel()
@@ -511,37 +477,48 @@ func (e *Engine) OnEventResult(ctx context.Context, connID uint64, phase Phase, 
 	}
 	v := Verdict(int32(uint32(inst.stack[0]))) // #nosec G115 -- low i32 is the verdict
 	if err := ValidateVerdict(v, e.routePools); err != nil {
-		e.pool.Put(inst)
+		e.release(inst)
 		return deny(err)
 	}
 	result := EventResult{Verdict: v}
-	if e.output {
-		// An all-zero OUT window means the guest produced no mutation/state.
-		// This keeps allow-only body policies cheap while still validating any
-		// non-empty output envelope strictly.
-		if binary.LittleEndian.Uint32(out) != 0 {
+	if inst.outLen != 0 {
+		// A guest can grow its memory during the call, invalidating the old view.
+		out, ok := inst.mem.Read(inst.outPtr, e.outCap)
+		if !ok {
+			e.discard(inst)
+			return deny(errors.New("abi4: OUT window out of bounds after on_event"))
+		}
+		// Only a completely untouched (zeroed) window means no output.
+		if binary.LittleEndian.Uint32(out) != 0 || bytes.Count(out, []byte{0}) != len(out) {
 			parsed, parseErr := ParseOutput(out)
 			if parseErr != nil {
 				e.discard(inst)
 				return deny(parseErr)
 			}
-			result.Mutation = parsed.Mutation
-			result.MutationPresent = parsed.MutationPresent
-			result.State = parsed.State
-			result.StatePresent = parsed.StatePresent
+			if parsed.MutationPresent && !inst.caps.Has(CapMutation) {
+				e.discard(inst)
+				return deny(errors.New("abi4: output mutation requires CapMutation"))
+			}
+			if parsed.StatePresent && !inst.caps.Has(CapStateOut) {
+				e.discard(inst)
+				return deny(errors.New("abi4: output state requires CapStateOut"))
+			}
+			if v == VerdictAllow && !truncatedBody {
+				// Copy while the instance is still exclusively held by this call.
+				// Do not clone empty views: they can still reference guest memory.
+				result.Mutation = append([]byte(nil), parsed.Mutation...)
+				result.MutationPresent = parsed.MutationPresent
+				result.State = append([]byte(nil), parsed.State...)
+				result.StatePresent = parsed.StatePresent
+			}
 		}
 	}
-	e.pool.Put(inst)
-	if v == VerdictDeny {
-		result.Mutation = nil
-		result.MutationPresent = false
-		result.State = nil
-		result.StatePresent = false
-	}
+	e.release(inst)
 	return result, nil
 }
 
-// OnRequestBody dispatches an opt-in request-body event.
+// OnRequestBody dispatches an opt-in request-body event and returns validated
+// host-owned effects when the guest allows it.
 func (e *Engine) OnRequestBody(ctx context.Context, connID uint64, flags Flags, ev Event) (EventResult, error) {
 	return e.OnEventResult(ctx, connID, PhaseRequestBody, flags, ev)
 }
@@ -551,7 +528,8 @@ func (e *Engine) OnResponseHeaders(ctx context.Context, connID uint64, flags Fla
 	return e.OnEventResult(ctx, connID, PhaseResponseHeaders, flags, ev)
 }
 
-// OnResponseBody dispatches an opt-in response-body event.
+// OnResponseBody dispatches an opt-in response-body event and returns validated
+// host-owned effects when the guest allows it.
 func (e *Engine) OnResponseBody(ctx context.Context, connID uint64, flags Flags, ev Event) (EventResult, error) {
 	return e.OnEventResult(ctx, connID, PhaseResponseBody, flags, ev)
 }
@@ -563,9 +541,9 @@ func (e *Engine) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 	if e == nil || !e.hasAccept {
 		return VerdictAllow, nil
 	}
-	inst, ok := e.pool.Get().(*instance)
-	if !ok || inst == nil {
-		return VerdictDeny, fmt.Errorf("abi4: instantiate failed: %v", e.initError())
+	inst, err := e.borrow(ctx)
+	if err != nil {
+		return VerdictDeny, err
 	}
 	hi, lo := encodeIP(ip)
 	inst.stack[0] = hi
@@ -579,7 +557,7 @@ func (e *Engine) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, er
 		return VerdictDeny, callErr
 	}
 	v := int32(uint32(inst.stack[0])) // #nosec G115 -- WASM i32 result
-	e.pool.Put(inst)
+	e.release(inst)
 	if v != 0 {
 		return VerdictDeny, nil
 	}
@@ -593,9 +571,9 @@ func (e *Engine) OnCloseConn(ctx context.Context, connID uint64, ip net.IP, rxBy
 	if e == nil || (!e.hasClose && !e.hasCloseEx) {
 		return nil
 	}
-	inst, ok := e.pool.Get().(*instance)
-	if !ok || inst == nil {
-		return fmt.Errorf("abi4: instantiate failed: %v", e.initError())
+	inst, err := e.borrow(ctx)
+	if err != nil {
+		return err
 	}
 	hi, lo := encodeIP(ip)
 	callCtx, cancel := context.WithTimeout(ctx, e.timeout)
@@ -619,7 +597,7 @@ func (e *Engine) OnCloseConn(ctx context.Context, connID uint64, ip net.IP, rxBy
 		e.discard(inst)
 		return callErr
 	}
-	e.pool.Put(inst)
+	e.release(inst)
 	return nil
 }
 
@@ -636,7 +614,8 @@ func encodeIP(ip net.IP) (hi, lo uint64) {
 	return 0, 0
 }
 
-// OnRequestHeaders is the typed request-header entry point for M1 integration.
+// OnRequestHeaders is the typed request-header entry point. It validates and
+// indexes the complete request head before dispatching the event.
 // The header index is pooled and bounded by Options.HeaderIndexCap;
 // SplitHeaders rejects overlong or malformed requests instead of silently
 // truncating the index.
@@ -659,7 +638,7 @@ func (e *Engine) OnRequestHeaders(ctx context.Context, connID uint64, block []by
 	})
 }
 
-// OnOpaqueFirst is the pre-dial opaque first-chunk entry point.
+// OnOpaqueFirst is the pre-dial opaque first client-to-server chunk entry point.
 func (e *Engine) OnOpaqueFirst(ctx context.Context, connID uint64, chunk []byte) (Verdict, error) {
 	return e.OnEvent(ctx, connID, PhaseOpaqueStream, FlagFirst|FlagClientToServer, Event{Block: chunk})
 }
@@ -690,21 +669,50 @@ func (e *Engine) discard(inst *instance) {
 	_ = inst.mod.Close(context.Background())
 }
 
-func (i *instance) close() error {
-	return i.mod.Close(context.Background())
-}
-
-func (e *Engine) initError() error {
-	if err := e.initErr.Load(); err != nil {
-		return *err
+// A sync.Pool can drop instances at any GC without invoking Close. Keep a
+// bounded free list instead, and release overflow even if the engine lives
+// for the rest of the process. It bounds idle, not concurrent, instances.
+func (e *Engine) borrow(ctx context.Context) (*instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return nil
+	select {
+	case inst := <-e.pool:
+		return inst, nil
+	default:
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, e.loadTimeout)
+	defer cancel()
+	inst, err := e.instantiate(loadCtx)
+	if err != nil {
+		return nil, err
+	}
+	if inst.abi != e.abi || inst.caps != e.caps {
+		e.discard(inst)
+		return nil, errors.New("abi4: inconsistent module ABI or capabilities")
+	}
+	return inst, nil
 }
 
-// ABI, Caps, Plan and Discarded expose validated engine metadata.
-func (e *Engine) ABI() uint32      { return e.abi }
-func (e *Engine) Caps() Caps       { return e.caps }
-func (e *Engine) Plan() Plan       { return e.plan }
+func (e *Engine) release(inst *instance) {
+	select {
+	case e.pool <- inst:
+	default:
+		_ = inst.mod.Close(context.Background())
+	}
+}
+
+// ABI returns the validated ABI version reported by the guest.
+func (e *Engine) ABI() uint32 { return e.abi }
+
+// Caps returns the validated guest capability bitset.
+func (e *Engine) Caps() Caps { return e.caps }
+
+// Plan returns the immutable phase plan used by the engine.
+func (e *Engine) Plan() Plan { return e.plan }
+
+// Discarded returns the number of guest instances destroyed after a trap,
+// timeout, invalid output, or inconsistent instance metadata.
 func (e *Engine) Discarded() int64 { return e.discarded.Load() }
 
 // Close stops the runtime. Idempotent.
@@ -714,6 +722,9 @@ func (e *Engine) Close(_ context.Context) error {
 	}
 	e.closeOnce.Do(func() {
 		_ = e.rt.Close(context.Background())
+		for len(e.pool) > 0 {
+			<-e.pool
+		}
 	})
 	return nil
 }

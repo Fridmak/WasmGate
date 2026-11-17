@@ -18,8 +18,7 @@ import (
 var errPluginDenied = errors.New("proxy: payload rejected by wasm on_event hook")
 
 // streamInspector inspects one opaque chunk and returns the raw verdict
-// (0 allow, nonzero deny/error). ABI v3's on_data_state is not part of this
-// interface: M2 supports direction-aware, read-only v4 stream inspection.
+// (0 allow, nonzero deny/error). This path is direction-aware and read-only.
 type streamInspector func(ctx context.Context, connID uint64, dir int32, chunk []byte) (int32, error)
 
 // idleBufferSize is the size of the pooled copy buffers. 32 KiB matches

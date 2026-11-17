@@ -304,18 +304,16 @@ func TestWriteParseVariants(t *testing.T) {
 	}
 }
 
-func TestSplitHeadersLFOnlyAndNoFinalCRLF(t *testing.T) {
+func TestSplitHeadersRequiresCRLF(t *testing.T) {
 	for _, block := range [][]byte{
 		[]byte("GET / HTTP/1.1\nHost: x\n\n"),
 		[]byte("GET / HTTP/1.1\r\nHost: x"),
+		[]byte("GET / HTTP/1.1\r\nHost: x\n\r\n"),
+		[]byte("GET / HTTP/1.1\r\n\r\nextra"),
 	} {
 		idx := make([]Ent, 8)
-		n, sl, err := SplitHeaders(block, idx)
-		if err != nil {
-			t.Fatalf("%q: %v", block, err)
-		}
-		if n != 1 || sl.MethodLen != 3 || sl.ProtoLen != 8 {
-			t.Fatalf("%q: n=%d start=%+v", block, n, sl)
+		if _, _, err := SplitHeaders(block, idx); err == nil {
+			t.Fatalf("invalid header block accepted: %q", block)
 		}
 	}
 }
@@ -458,7 +456,7 @@ func FuzzWriteParse(f *testing.F) {
 	n, _ := Write(env, ev)
 	f.Add(env[:n], []byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
 	f.Add([]byte{}, []byte(""))
-	f.Fuzz(func(t *testing.T, win, block []byte) {
+	f.Fuzz(func(_ *testing.T, win, block []byte) {
 		idx := make([]Ent, 8)
 		n, start, err := SplitHeaders(block, idx)
 		if err != nil {
@@ -475,7 +473,7 @@ func FuzzWriteParse(f *testing.F) {
 func FuzzSplitHeaders(f *testing.F) {
 	f.Add([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
 	f.Add([]byte(""))
-	f.Fuzz(func(t *testing.T, block []byte) {
+	f.Fuzz(func(_ *testing.T, block []byte) {
 		idx := make([]Ent, 16)
 		_, _, _ = SplitHeaders(block, idx)
 	})
@@ -487,7 +485,7 @@ func FuzzParse(f *testing.F) {
 	n, _ := Write(env, ev)
 	f.Add(env[:n])
 	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, win []byte) {
+	f.Fuzz(func(_ *testing.T, win []byte) {
 		_, _ = Parse(win)
 	})
 }

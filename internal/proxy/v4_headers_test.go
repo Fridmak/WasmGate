@@ -45,8 +45,10 @@ func v4Entry(body []byte) []byte {
 // wg_caps, wg_buf_ptr and wg_buf_len. on_event returns the supplied i64 and the
 // module declares all L7 capabilities (header + opaque).
 func v4Module(onEvent []byte) []byte {
-	return v4ModuleCaps(onEvent, 0x7f)
+	return v4ModuleCaps(onEvent, 0x47)
 }
+
+const v4FixtureOutPtr = 50000
 
 func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 	types := []byte{
@@ -85,16 +87,18 @@ func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 		return append(body, 0x0b)
 	}
 
-	code := []byte{0x07}
+	code := make([]byte, 1, len(onEvent)+64)
+	code[0] = 7
 	code = append(code, v4Entry(onEvent)...)
 	code = append(code, v4Entry(intConst(0x41, 0x0400))...)
 	code = append(code, v4Entry(i64Const(caps))...)
 	code = append(code, v4Entry(intConst(0x41, 4096))...)
 	code = append(code, v4Entry(intConst(0x41, 49152))...)
-	code = append(code, v4Entry(intConst(0x41, 50000))...)
+	code = append(code, v4Entry(intConst(0x41, v4FixtureOutPtr))...)
 	code = append(code, v4Entry(intConst(0x41, 4096))...)
 
-	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	out := make([]byte, 0, len(code)+len(exports)+64)
+	out = append(out, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
 	out = append(out, v4Section(0x01, types)...)
 	out = append(out, v4Section(0x03, funcs)...)
 	out = append(out, v4Section(0x05, memory)...)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"wasmgate/internal/config"
+	"wasmgate/internal/plugin/abi4"
 )
 
 func TestV3L7ModulesRejected(t *testing.T) {
@@ -101,5 +102,46 @@ func TestV4StreamRejectsRoutePools(t *testing.T) {
 	})
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("stream mode accepted route_pools")
+	}
+}
+
+// TestV4FeatureMatrix documents the production mapping from every data-plane
+// mode to one ABI v4 plan. This is intentionally a snapshot-level test: the
+// proxy must reject an unsupported combination before serving a connection.
+func TestV4FeatureMatrix(t *testing.T) {
+	backend := startEcho(t)
+	for _, tc := range []struct {
+		name, mode, body string
+		plan             abi4.Plan
+		pipeline         pluginMode
+	}{
+		{"lifecycle", "", "", abi4.InspectLifecycle, pluginLifecycle},
+		{"once", config.DataModeOnce, "", abi4.InspectOpaqueStream, pluginOnce},
+		{"stream", config.DataModeStream, "", abi4.InspectOpaqueStream, pluginStream},
+		{"headers", config.DataModeHeaders, "", abi4.InspectRequestHeaders, pluginHeaders},
+		{"request-body", config.DataModeHeaders, config.BodyPolicyRequest,
+			abi4.InspectRequestHeaders | abi4.InspectRequestBody, pluginHeaders},
+		{"response-body", config.DataModeHeaders, config.BodyPolicyResponse,
+			abi4.InspectRequestHeaders | abi4.InspectResponseHeaders | abi4.InspectResponseBody, pluginHeaders},
+		{"both-body", config.DataModeHeaders, config.BodyPolicyBoth,
+			abi4.InspectRequestHeaders | abi4.InspectRequestBody | abi4.InspectResponseHeaders | abi4.InspectResponseBody, pluginHeaders},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+				wasm := v4Verdict(0)
+				if tc.pipeline == pluginLifecycle {
+					wasm = v4Lifecycle(0)
+				}
+				lc.Plugin = config.PluginConfig{Wasm: wasm, DataMode: tc.mode, BodyPolicy: tc.body, Timeout: time.Second}
+			}))
+			rt, err := NewRuntimeChecked(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rl := rt.Load().listeners["edge"]
+			if rl.pluginV4 == nil || rl.pipeline.mode != tc.pipeline || rl.pluginV4.Plan() != tc.plan {
+				t.Fatalf("resolved mode=%v plan=%b, want mode=%v plan=%b", rl.pipeline.mode, rl.pluginV4.Plan(), tc.pipeline, tc.plan)
+			}
+		})
 	}
 }

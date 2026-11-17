@@ -68,7 +68,8 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 | `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389`. v4-индекс принимает не более 512 заголовков; больше — fail closed |
 | `inspect_timeout` | `3s` | Режим headers: общий дедлайн на один header block |
 | `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` `2..N`; поддерживаются для `once`/`headers`, запрещены для `stream` |
-| `body_policy` | пусто | `request`, `response` или `both`; opt-in Content-Length body/response phases с `data_mode: headers` |
+| `body_policy` | пусто | `request`, `response` или `both`; ограничивает `headers` одним HTTP/1-обменом ([правила](plugins.md#политика-http-тела)) |
+| `mutation_policy` | `none` | `replace` разрешает замену блоков тела без изменения длины; требуются `body_policy` и `CapMutation` у гостя |
 
 Для любого `data_mode` модуль обязан экспортировать ABI v4-контракт
 (`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only модули

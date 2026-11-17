@@ -78,9 +78,25 @@ func TestStateSlotCommitAndReset(t *testing.T) {
 	if err := s.Commit([]byte("123456789")); !errors.Is(err, errStateCapacity) {
 		t.Fatalf("capacity error = %v", err)
 	}
+	if err := s.Commit(nil); err != nil || s.Bytes() == nil || len(s.Bytes()) != 0 {
+		t.Fatalf("clear state = %v, %v", s.Bytes(), err)
+	}
+	b := mustWrite(t, Event{Block: []byte("data"), State: s.Bytes()})
+	p, err := Parse(b)
+	if err != nil || p.State == nil || len(p.State) != 0 {
+		t.Fatalf("explicitly empty state not present in IN: %+v, %v", p, err)
+	}
 	s.Reset()
-	if len(s.Bytes()) != 0 || !bytes.Equal(s.buf, make([]byte, 8)) {
+	if s.Bytes() != nil || !bytes.Equal(s.buf, make([]byte, 8)) {
 		t.Fatalf("reset did not clear state: len=%d bytes=%v", len(s.Bytes()), s.buf)
+	}
+}
+
+func TestStateSlotCapacityIsBounded(t *testing.T) {
+	for _, cap := range []int{-1, MaxStateSlot + 1} {
+		if _, err := NewStateSlot(cap); !errors.Is(err, errStateCapacity) {
+			t.Fatalf("capacity %d: %v", cap, err)
+		}
 	}
 }
 
@@ -89,7 +105,7 @@ func FuzzParseOutput(f *testing.F) {
 	n, _ := WriteOutput(dst, Output{Mutation: []byte("seed"), MutationPresent: true})
 	f.Add(dst[:n])
 	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, data []byte) {
+	f.Fuzz(func(_ *testing.T, data []byte) {
 		_, _ = ParseOutput(data)
 	})
 }

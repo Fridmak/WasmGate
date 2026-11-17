@@ -55,6 +55,10 @@ const (
 	BodyPolicyResponse = "response"
 	// BodyPolicyBoth inspects both Content-Length request and response bodies.
 	BodyPolicyBoth = "both"
+	// MutationPolicyNone rejects every body replacement (the default).
+	MutationPolicyNone = "none"
+	// MutationPolicyReplace allows same-length replacements in inspected body events.
+	MutationPolicyReplace = "replace"
 )
 
 // ListenerConfig describes a single front-facing TCP listener.
@@ -94,9 +98,10 @@ type PluginConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
 	DataMode       string        `yaml:"data_mode"`        // "once" (first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk); all three are ABI v4
 	BodyPolicy     string        `yaml:"body_policy"`      // "request", "response" or "both"; requires data_mode: headers
-	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
+	MutationPolicy string        `yaml:"mutation_policy"`  // "none" (default) or "replace"; replace requires body_policy
+	MaxHeaderBytes int           `yaml:"max_header_bytes"` // max bytes per HTTP head (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
-	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
+	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_event return value (2 -> index 0, 3 -> index 1, ...)
 	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
 }
 
@@ -228,8 +233,8 @@ func (l *ListenerConfig) Validate() error {
 	default:
 		return fmt.Errorf("unknown plugin.data_mode %q (want once, headers or stream)", l.Plugin.DataMode)
 	}
-	if l.Plugin.DataMode == DataModeStream && len(l.Plugin.RoutePools) > 0 {
-		return errors.New("plugin.route_pools is not supported with data_mode stream")
+	if len(l.Plugin.RoutePools) > 0 && l.Plugin.DataMode != DataModeOnce && l.Plugin.DataMode != DataModeHeaders {
+		return errors.New("plugin.route_pools requires data_mode once or headers")
 	}
 	switch l.Plugin.BodyPolicy {
 	case "":
@@ -239,6 +244,15 @@ func (l *ListenerConfig) Validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown plugin.body_policy %q (want request, response or both)", l.Plugin.BodyPolicy)
+	}
+	switch l.Plugin.MutationPolicy {
+	case "", MutationPolicyNone:
+	case MutationPolicyReplace:
+		if l.Plugin.BodyPolicy == "" {
+			return errors.New("plugin.mutation_policy replace requires plugin.body_policy")
+		}
+	default:
+		return fmt.Errorf("unknown plugin.mutation_policy %q (want none or replace)", l.Plugin.MutationPolicy)
 	}
 	if l.Plugin.MaxHeaderBytes == 0 {
 		l.Plugin.MaxHeaderBytes = DefaultMaxHeaderBytes

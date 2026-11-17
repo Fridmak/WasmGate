@@ -646,7 +646,7 @@ func BenchmarkConnHotPathParallel(b *testing.B) {
 	})
 }
 
-func TestProxyStatefulHTTPBodyGuardRejected(t *testing.T) {
+func TestProxyHTTPBodyGuardRejectsOpaquePlan(t *testing.T) {
 	echoAddr := startEcho(t)
 	cfg := validated(t, &config.Config{
 		Version: 1,
@@ -663,6 +663,6 @@ func TestProxyStatefulHTTPBodyGuardRejected(t *testing.T) {
 		Pools: map[string]config.PoolConfig{"web": {Servers: []string{echoAddr}}},
 	})
 	if _, err := NewRuntimeChecked(cfg); err == nil {
-		t.Fatal("ABI v3 stateful stream plugin was accepted in the ABI v4-only path")
+		t.Fatal("HTTP-only guest accepted on an opaque plan")
 	}
 }

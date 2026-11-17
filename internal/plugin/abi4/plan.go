@@ -1,7 +1,6 @@
 // Package abi4 contains the stable building blocks for the WasmGate ABI v4
 // event-oriented plugin protocol: the versioned envelope, the inspection plan,
-// capability bits and the on_event engine. The proxy uses it for
-// data_mode: headers; other phases remain separate.
+// capability bits and the lifecycle and on_event engine.
 package abi4
 
 import (
@@ -9,7 +8,7 @@ import (
 	"fmt"
 )
 
-// Phase identifies the HTTP pipeline stage carried by one on_event call.
+// Phase identifies the HTTP or opaque pipeline stage carried by one on_event call.
 type Phase uint32
 
 const (
@@ -20,7 +19,7 @@ const (
 	PhaseOpaqueStream    Phase = 5
 )
 
-// Flags describes event boundaries and truncation.
+// Flags describes event boundaries, truncation, and opaque-stream direction.
 type Flags uint32
 
 const (
@@ -76,8 +75,12 @@ func (p Plan) Has(phase Phase) bool {
 
 // Validate rejects an empty or contradictory plan.
 func (p Plan) Validate() error {
+	const known = InspectRequestHeaders | InspectRequestBody | InspectResponseHeaders | InspectResponseBody | InspectOpaqueStream | InspectLifecycle
 	if p == 0 {
 		return errors.New("abi4: inspection plan is empty")
+	}
+	if p&^known != 0 {
+		return errors.New("abi4: inspection plan contains unknown bits")
 	}
 	if p&InspectOpaqueStream != 0 &&
 		p&(InspectRequestHeaders|InspectRequestBody|InspectResponseHeaders|InspectResponseBody) != 0 {
@@ -92,18 +95,21 @@ func (p Plan) Validate() error {
 	return nil
 }
 
-// RequiredCaps returns the guest capabilities needed by the plan. Blob is
-// implicit in every event and is required separately by the engine.
+// RequiredCaps returns the features needed for the requested phases. State
+// and mutation are independent, optional capabilities, not part of framing.
 func (p Plan) RequiredCaps() Caps {
 	var c Caps
+	if p.HasEventPhases() {
+		c |= CapBlob
+	}
 	if p&InspectRequestHeaders != 0 || p&InspectResponseHeaders != 0 {
 		c |= CapHeaderIndex | CapStartLine
 	}
 	if p&InspectOpaqueStream != 0 {
 		c |= CapOpaque
 	}
-	if p&(InspectRequestBody|InspectResponseBody) != 0 {
-		c |= CapStateIn | CapStateOut
+	if p.HasLifecycle() {
+		c |= CapLifecycle
 	}
 	return c
 }
@@ -122,6 +128,8 @@ const (
 	// CapMutation allows a guest to return an OUT mutation envelope. It is
 	// never implied by a phase; the module and host must opt in explicitly.
 	CapMutation
+	// CapLifecycle declares the L4 lifecycle exports used by InspectLifecycle.
+	CapLifecycle
 )
 
 // Has reports whether all bits in need are present.
