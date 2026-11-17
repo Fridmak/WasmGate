@@ -74,5 +74,6 @@ runtime type: `abi4.Engine`.
 
 ## Current progress
 
-M3.1–M3.4 are implemented. The v3 package remains test-only/historical until
-the v4 example ports and SDK work in M4.
+M3.1–M3.4 are implemented. The v3 package remains outside the production
+import graph and is retained temporarily as historical/test-only code until the
+v4 SDK/example ports and final cleanup in M5.

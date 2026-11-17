@@ -87,19 +87,19 @@ an explicit v4 phase, not added as another mode.
 ### M2.5 — remove v3 L7 from production (done)
 
 - Delete `on_data`, `on_data_ex`, `on_data_state` handling from the proxy path.
-- Leave v3 only for `on_accept`/`on_close` until M3.
+- Leave L4 lifecycle for M3.
 - Update configs/examples: v3 L7 examples are either ported to v4 fixtures or
   marked legacy and removed from the runnable showcase.
 - Add a guard test that no `data_mode: once|stream|headers` listener resolves a
   `*plugin.Plugin`.
 
-## M3 — lifecycle and v3 removal
+## M3 — lifecycle and v3 removal (done)
 
-- Add v4 `on_accept`/`on_close` support to the engine.
+- Added v4 `on_accept`/`on_close` support to the engine.
 - Cut L4 over to v4.
-- Remove `internal/plugin/sandbox.go` from the proxy path.
-- Keep the v3 package only as historical reference or delete it.
-- Update all examples/docs and remove `data_mode` strings.
+- Removed `internal/plugin` from the proxy import graph.
+- Kept the v3 package temporarily as historical/test-only code.
+- Updated examples/docs to mark committed v3 binaries as legacy.
 
 ## M4 — mutations and state
 
@@ -124,6 +124,7 @@ an explicit v4 phase, not added as another mode.
 
 - M2.1–M2.5 are implemented and tested.
 - `data_mode: once`, `stream` and `headers` resolve only `abi4.Engine`.
-- ABI v3 remains only for the L4 `on_accept`/`on_close` path.
-- v3 L7 modules are rejected; stateful/mutating v3 examples are marked legacy.
-- Next is M3: v4 lifecycle, L4 cutover and v3 removal.
+- ABI v3 is no longer in the production proxy import graph.
+- v3 L7/L4 modules are rejected; committed v3 examples are marked legacy.
+- M4 is the next milestone: OUT mutations, state slots and body/response
+  protocol primitives.

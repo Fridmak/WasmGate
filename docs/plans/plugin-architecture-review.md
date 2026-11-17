@@ -29,7 +29,7 @@
 - **Research artifacts:** the old `internal/plugin/v4` prototype and generated
   benchmark adapters were removed; they were not production code.
 
-## 1. Current model
+## 1. Current model (historical ABI v3)
 
 The host currently exports four overlapping L7 hooks and selects them from
 `plugin.data_mode`:
@@ -247,7 +247,7 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 
 ## 4. Work plan
 
-### Phase A — freeze the current surface
+### Phase A — freeze the current surface (done)
 
 - Require explicit mode for L7 hooks (done).
 - Reject `on_headers`-only outside headers (done).
@@ -262,11 +262,12 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
   route/verdict validation.
 - Resolve the plan once at snapshot build; the data path must not switch on
   mode strings.
-- Keep v3 adapters so behavior does not change yet.
+- Keep the v3 package only as historical/test fixtures; it is not imported by
+  production proxy code.
 - Tests: plan validation, envelope conformance, engine load/verdict/timeout,
   fuzz and race.
 
-### Phase C — wire v4 into the proxy (M1 headers cutover done)
+### Phase C — wire v4 into the proxy (done in M1–M3)
 
 - Add `on_event` dispatch to the proxy for the request-header phase (done).
 - Resolve the plan and capabilities during snapshot validation; reject a module
@@ -274,7 +275,7 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - All `data_mode` values and L4 lifecycle use ABI v4; v3 modules are rejected.
   The v3 package remains historical/test-only and is not imported by the proxy.
 - Defer request/response body phases, framing, keep-alive and OUT mutations to
-  later milestones.
+  M4/M5.
 - Integration tests cover allow/deny/route verdicts, malformed/oversized
   headers, header-count limits and timeout fail-closed behavior.
 
