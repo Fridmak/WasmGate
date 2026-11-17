@@ -115,7 +115,6 @@ dotnet run --project src/WasmGate.Control.Api
 cmd/wasmgate/          точка входа и флаги
 internal/config/       схема YAML, валидация, hot reload
 internal/proxy/        листенеры, пулы, релей, snapshot
-internal/plugin/       legacy-рантайм ABI v3 (не в production import graph)
 internal/plugin/abi4/  рантайм ABI v4: envelope, plan, engine, lifecycle
 internal/tlspeek/      парсер SNI для passthrough
 internal/ratelimit/    скользящее окно

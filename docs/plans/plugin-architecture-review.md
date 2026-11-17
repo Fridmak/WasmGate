@@ -21,7 +21,7 @@
   fallback.
 - **M3 — lifecycle cutover done:** L4 `on_accept`/`on_close` now use
   `abi4.Engine` (`Plan: InspectLifecycle`). The production proxy no longer
-  imports `internal/plugin`; the v3 package remains historical/test-only.
+  imports `internal/plugin`; the legacy Go runtime has since been deleted.
 - **M4 — protocol primitives done:** OUT envelope, bounded state slots and typed
   body/response phase APIs are implemented and tested.
 - **Next:** M5 — HTTP/1 Content-Length integration and v4 SDK/example ports;

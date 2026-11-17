@@ -47,7 +47,6 @@ a test with zero dropped connections.
 |---|---|
 | `internal/config` | YAML schema (`KnownFields`), defaults, validation, `Resolve` for relative paths |
 | `internal/proxy` | listeners, snapshot, pools/balancers, limiter, relay, drain |
-| `internal/plugin` | legacy ABI v1–v3 runtime; not imported by the production proxy after M3 |
 | `internal/plugin/abi4` | ABI v4 runtime: envelope, inspection plan, `on_event`, L4 lifecycle |
 | `internal/tlspeek` | ClientHello parser for SNI routing |
 | `internal/ratelimit` | Sliding-window limiter and concurrent-connection guard |

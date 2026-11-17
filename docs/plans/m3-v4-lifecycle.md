@@ -24,8 +24,8 @@ runtime type: `abi4.Engine`.
 
 - Mutations, state, body/response phases (M4).
 - Porting Rust examples to v4; legacy v3 examples are marked legacy.
-- Removing the `internal/plugin` package itself; it is no longer in the
-  production import graph and can be deleted after the v4 SDK/examples land.
+- Removing the `internal/plugin` package itself was deferred to M6 and is now
+  complete; legacy example binaries remain until the v4 ports are rebuilt.
 
 ## Work breakdown
 
@@ -74,6 +74,6 @@ runtime type: `abi4.Engine`.
 
 ## Current progress
 
-M3.1–M3.4 are implemented. The v3 package remains outside the production
-import graph and is retained temporarily as historical/test-only code until the
-v4 SDK/example ports and final cleanup in M5.
+M3.1–M3.4 are implemented. The legacy Go v3 package was removed in M6 cleanup;
+legacy example binaries remain outside the production configuration until the
+v4 SDK/example ports are rebuilt.

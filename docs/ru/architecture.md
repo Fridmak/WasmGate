@@ -47,7 +47,6 @@ WasmGate разделён на **data plane** (сам прокси) и опци�
 |---|---|
 | `internal/config` | схема YAML (`KnownFields`), дефолты, валидация, `Resolve` для относительных путей |
 | `internal/proxy` | листенеры, snapshot, пулы/балансировщики, лимитер, релей, drain |
-| `internal/plugin` | legacy-рантайм ABI v1–v3; production proxy его больше не импортирует после M3 |
 | `internal/plugin/abi4` | рантайм ABI v4: envelope, план инспекции, `on_event`, L4 lifecycle |
 | `internal/tlspeek` | парсер ClientHello для SNI-маршрутизации |
 | `internal/ratelimit` | скользящее окно и guard одновременных соединений |

@@ -67,7 +67,7 @@ documented as a known limitation.
 gofmt -l cmd internal
 go vet ./...
 go test ./...
-CGO_ENABLED=1 go test -race ./internal/plugin ./internal/plugin/abi4 ./internal/proxy ./internal/tlspeek
+CGO_ENABLED=1 go test -race ./internal/plugin/abi4 ./internal/proxy ./internal/tlspeek
 dotnet build control-plane/WasmGate.Control.sln -c Debug
 dotnet test control-plane/WasmGate.Control.sln -c Debug
 wasmgate -validate -config configs/showcase.yaml

@@ -114,7 +114,6 @@ agent protocol and security model.
 cmd/wasmgate/          entry point and flags
 internal/config/       YAML schema, validation, hot reload
 internal/proxy/        listeners, pools, connection relay, snapshot
-internal/plugin/       legacy ABI v3 runtime (not in the production import graph)
 internal/plugin/abi4/  ABI v4 runtime: envelope, plan, engine, lifecycle
 internal/tlspeek/      SNI parser for passthrough
 internal/ratelimit/    sliding-window limiter

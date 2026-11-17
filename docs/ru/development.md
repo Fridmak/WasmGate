@@ -14,8 +14,7 @@
 cmd/wasmgate/          флаги и запуск процесса
 internal/config/       схема YAML, дефолты, валидация, reload
 internal/proxy/        листенеры, пулы, релей, snapshot
-internal/plugin/       песочница WASM и ABI v3
-internal/plugin/abi4/  ядро ABI v4 (envelope, plan, engine)
+internal/plugin/abi4/  рантайм ABI v4 (envelope, plan, engine, lifecycle)
 internal/tlspeek/      парсер ClientHello/SNI
 internal/ratelimit/    скользящее окно и guard конкурентности
 internal/observe/      логи, метрики, admin endpoint
