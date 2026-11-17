@@ -41,14 +41,14 @@ type instance struct {
 	bufLen  uint32
 	abi     uint32
 	caps    Caps
-	inCap   uint32
 	stack   [5]uint64
 }
 
 // Engine is a compiled v4 module plus a pool of reusable instances. It is safe
-// for concurrent use. Payload writes and header indexing avoid allocations;
-// hook deadlines currently allocate one context per event (tracked as the P1
-// wazero follow-up, not part of ABI correctness).
+// for concurrent event calls; Close must not race with in-flight events. After
+// warm-up, payload writes and header indexing avoid allocations; hook deadlines
+// currently allocate one context per event (tracked as the P1 wazero
+// follow-up, not part of ABI correctness).
 type Engine struct {
 	rt          wazero.Runtime
 	compiled    wazero.CompiledModule
@@ -303,10 +303,9 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		onEvent: mod.ExportedFunction("on_event"),
 		mem:     mem,
 		bufPtr:  ptr,
-		inCap:   e.inCap,
+		bufLen:  length,
 		abi:     abi,
 		caps:    caps,
-		bufLen:  length,
 	}
 	if inst.onEvent == nil {
 		_ = mod.Close(ctx)

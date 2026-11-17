@@ -9,11 +9,12 @@ import (
 //
 //	[0 .. 24)            header
 //	[24 .. 24+secs*16)   section table, sorted by type
-//	arena                all variable-length payloads (blob, sni, alpn, state)
+//	arena                blob and state payloads
 //	start line (24)      optional
 //	conn info (80)       optional
 //	header index (n*16)  optional
 //
+// SNI and ALPN are views into the blob; they are not separate arena payloads.
 // All offsets are absolute from the window base. All fields are little-endian,
 // fixed structs and the section table are 4-byte aligned, total_len is a
 // multiple of 8. Unused table/header bytes are zero.
@@ -36,7 +37,7 @@ const (
 	// already far beyond any legitimate HTTP header block and prevents a
 	// malicious envelope from forcing a large host-side allocation.
 	maxEntries = 8192
-	maxPayload = 1 << 30
+	maxPayload = 1 << 30 // hard cap for one envelope payload
 )
 
 const (
@@ -289,8 +290,8 @@ func validateEvent(block []byte, idx []Ent, start *StartLine, conn *ConnInfo) er
 	return nil
 }
 
-// StartLine and ConnInfo are the fixed-struct payloads. Offsets are relative
-// to the blob.
+// StartLine and ConnInfo are fixed-struct payloads. Their offset fields are
+// relative to the blob.
 type StartLine struct {
 	MethodOff, PathOff, ProtoOff uint32
 	MethodLen, PathLen, ProtoLen uint16
@@ -446,8 +447,8 @@ func Parse(win []byte) (*Parsed, error) {
 	return p, nil
 }
 
-// Header returns the first value for a name using the same algorithm as the
-// guest SDK (case-insensitive, linear). Out-of-range views fail closed instead
+// Header returns the first value for a name using a case-insensitive linear
+// scan, matching the reference reader. Out-of-range views fail closed instead
 // of panicking, even if the caller passes a short window.
 func (p *Parsed) Header(win []byte, name string) ([]byte, bool) {
 	for _, e := range p.Index {
