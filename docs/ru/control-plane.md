@@ -79,7 +79,11 @@ curl -fsS http://127.0.0.1:9097/readyz    # PostgreSQL + схема
   **Agents → Details → Change**; текущий релиз агент сохраняет до следующего
   деплоймента в новой среде.
 - Одноразовый токен агента наследует его среду. У общего registration token
-  своя среда; enroll с токеном из другой среды отклоняется.
+  своя среда; enroll с токеном из другой среды отклоняется. Registration token
+  не может зарегистрировать существующего агента; для повторного enroll нужен
+  персональный токен агента.
+- Запускайте управляемых агентов с `-cp-environment <name>`: агент отклоняет
+  подписанный релиз из другой среды до парсинга и применения.
 - При обновлении существующие агенты попадают в `prod`.
 - A deployment whose selectors match no agent in its environment is recorded as
   `Failed`, with a message explaining which of the three cases happened: no

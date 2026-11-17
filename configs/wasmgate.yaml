@@ -44,7 +44,7 @@ listeners:
     # plugin:
     #   path: "../plugins/examples/ipguard/ipguard.wasm"
     #   max_memory_pages: 16   # 16 pages = 1 MiB linear-memory cap per instance
-    #   timeout: 0s            # per-hook timeout; 0 = no timer (trusted only; WARN)
+    #   timeout: 1s            # per-hook timeout; 0 selects the safe 1s default
     #   data_mode: "once"      # "once" | "headers" | "stream"
     #   # headers mode only: gather one complete HTTP/1 request header block,
     #   # call the plugin once, then splice the body. Only the first request of a
@@ -93,3 +93,4 @@ pools:
     balance: least_conn
     servers:
       - "127.0.0.1:5432"
+

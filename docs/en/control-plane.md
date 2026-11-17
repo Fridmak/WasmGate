@@ -80,7 +80,11 @@ deployments are namespaced by environment as well.
   next deployment in the new environment.
 - A per-agent enrollment token inherits the agent environment. A registration
   token carries its own, and enrollment rejects a token from another
-  environment.
+  environment. Registration tokens cannot enroll an existing agent; re-enrollment
+  uses a per-agent token.
+- Start managed agents with `-cp-environment <name>` so they reject a signed
+  release whose manifest belongs to another environment before parsing or
+  applying it.
 - An upgraded installation puts existing agents into `prod`.
 - A deployment whose selectors match no agent in its environment is recorded as
   `Failed`, with a message explaining which of the three cases happened: no

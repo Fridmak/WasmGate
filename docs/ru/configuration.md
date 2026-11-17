@@ -63,7 +63,7 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 |---|---|---|
 | `path` | — | Файл `.wasm`; пусто отключает плагин |
 | `max_memory_pages` | `16` | Лимит линейной памяти на инстанс (16 × 64 KiB = 1 MiB) |
-| `timeout` | `0` | Таймаут хука; `0` выключает таймер (только доверенные плагины). Для `data_mode: headers` обязателен `> 0` |
+| `timeout` | `1s` | Таймаут хука; отсутствие или `0` выбирает безопасный дефолт `1s`. Для `data_mode: headers` обязателен `> 0` |
 | `data_mode` | `once` | `once` проверяет первый пакет клиента и сохраняет `splice`; `headers` собирает полный HTTP/1 request-header block и сохраняет `splice` для тела; `stream` — каждый чанк |
 | `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389` |
 | `inspect_timeout` | `3s` | Режим headers: общий дедлайн на один header block |

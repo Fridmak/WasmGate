@@ -32,7 +32,7 @@ listeners:
     plugin:
       path: "plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB per instance
-      timeout: 0s             # 0 = no per-call timer (trusted plugins only)
+      timeout: 1s             # per-hook timeout; 0 selects the safe 1s default
       data_mode: "once"       # "once" (default), "headers" or "stream"
       max_header_bytes: 16384 # headers: max request header block
       inspect_timeout: 3s     # headers: total deadline for the block
@@ -66,9 +66,10 @@ whose signature does not match, fails validation before the snapshot is swapped.
   `min` memory is rejected at load; `memory.grow` beyond the cap returns `-1`.
 - **Reactor model.** Instances live in a `sync.Pool` and are reused, so global
   WASM state is not reset per connection and is not shared between instances.
-- **Timeout.** With `timeout > 0` a hung hook is interrupted, the connection is
-  denied and the instance is destroyed. With `timeout: 0` no timer is created (no
-  allocations per call); only use this for trusted plugins.
+- **Timeout.** Every hook call has a deadline (`plugin.timeout`, default `1s`
+  when omitted); a hung hook is interrupted, the connection is denied and the
+  instance is destroyed. Stack loading and instantiation are bounded separately
+  by a 5s load deadline.
 
 ## Data modes and TLS
 

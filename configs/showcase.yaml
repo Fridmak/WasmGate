@@ -25,7 +25,7 @@ listeners:
     plugin:
       path: "../plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16
-      timeout: 0s            # 0 = fastest; only for trusted plugins (WARN at load)
+      timeout: 1s            # per-hook timeout; 0 would select the 1s default
       data_mode: "once"
 
   # Complete request-header inspection with one plugin call and a spliced body.
@@ -51,7 +51,7 @@ listeners:
     plugin:
       path: "../plugins/examples/http_guard/http_guard.wasm"
       max_memory_pages: 16
-      timeout: 0s
+      timeout: 1s
       data_mode: "stream"
 
   # nginx `map $host/$uri $upstream`: route by Host and path after inspecting
@@ -61,7 +61,7 @@ listeners:
     upstream_pool: web
     plugin:
       path: "../plugins/examples/path_router/path_router.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "once"
       route_pools: ["api", "static", "ws"]   # verdict 2/3/4
 
@@ -72,7 +72,7 @@ listeners:
     upstream_pool: web
     plugin:
       path: "../plugins/examples/sni_guard/sni_guard.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "once"
       route_pools: ["api", "static", "internal"]   # verdict 2/3/4
 
@@ -83,7 +83,7 @@ listeners:
     upstream_pool: web
     plugin:
       path: "../plugins/examples/protocol_router/protocol_router.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "once"
       route_pools: ["tls-backend", "http-backend", "ssh-backend", "postgres", "redis"]
 
@@ -94,7 +94,7 @@ listeners:
     upstream_pool: redis
     plugin:
       path: "../plugins/examples/redis_guard/redis_guard.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "stream"
 
   # nginx `sub_filter` + a body-scanning WAF: detect attack signatures in the
@@ -104,7 +104,7 @@ listeners:
     upstream_pool: web
     plugin:
       path: "../plugins/examples/stream_guard/stream_guard.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "stream"
 
   # Stateful ABI v3 (`on_data_state` + `on_state_ptr`): reassembles split HTTP
@@ -116,7 +116,7 @@ listeners:
     upstream_pool: web
     plugin:
       path: "../plugins/examples/http_body_guard/http_body_guard.wasm"
-      timeout: 0s
+      timeout: 1s
       data_mode: "stream"
 
   # The same ssl_preread routing without any WASM: useful as a baseline when
@@ -142,7 +142,7 @@ listeners:
   #     handshake_timeout: 10s
   #   plugin:
   #     path: "../plugins/examples/http_guard/http_guard.wasm"
-  #     timeout: 0s
+  #     timeout: 1s
   #     data_mode: "stream"
 
 pools:
@@ -166,3 +166,4 @@ pools:
     servers: ["127.0.0.1:5432"]
   redis:
     servers: ["127.0.0.1:6379"]
+
