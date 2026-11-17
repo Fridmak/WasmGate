@@ -3,6 +3,7 @@ package abi4
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -90,6 +91,41 @@ func module(onEvent []byte, abi uint32, caps uint64, ptr, length uint32) []byte 
 	return out
 }
 
+func lifecycleModule(accept byte) []byte {
+	types := []byte{
+		0x04,
+		0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x01, 0x7f, // on_accept
+		0x60, 0x00, 0x01, 0x7f, // wg_abi
+		0x60, 0x00, 0x01, 0x7e, // wg_caps
+		0x60, 0x04, 0x7e, 0x7e, 0x7e, 0x7e, 0x00, // on_close
+	}
+	funcs := []byte{0x04, 0x00, 0x01, 0x02, 0x03}
+	exports := []byte{0x04}
+	addExport := func(name string, idx uint32) {
+		exports = append(exports, uleb(uint32(len(name)))...)
+		exports = append(exports, name...)
+		exports = append(exports, 0x00)
+		exports = append(exports, uleb(idx)...)
+	}
+	addExport("on_accept", 0)
+	addExport("wg_abi", 1)
+	addExport("wg_caps", 2)
+	addExport("on_close", 3)
+
+	consts := func(a, b []byte) []byte { return append(a, b...) }
+	code := []byte{0x04}
+	code = append(code, entry([]byte{0x00, 0x41, accept, 0x0b})...)
+	code = append(code, entry(consts([]byte{0x00, 0x41}, append(uleb(0x0400), 0x0b)))...)
+	code = append(code, entry([]byte{0x00, 0x42, 0x00, 0x0b})...)
+	code = append(code, entry([]byte{0x00, 0x0b})...)
+
+	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	out = append(out, section(0x01, types)...)
+	out = append(out, section(0x03, funcs)...)
+	out = append(out, section(0x07, exports)...)
+	out = append(out, section(0x0a, code)...)
+	return out
+}
 func allowModule() []byte {
 	return module([]byte{0x00, 0x42, 0x00, 0x0b}, 0x0400, 0x3f, 4096, 49152)
 }
@@ -431,6 +467,47 @@ func TestEngineOpaqueDirectionReachesGuest(t *testing.T) {
 	}
 	if v, err := e.OnOpaqueChunk(ctx, 1, 1, 0, []byte("response")); err != nil || v != VerdictAllow {
 		t.Fatalf("server direction = (%v, %v), want allow", v, err)
+	}
+}
+
+func TestEncodeIP(t *testing.T) {
+	hi, lo := encodeIP(net.IPv4(127, 0, 0, 99))
+	if hi != 0 || lo != 0x0000ffff7f000063 {
+		t.Fatalf("IPv4 encoding = (%#x, %#x)", hi, lo)
+	}
+	hi, lo = encodeIP(net.ParseIP("2001:db8::1"))
+	if hi != 0x20010db800000000 || lo != 1 {
+		t.Fatalf("IPv6 encoding = (%#x, %#x)", hi, lo)
+	}
+}
+
+func TestEngineLifecycle(t *testing.T) {
+	ctx := context.Background()
+	e, err := New(ctx, lifecycleModule(0), Options{Plan: InspectLifecycle, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New allow: %v", err)
+	}
+	defer e.Close(ctx)
+	if v, err := e.OnAccept(ctx, net.IPv4(127, 0, 0, 1), 1234); err != nil || v != VerdictAllow {
+		t.Fatalf("allow lifecycle = (%v, %v)", v, err)
+	}
+	if err := e.OnCloseConn(ctx, 1, net.IPv4(127, 0, 0, 1), 10, 20); err != nil {
+		t.Fatalf("on_close: %v", err)
+	}
+
+	deny, err := New(ctx, lifecycleModule(1), Options{Plan: InspectLifecycle, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New deny: %v", err)
+	}
+	defer deny.Close(ctx)
+	if v, err := deny.OnAccept(ctx, net.IPv4(127, 0, 0, 99), 1234); err != nil || v != VerdictDeny {
+		t.Fatalf("deny lifecycle = (%v, %v)", v, err)
+	}
+}
+
+func TestEngineLifecycleRejectsEventModule(t *testing.T) {
+	if _, err := New(context.Background(), allowModule(), Options{Plan: InspectLifecycle}); err == nil {
+		t.Fatal("event module was accepted for a lifecycle-only plan")
 	}
 }
 

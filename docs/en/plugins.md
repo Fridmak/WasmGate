@@ -1,22 +1,22 @@
-# Plugins (ABI v4; legacy v3 L4)
+# Plugins (ABI v4)
 
 Plugins are WebAssembly modules executed by the Go host through `wazero`. Every
 plugin runs in a pure sandbox: no WASI, no filesystem, no sockets, no clocks and
 no randomness. A module is a deterministic function of the connection metadata it
 receives.
 
-> **ABI status:** every `data_mode` (`once`, `headers`, `stream`) is now a
-> strict ABI v4 `on_event` path. Legacy ABI v3 L7 modules are rejected at
-> snapshot load. ABI v3 remains only for L4 `on_accept`/`on_close` until M3.
+> **ABI status:** the proxy now runs ABI v4 for both L4 lifecycle and all L7
+> data modes. Legacy ABI v3 modules are rejected at snapshot load. The committed
+> v3 reference `.wasm` files are kept for history and must be ported to v4 before
+> they can run.
 
-Nine reference plugins live in [`plugins/examples/`](../../plugins/examples/); their
-`.wasm` files are committed, but the L7 examples still export ABI v3 hooks and
-therefore are not runnable in the current proxy. `ipguard` remains runnable on
-the L4 path.
+Nine reference plugins live in [`plugins/examples/`](../../plugins/examples/);
+they are legacy ABI v3 sources/binaries except for the v4 fixtures used by the
+test suite.
 
 | Plugin | Demonstrates | Mode | Verdict |
 |---|---|---|---|
-| `ipguard` | `on_accept`: L4 allow/deny before `dial` | L4 (ABI v3) | `0` allow, `≠0` deny |
+| `ipguard` | legacy ABI v3 `on_accept`; not runnable until ported to v4 | legacy | `0` allow, `≠0` deny |
 | `http_guard` | legacy ABI v3 `on_data_ex`; not runnable until ported to v4 | legacy | `0` / `1` |
 | `http_headers_guard` | legacy ABI v3 `on_headers`; not runnable in `headers` mode until ported to v4 | legacy | `0` / `1` |
 | `http_body_guard` | `on_data_state` (ABI v3): split headers, `Content-Length`, cross-chunk body signatures, keep-alive counters | `stream` | `0` / `1` |
@@ -26,8 +26,9 @@ the L4 path.
 | `redis_guard` | RESP and inline parsing, ACL for `CONFIG`/`FLUSHALL`/`EVAL` | `stream` | `0` / `1` |
 | `stream_guard` | Attack signatures in the request body, in-place JSON secret masking | `stream` | `0` / `1` |
 
-All rows except `ipguard` are legacy ABI v3 examples: they are kept for
-reference but are rejected by the current ABI v4-only L7 loader until ported.
+All committed examples, including `ipguard`, are legacy ABI v3 and are rejected
+by the current ABI v4-only loader until ported. The test suite uses hand-built
+v4 fixtures instead.
 
 Full showcase: [`configs/showcase.yaml`](../../configs/showcase.yaml).
 
@@ -39,11 +40,11 @@ listeners:
     addr: "127.0.0.1:8080"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/ipguard/ipguard.wasm"
+      path: "plugins/examples/<v4-plugin>/<v4-plugin>.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB per instance
       timeout: 1s             # per-hook timeout; 0 selects the safe 1s default
-      # ipguard is L4-only: omit data_mode. ABI v4 L7 modules use
-      # data_mode: "once" | "headers" | "stream".
+      # L4-only modules omit data_mode. L7 modules use:
+      # data_mode: "once" | "headers" | "stream"
       # max_header_bytes: 16384
       # inspect_timeout: 3s
       # route_pools: ["canary"] # once/headers only; stream cannot route
@@ -67,7 +68,7 @@ The host passes connection metadata through a `uint64` stack (`wazero`
 
 The `on_data`/`on_data_ex`/`on_data_state` rows document the legacy ABI v3
 surface; the current proxy rejects them for every `data_mode`. `on_accept` and
-`on_close` remain active only on the L4 path until M3.
+`on_close` are active on the ABI v4 L4 lifecycle path.
 
 Negative verdicts and `INT32_MIN` deny; only `0` allows. A route index outside
 `route_pools` denies instead of falling back. A module that exports no hook, or

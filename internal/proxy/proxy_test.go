@@ -154,8 +154,8 @@ func TestProxyRateLimitsConnections(t *testing.T) {
 // upstream and increments wasmgate_connections_plugin_rejected_total; hot-reloading
 // an allow-all WASM plugin lets subsequent connections through with zero downtime.
 func TestProxyWasmPluginRejectsAndAllows(t *testing.T) {
-	// on_accept(i64, i64, i32) -> i32 returning 1 (VerdictDeny) or 0 (VerdictAllow).
-	wasmVerdict := wasmOnAcceptVerdict
+	// ABI v4 lifecycle module returning 1 (deny) or 0 (allow).
+	wasmVerdict := v4Lifecycle
 
 	echoAddr := startEcho(t)
 	m := observe.NewMetrics()
@@ -317,44 +317,28 @@ func TestProxyWasmOnDataInspectsL7OnceAndStream(t *testing.T) {
 	}
 }
 
-// TestProxyExampleIPGuardWasmBlocks127_0_0_99 loads the real
-// plugins/examples/ipguard/ipguard.wasm binary into a live proxy listener and
-// dials from two real loopback source IPs:
-//   - 127.0.0.1 -> allowed by ipguard.wasm, payload echoed;
-//   - 127.0.0.99 -> denied by ipguard.wasm (last octet == 99), connection closed
-//     before dialing the upstream and counted in ConnectionsPluginRejected.
-func TestProxyExampleIPGuardWasmBlocks127_0_0_99(t *testing.T) {
+// TestProxyV4L4LifecycleAllowsAndDenies verifies the ABI v4 L4 lifecycle
+// path: on_accept allow reaches the upstream, on_accept deny closes before dial.
+func TestProxyV4L4LifecycleAllowsAndDenies(t *testing.T) {
 	echoAddr := startEcho(t)
-	m := observe.NewMetrics()
-	cfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
-		lc.Plugin = config.PluginConfig{
-			Path: "../../plugins/examples/ipguard/ipguard.wasm",
-		}
+
+	allowCfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: v4Lifecycle(0)}
 	}))
-	srv := NewServer(testLogger(), NewRuntime(cfg), m)
-	addr := startServer(t, srv)
+	allowAddr := startServer(t, NewServer(testLogger(), NewRuntime(allowCfg), nil))
+	c := roundTrip(t, allowAddr)
+	_ = c.Close()
 
-	// 1. Source IP 127.0.0.1 must pass through ipguard.wasm and echo bytes.
-	c1 := roundTrip(t, addr)
-	_ = c1.Close()
-
-	// 2. Source IP 127.0.0.99 must be rejected by ipguard.wasm's on_accept hook.
-	d99 := net.Dialer{
-		Timeout:   2 * time.Second,
-		LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 99), Port: 0},
+	denyCfg := validated(t, edgeConfig([]string{echoAddr}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: v4Lifecycle(1)}
+	}))
+	denyAddr := startServer(t, NewServer(testLogger(), NewRuntime(denyCfg), nil))
+	d := dial(t, denyAddr)
+	defer d.Close()
+	_ = d.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := d.Read(make([]byte, 1)); err == nil {
+		t.Fatal("v4 lifecycle deny did not close the connection")
 	}
-	c99, err := d99.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial from 127.0.0.99: %v", err)
-	}
-	defer c99.Close()
-	_ = c99.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := c99.Read(make([]byte, 1)); err == nil {
-		t.Fatal("connection from 127.0.0.99 was not rejected by ipguard.wasm")
-	}
-	waitMetric(t, 2*time.Second, func() bool {
-		return m.Snapshot().ConnectionsPluginRejected >= 1
-	})
 }
 
 // TestProxyDialRetriesFailsOverTransparently verifies that when the first
@@ -601,7 +585,7 @@ func TestProxySNIRoutesStreamPluginSeesPeekedPrefix(t *testing.T) {
 func TestProxyReloadPicksUpReplacedWasmFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "plugin.wasm")
-	if err := os.WriteFile(path, wasmOnAcceptVerdict(0), 0o600); err != nil {
+	if err := os.WriteFile(path, v4Lifecycle(0), 0o600); err != nil {
 		t.Fatalf("write allow plugin: %v", err)
 	}
 
@@ -618,7 +602,7 @@ func TestProxyReloadPicksUpReplacedWasmFile(t *testing.T) {
 	_ = c.Close()
 
 	// Replace the file at the same path with a deny module, then reload.
-	if err := os.WriteFile(path, wasmOnAcceptVerdict(1), 0o600); err != nil {
+	if err := os.WriteFile(path, v4Lifecycle(1), 0o600); err != nil {
 		t.Fatalf("write deny plugin: %v", err)
 	}
 	if _, err := srv.Reload(context.Background(), buildCfg()); err != nil {

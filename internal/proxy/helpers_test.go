@@ -250,7 +250,7 @@ func startWasmGateFull(tb testing.TB, backend string) string {
 			Window:    time.Second,
 		}
 		lc.Plugin = config.PluginConfig{
-			Path: "../../plugins/examples/ipguard/ipguard.wasm",
+			Wasm: v4Lifecycle(0),
 		}
 	}))
 	return startServer(tb, NewServer(testLogger(), NewRuntime(cfg), nil))

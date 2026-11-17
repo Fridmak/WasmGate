@@ -16,15 +16,16 @@ admin_pprof: false
 admin_allow_remote: false
 
 listeners:
-  # nginx `allow`/`deny`/`geo` at L4: reject before the upstream dial.
-  # ipguard only exports on_accept, so this listener stays on the pure L4 path.
-  - name: showcase-ipguard
-    addr: "127.0.0.1:8100"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/ipguard/ipguard.wasm"
-      max_memory_pages: 16
-      timeout: 1s            # per-hook timeout; 0 would select the 1s default
+  # ABI v4 L4 example is pending. The committed ipguard.wasm is v3 and is
+  # rejected by M3; the v4 lifecycle path is covered by proxy tests.
+  #
+  # - name: showcase-ipguard
+  #   addr: "127.0.0.1:8100"
+  #   upstream_pool: web
+  #   plugin:
+  #     path: "../plugins/examples/ipguard/ipguard.wasm"
+  #     max_memory_pages: 16
+  #     timeout: 1s
 
   # ABI v3 L7 examples (http_guard, path_router, sni_guard, protocol_router,
   # redis_guard, stream_guard, http_body_guard) are not runnable in M2: every

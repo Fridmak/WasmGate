@@ -30,7 +30,7 @@ plain relay never copies payload through user space.
 | Resilience | Optional three-state circuit breaker (closed/open/half-open) |
 | Rate limiting | Per-IP and per-subnet sliding window, concurrent limits, bans, CIDR allow list |
 | TLS | SNI passthrough with pool routing, or termination with certificate hot reload |
-| WASM | ABI v4 `on_event` for `once`, `headers` and `stream`; legacy ABI v3 `on_accept`/`on_close` remains until M3 |
+| WASM | ABI v4 `on_event` for `once`, `headers` and `stream`, plus ABI v4 `on_accept`/`on_close` lifecycle |
 | Observability | Admin endpoint (`/metrics`, `/healthz`, `/reload`), structured logs, pprof on demand |
 | Control plane | Enrollment, certificates, immutable configurations, signed releases, wave deployments, rollback, audit, admin UI |
 
@@ -114,8 +114,8 @@ agent protocol and security model.
 cmd/wasmgate/          entry point and flags
 internal/config/       YAML schema, validation, hot reload
 internal/proxy/        listeners, pools, connection relay, snapshot
-internal/plugin/       wazero sandbox and ABI v3
-internal/plugin/abi4/  ABI v4 core: envelope, plan, engine (M0)
+internal/plugin/       legacy ABI v3 runtime (not in the production import graph)
+internal/plugin/abi4/  ABI v4 runtime: envelope, plan, engine, lifecycle
 internal/tlspeek/      SNI parser for passthrough
 internal/ratelimit/    sliding-window limiter
 internal/observe/      logs, metrics, admin endpoint

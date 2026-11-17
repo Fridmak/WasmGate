@@ -10,7 +10,6 @@ import (
 
 	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
-	"wasmgate/internal/plugin"
 	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/ratelimit"
 )
@@ -30,10 +29,8 @@ type resolvedListener struct {
 	// connGuard enforces cfg.RateLimit.MaxConcurrent per client IP/subnet; nil
 	// means no concurrent limit is configured.
 	connGuard *ratelimit.Guard
-	// plugin is the compiled legacy ABI v3 sandbox for the L4 lifecycle path;
-	// nil means disabled or an ABI v4 listener.
-	plugin *plugin.Plugin
-	// pluginV4 is the ABI v4 engine for every data_mode; nil for L4-only.
+	// pluginV4 is the ABI v4 engine for this listener; nil means disabled.
+	// L4 lifecycle and every L7 data mode use the same Engine type.
 	pluginV4 *abi4.Engine
 	// sniRoutes maps lower-cased SNI host patterns to resolved pools; nil when
 	// SNI routing is not configured on this listener.
@@ -262,11 +259,7 @@ func (r *Runtime) build(version uint64, cfg *config.Config) (*Snapshot, error) {
 			rl.connGuard = r.registry.connGuard(lc.Name, lc.RateLimit)
 		}
 		if cp, ok := preparedPlugins[lc.Name]; ok {
-			if cp.v4 != nil {
-				rl.pluginV4 = cp.v4
-			} else {
-				rl.plugin = cp.pl
-			}
+			rl.pluginV4 = cp.v4
 		}
 		if len(lc.SNIRoutes) > 0 {
 			rl.sniRoutes = make(map[string]*pool, len(lc.SNIRoutes))

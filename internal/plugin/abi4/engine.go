@@ -2,8 +2,10 @@ package abi4
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"sync"
@@ -41,14 +43,17 @@ type Options struct {
 }
 
 type instance struct {
-	mod     api.Module
-	onEvent api.Function
-	mem     api.Memory
-	bufPtr  uint32
-	bufLen  uint32
-	abi     uint32
-	caps    Caps
-	stack   [5]uint64
+	mod       api.Module
+	onEvent   api.Function
+	onAccept  api.Function
+	onClose   api.Function
+	onCloseEx api.Function
+	mem       api.Memory
+	bufPtr    uint32
+	bufLen    uint32
+	abi       uint32
+	caps      Caps
+	stack     [5]uint64
 }
 
 // Engine is a compiled v4 module plus a pool of reusable instances. It is safe
@@ -70,6 +75,9 @@ type Engine struct {
 	loadTimeout time.Duration
 	routePools  int
 	headerCap   int
+	hasAccept   bool
+	hasClose    bool
+	hasCloseEx  bool
 	nextID      atomic.Uint64
 	discarded   atomic.Int64
 	pool        sync.Pool
@@ -132,7 +140,7 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		_ = rt.Close(loadCtx)
 		return nil, fmt.Errorf("abi4: compile: %w", err)
 	}
-	if err := validateExports(compiled); err != nil {
+	if err := validateExports(compiled, opts.Plan); err != nil {
 		_ = rt.Close(loadCtx)
 		return nil, err
 	}
@@ -155,27 +163,32 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	}
 	e.abi = warm.abi
 	e.caps = warm.caps
-	e.bufPtr = warm.bufPtr
-	e.bufLen = warm.bufLen
-	if !e.caps.Has(CapBlob) {
-		_ = warm.close()
-		_ = rt.Close(loadCtx)
-		return nil, errors.New("abi4: module must declare CapBlob")
-	}
-	if need := opts.Plan.RequiredCaps(); !e.caps.Has(need) {
-		_ = warm.close()
-		_ = rt.Close(loadCtx)
-		return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, e.caps)
-	}
-	if e.bufLen < e.inCap+e.outCap {
-		_ = warm.close()
-		_ = rt.Close(loadCtx)
-		return nil, fmt.Errorf("abi4: window is %d bytes, need %d", e.bufLen, e.inCap+e.outCap)
-	}
-	if uint64(e.bufPtr)+uint64(e.bufLen) > uint64(warm.mem.Size()) {
-		_ = warm.close()
-		_ = rt.Close(loadCtx)
-		return nil, errors.New("abi4: window is outside linear memory")
+	e.hasAccept = warm.onAccept != nil
+	e.hasClose = warm.onClose != nil
+	e.hasCloseEx = warm.onCloseEx != nil
+	if e.plan.HasEventPhases() {
+		e.bufPtr = warm.bufPtr
+		e.bufLen = warm.bufLen
+		if !e.caps.Has(CapBlob) {
+			_ = warm.close()
+			_ = rt.Close(loadCtx)
+			return nil, errors.New("abi4: module must declare CapBlob")
+		}
+		if need := opts.Plan.RequiredCaps(); !e.caps.Has(need) {
+			_ = warm.close()
+			_ = rt.Close(loadCtx)
+			return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, e.caps)
+		}
+		if e.bufLen < e.inCap+e.outCap {
+			_ = warm.close()
+			_ = rt.Close(loadCtx)
+			return nil, fmt.Errorf("abi4: window is %d bytes, need %d", e.bufLen, e.inCap+e.outCap)
+		}
+		if uint64(e.bufPtr)+uint64(e.bufLen) > uint64(warm.mem.Size()) {
+			_ = warm.close()
+			_ = rt.Close(loadCtx)
+			return nil, errors.New("abi4: window is outside linear memory")
+		}
 	}
 
 	e.pool.New = func() any {
@@ -202,14 +215,18 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	return e, nil
 }
 
-func validateExports(compiled wazero.CompiledModule) error {
+func validateExports(compiled wazero.CompiledModule, plan Plan) error {
 	exports := compiled.ExportedFunctions()
 	required := map[string][]api.ValueType{
-		"on_event":   {api.ValueTypeI64, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32},
-		"wg_abi":     {},
-		"wg_caps":    {},
-		"wg_buf_ptr": {},
-		"wg_buf_len": {},
+		"wg_abi":  {},
+		"wg_caps": {},
+	}
+	if plan.HasEventPhases() {
+		required["on_event"] = []api.ValueType{
+			api.ValueTypeI64, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32,
+		}
+		required["wg_buf_ptr"] = []api.ValueType{}
+		required["wg_buf_len"] = []api.ValueType{}
 	}
 	for name, params := range required {
 		fn, ok := exports[name]
@@ -220,18 +237,52 @@ func validateExports(compiled wazero.CompiledModule) error {
 			return fmt.Errorf("abi4: %s has wrong parameters", name)
 		}
 	}
-	if !equalTypes(exports["on_event"].ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
-		return errors.New("abi4: on_event must return i64")
-	}
 	if !equalTypes(exports["wg_abi"].ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
 		return errors.New("abi4: wg_abi must return i32")
 	}
 	if !equalTypes(exports["wg_caps"].ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
 		return errors.New("abi4: wg_caps must return i64")
 	}
-	if !equalTypes(exports["wg_buf_ptr"].ResultTypes(), []api.ValueType{api.ValueTypeI32}) ||
-		!equalTypes(exports["wg_buf_len"].ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
-		return errors.New("abi4: window exports must return i32")
+	if plan.HasEventPhases() {
+		if !equalTypes(exports["on_event"].ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
+			return errors.New("abi4: on_event must return i64")
+		}
+		if !equalTypes(exports["wg_buf_ptr"].ResultTypes(), []api.ValueType{api.ValueTypeI32}) ||
+			!equalTypes(exports["wg_buf_len"].ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return errors.New("abi4: window exports must return i32")
+		}
+	}
+	if plan.HasLifecycle() {
+		hooks := 0
+		if fn, ok := exports["on_accept"]; ok {
+			if !equalTypes(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI32}) ||
+				!equalTypes(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+				return errors.New("abi4: on_accept must be (i64, i64, i32) -> i32")
+			}
+			hooks++
+		}
+		if fn, ok := exports["on_close"]; ok {
+			if !equalTypes(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
+				len(fn.ResultTypes()) != 0 {
+				return errors.New("abi4: on_close must be (i64, i64, i64, i64) -> ()")
+			}
+			hooks++
+		}
+		if fn, ok := exports["on_close_ex"]; ok {
+			if !equalTypes(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64}) ||
+				len(fn.ResultTypes()) != 0 {
+				return errors.New("abi4: on_close_ex must be (i64, i64, i64, i64, i64) -> ()")
+			}
+			hooks++
+		}
+		if hooks == 0 {
+			return errors.New("abi4: lifecycle plan requires on_accept, on_close or on_close_ex")
+		}
+		if !plan.HasEventPhases() {
+			if _, ok := exports["on_event"]; ok {
+				return errors.New("abi4: lifecycle-only module must not export on_event")
+			}
+		}
 	}
 	for _, legacy := range []string{"on_headers", "on_data", "on_data_ex", "on_data_state"} {
 		if _, ok := exports[legacy]; ok {
@@ -261,9 +312,9 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		return nil, fmt.Errorf("abi4: instantiate: %w", err)
 	}
 	mem := mod.Memory()
-	if mem == nil {
+	if e.plan.HasEventPhases() && mem == nil {
 		_ = mod.Close(ctx)
-		return nil, errors.New("abi4: module has no exported memory")
+		return nil, errors.New("abi4: event module has no exported memory")
 	}
 	call := func(name string, stack []uint64) error {
 		fn := mod.ExportedFunction(name)
@@ -287,44 +338,54 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		return nil, err
 	}
 	caps := Caps(stack[0])
-	if err := call("wg_buf_ptr", stack[:]); err != nil {
-		_ = mod.Close(ctx)
-		return nil, err
-	}
-	ptr := uint32(stack[0]) // #nosec G115 -- module-provided i32
-	if err := call("wg_buf_len", stack[:]); err != nil {
-		_ = mod.Close(ctx)
-		return nil, err
-	}
-	length := uint32(stack[0]) // #nosec G115 -- module-provided i32
-	if !caps.Has(CapBlob) {
-		_ = mod.Close(ctx)
-		return nil, errors.New("abi4: module must declare CapBlob")
-	}
-	if need := e.plan.RequiredCaps(); !caps.Has(need) {
-		_ = mod.Close(ctx)
-		return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, caps)
-	}
-	if uint64(length) < uint64(e.inCap)+uint64(e.outCap) {
-		_ = mod.Close(ctx)
-		return nil, fmt.Errorf("abi4: window is %d bytes, need %d", length, uint64(e.inCap)+uint64(e.outCap))
-	}
-	if uint64(ptr)+uint64(length) > uint64(mem.Size()) {
-		_ = mod.Close(ctx)
-		return nil, errors.New("abi4: window is outside linear memory")
-	}
 	inst := &instance{
-		mod:     mod,
-		onEvent: mod.ExportedFunction("on_event"),
-		mem:     mem,
-		bufPtr:  ptr,
-		bufLen:  length,
-		abi:     abi,
-		caps:    caps,
+		mod:       mod,
+		onEvent:   mod.ExportedFunction("on_event"),
+		onAccept:  mod.ExportedFunction("on_accept"),
+		onClose:   mod.ExportedFunction("on_close"),
+		onCloseEx: mod.ExportedFunction("on_close_ex"),
+		mem:       mem,
+		abi:       abi,
+		caps:      caps,
 	}
-	if inst.onEvent == nil {
+	if e.plan.HasEventPhases() {
+		if err := call("wg_buf_ptr", stack[:]); err != nil {
+			_ = mod.Close(ctx)
+			return nil, err
+		}
+		ptr := uint32(stack[0]) // #nosec G115 -- module-provided i32
+		if err := call("wg_buf_len", stack[:]); err != nil {
+			_ = mod.Close(ctx)
+			return nil, err
+		}
+		length := uint32(stack[0]) // #nosec G115 -- module-provided i32
+		if !caps.Has(CapBlob) {
+			_ = mod.Close(ctx)
+			return nil, errors.New("abi4: module must declare CapBlob")
+		}
+		if need := e.plan.RequiredCaps(); !caps.Has(need) {
+			_ = mod.Close(ctx)
+			return nil, fmt.Errorf("abi4: plan requires caps %b, module declares %b", need, caps)
+		}
+		if uint64(length) < uint64(e.inCap)+uint64(e.outCap) {
+			_ = mod.Close(ctx)
+			return nil, fmt.Errorf("abi4: window is %d bytes, need %d", length, uint64(e.inCap)+uint64(e.outCap))
+		}
+		if uint64(ptr)+uint64(length) > uint64(mem.Size()) {
+			_ = mod.Close(ctx)
+			return nil, errors.New("abi4: window is outside linear memory")
+		}
+		inst.onEvent = mod.ExportedFunction("on_event")
+		if inst.onEvent == nil {
+			_ = mod.Close(ctx)
+			return nil, errors.New("abi4: missing on_event")
+		}
+		inst.bufPtr = ptr
+		inst.bufLen = length
+	}
+	if e.plan.HasLifecycle() && inst.onAccept == nil && inst.onClose == nil && inst.onCloseEx == nil {
 		_ = mod.Close(ctx)
-		return nil, errors.New("abi4: missing on_event")
+		return nil, errors.New("abi4: missing lifecycle hooks")
 	}
 	return inst, nil
 }
@@ -387,6 +448,86 @@ func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags 
 		return VerdictDeny, nil
 	}
 	return v, nil
+}
+
+// OnAccept invokes the ABI v4 L4 on_accept(ip_hi, ip_lo, port) hook. Any
+// nonzero result denies; the hook cannot route. If the module does not export
+// on_accept, the connection is allowed without touching the instance pool.
+func (e *Engine) OnAccept(ctx context.Context, ip net.IP, port int) (Verdict, error) {
+	if e == nil || !e.hasAccept {
+		return VerdictAllow, nil
+	}
+	inst, ok := e.pool.Get().(*instance)
+	if !ok || inst == nil {
+		return VerdictDeny, fmt.Errorf("abi4: instantiate failed: %v", e.initError())
+	}
+	hi, lo := encodeIP(ip)
+	inst.stack[0] = hi
+	inst.stack[1] = lo
+	inst.stack[2] = uint64(port) & 0xffffffff // #nosec G115 -- TCP port is 0..65535
+	callCtx, cancel := context.WithTimeout(ctx, e.timeout)
+	callErr := inst.onAccept.CallWithStack(callCtx, inst.stack[:3])
+	cancel()
+	if callErr != nil {
+		e.discard(inst)
+		return VerdictDeny, callErr
+	}
+	v := int32(uint32(inst.stack[0])) // #nosec G115 -- WASM i32 result
+	e.pool.Put(inst)
+	if v != 0 {
+		return VerdictDeny, nil
+	}
+	return VerdictAllow, nil
+}
+
+// OnCloseConn invokes on_close_ex(conn_id, ip_hi, ip_lo, rx, tx) when exported,
+// otherwise on_close(ip_hi, ip_lo, rx, tx). It is a best-effort lifecycle hook:
+// callers log/discard a failed close but do not resurrect the connection.
+func (e *Engine) OnCloseConn(ctx context.Context, connID uint64, ip net.IP, rxBytes, txBytes int64) error {
+	if e == nil || (!e.hasClose && !e.hasCloseEx) {
+		return nil
+	}
+	inst, ok := e.pool.Get().(*instance)
+	if !ok || inst == nil {
+		return fmt.Errorf("abi4: instantiate failed: %v", e.initError())
+	}
+	hi, lo := encodeIP(ip)
+	callCtx, cancel := context.WithTimeout(ctx, e.timeout)
+	var callErr error
+	if e.hasCloseEx {
+		inst.stack[0] = connID
+		inst.stack[1] = hi
+		inst.stack[2] = lo
+		inst.stack[3] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern
+		inst.stack[4] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern
+		callErr = inst.onCloseEx.CallWithStack(callCtx, inst.stack[:5])
+	} else {
+		inst.stack[0] = hi
+		inst.stack[1] = lo
+		inst.stack[2] = uint64(rxBytes) // #nosec G115 -- raw i64 bit pattern
+		inst.stack[3] = uint64(txBytes) // #nosec G115 -- raw i64 bit pattern
+		callErr = inst.onClose.CallWithStack(callCtx, inst.stack[:4])
+	}
+	cancel()
+	if callErr != nil {
+		e.discard(inst)
+		return callErr
+	}
+	e.pool.Put(inst)
+	return nil
+}
+
+// encodeIP packs an IP into two big-endian uint64 values using the IPv4-mapped
+// IPv6 representation (::ffff:a.b.c.d) for IPv4 addresses.
+func encodeIP(ip net.IP) (hi, lo uint64) {
+	if v4 := ip.To4(); v4 != nil {
+		lo = 0x0000ffff00000000 | uint64(binary.BigEndian.Uint32(v4))
+		return 0, lo
+	}
+	if len(ip) == net.IPv6len {
+		return binary.BigEndian.Uint64(ip[:8]), binary.BigEndian.Uint64(ip[8:])
+	}
+	return 0, 0
 }
 
 // OnRequestHeaders is the typed request-header entry point for M1 integration.

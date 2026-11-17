@@ -27,18 +27,28 @@ func TestV3L7ModulesRejected(t *testing.T) {
 	}
 }
 
-func TestV3L4ModuleStillAccepted(t *testing.T) {
+func TestV4L4ModuleAccepted(t *testing.T) {
 	backend := startEcho(t)
 	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
-		lc.Plugin = config.PluginConfig{Wasm: wasmOnAcceptVerdict(0), Timeout: time.Second}
+		lc.Plugin = config.PluginConfig{Wasm: v4Lifecycle(0), Timeout: time.Second}
 	}))
 	rt, err := NewRuntimeChecked(cfg)
 	if err != nil {
 		t.Fatalf("NewRuntimeChecked: %v", err)
 	}
 	rl := rt.Load().listeners["edge"]
-	if rl.plugin == nil || rl.pluginV4 != nil {
-		t.Fatalf("v3 L4 listener resolved plugin=%v pluginV4=%v", rl.plugin, rl.pluginV4)
+	if rl.pluginV4 == nil {
+		t.Fatal("v4 L4 listener did not resolve an engine")
+	}
+}
+
+func TestV3L4ModuleRejected(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{Wasm: wasmOnAcceptVerdict(0), Timeout: time.Second}
+	}))
+	if _, err := NewRuntimeChecked(cfg); err == nil {
+		t.Fatal("ABI v3 L4 module was accepted")
 	}
 }
 
@@ -63,8 +73,8 @@ func TestV4OpaqueModesResolveEngine(t *testing.T) {
 				t.Fatalf("NewRuntimeChecked: %v", err)
 			}
 			rl := rt.Load().listeners["edge"]
-			if rl.pluginV4 == nil || rl.plugin != nil {
-				t.Fatalf("mode %s resolved plugin=%v pluginV4=%v", mode, rl.plugin, rl.pluginV4)
+			if rl.pluginV4 == nil {
+				t.Fatalf("mode %s did not resolve an engine", mode)
 			}
 		})
 	}

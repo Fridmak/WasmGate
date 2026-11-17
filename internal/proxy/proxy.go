@@ -13,7 +13,6 @@ import (
 
 	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
-	"wasmgate/internal/plugin"
 	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/tlspeek"
 )
@@ -82,7 +81,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 
 	var peerIP net.IP
 	var peerPort int
-	if rl.rateLimiter != nil || rl.connGuard != nil || rl.plugin != nil {
+	if rl.rateLimiter != nil || rl.connGuard != nil || rl.pluginV4 != nil {
 		peerIP, peerPort = clientEndpoint(client)
 	}
 
@@ -116,27 +115,27 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	}
 
 	var connID uint64
-	if rl.plugin != nil || rl.pluginV4 != nil {
+	if rl.pluginV4 != nil {
 		connID = p.nextID.Add(1)
 	}
 	var pluginAccepted bool
 	var closeRx, closeTx int64
 	defer func() {
-		if !pluginAccepted || rl.plugin == nil {
+		if !pluginAccepted || rl.pluginV4 == nil {
 			return
 		}
 		// Pair on_close with on_accept even when the connection exits before the
 		// relay starts (deny, TLS failure, header timeout, dial failure).
-		if err := rl.plugin.OnCloseConn(context.Background(), connID, peerIP, closeRx, closeTx); err != nil {
+		if err := rl.pluginV4.OnCloseConn(context.Background(), connID, peerIP, closeRx, closeTx); err != nil {
 			p.metrics.PluginDiscard()
 		}
 	}()
-	if rl.plugin != nil {
-		verdict, err := rl.plugin.OnAccept(ctx, peerIP, peerPort)
+	if rl.pluginV4 != nil {
+		verdict, err := rl.pluginV4.OnAccept(ctx, peerIP, peerPort)
 		if err != nil {
 			p.metrics.PluginDiscard()
 		}
-		if err != nil || verdict != plugin.VerdictAllow {
+		if err != nil || verdict != abi4.VerdictAllow {
 			p.metrics.RejectPlugin()
 			if ok, dropped := p.sampler.Allow("plugin:" + listenerName); ok {
 				p.log.Warn("connection rejected by wasm plugin",
@@ -267,14 +266,13 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				return int32(verdict), err
 			}
 
+		case "":
+			// L4-only lifecycle listener: on_accept already ran, no L7 phase.
+
 		default:
 			p.log.Error("unsupported ABI v4 data_mode", "listener", listenerName, "data_mode", rl.cfg.Plugin.DataMode)
 			return
 		}
-	} else if rl.plugin != nil && rl.cfg.Plugin.DataMode != "" {
-		// Defensive: the loader never builds a v3 plugin for an L7 mode.
-		p.log.Error("legacy ABI v3 plugin cannot serve an L7 data_mode", "listener", listenerName, "data_mode", rl.cfg.Plugin.DataMode)
-		return
 	}
 
 	up, server, ok := p.dialWithRetry(ctx, listenerName, targetPool, rl.cfg.DialTimeout)

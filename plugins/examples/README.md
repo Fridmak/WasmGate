@@ -10,10 +10,9 @@ Documentation:
 - [Plugins, ABI status, sandbox limits, build instructions](../../docs/en/plugins.md)
 - [Плагины, статус ABI, ограничения песочницы, сборка](../../docs/ru/plugins.md)
 
-`ipguard` remains runnable on the legacy ABI v3 L4 `on_accept` path. The L7
-examples (`http_guard`, `http_headers_guard`, `http_body_guard`, `path_router`,
-`sni_guard`, `protocol_router`, `redis_guard`, `stream_guard`) still export ABI
-v3 hooks and are not runnable in M2; they will be ported to `on_event` in M3/M4.
+All committed example `.wasm` files are legacy ABI v3 and are rejected by the
+current ABI v4 proxy until ported. The test suite uses hand-built ABI v4
+fixtures for `on_event` and L4 lifecycle.
 
-[`configs/showcase.yaml`](../../configs/showcase.yaml) wires the currently
-runnable plugins.
+[`configs/showcase.yaml`](../../configs/showcase.yaml) currently wires only the
+native SNI baseline; plugin examples are pending v4 ports.

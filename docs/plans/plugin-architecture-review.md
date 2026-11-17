@@ -18,10 +18,13 @@
   `splice(2)` replay.
 - **M2 — L7 cutover done:** `once` and `stream` also use ABI v4
   (`OnOpaqueFirst`/`OnOpaqueChunk`), with direction flags and no v3 L7
-  fallback. ABI v3 remains only for L4 `on_accept`/`on_close`.
-- **Next:** M3 — v4 lifecycle, L4 cutover and removal of the v3 runtime from
-  the production path.
-- **Not in M2:** OUT mutations, request/response body policies, opaque+HTTP
+  fallback.
+- **M3 — lifecycle cutover done:** L4 `on_accept`/`on_close` now use
+  `abi4.Engine` (`Plan: InspectLifecycle`). The production proxy no longer
+  imports `internal/plugin`; the v3 package remains historical/test-only.
+- **Next:** M4 — OUT mutations, state slots, body/response phases and v4
+  example ports. The v3 package can be deleted after the ports.
+- **Not in M3:** OUT mutations, request/response body policies, opaque+HTTP
   composition, HTTP/2 and WebSocket framing. Those stay separate milestones.
 - **Research artifacts:** the old `internal/plugin/v4` prototype and generated
   benchmark adapters were removed; they were not production code.
@@ -249,9 +252,9 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - Require explicit mode for L7 hooks (done).
 - Reject `on_headers`-only outside headers (done).
 - Fix example bypasses and lifecycle pairing (done in `stable`).
-- Cut all `data_mode` values over to ABI v4 and reject legacy v3 L7 modules
-  (done). `once`/`stream` now use `OnOpaqueFirst`/`OnOpaqueChunk`; only L4
-  `on_accept`/`on_close` remains on v3 until M3.
+- Cut all `data_mode` values and L4 lifecycle over to ABI v4 and reject legacy
+  v3 modules (done). `once`/`stream` use `OnOpaqueFirst`/`OnOpaqueChunk`;
+  `on_accept`/`on_close` use `Plan: InspectLifecycle`.
 
 ### Phase B — host pipeline abstraction (done as M0 core)
 
@@ -268,8 +271,8 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - Add `on_event` dispatch to the proxy for the request-header phase (done).
 - Resolve the plan and capabilities during snapshot validation; reject a module
   whose declared caps do not satisfy the plan (done through `abi4.New`).
-- All `data_mode` values use ABI v4; v3 L7 modules are rejected. ABI v3 remains
-  only for L4 lifecycle until M3.
+- All `data_mode` values and L4 lifecycle use ABI v4; v3 modules are rejected.
+  The v3 package remains historical/test-only and is not imported by the proxy.
 - Defer request/response body phases, framing, keep-alive and OUT mutations to
   later milestones.
 - Integration tests cover allow/deny/route verdicts, malformed/oversized

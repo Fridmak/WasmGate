@@ -70,9 +70,10 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 | `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` `2..N`; поддерживаются для `once`/`headers`, запрещены для `stream` |
 
 Для любого `data_mode` модуль обязан экспортировать ABI v4-контракт
-(`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). Legacy-модули
-ABI v3 с L7-хуками отвергаются при загрузке snapshot. ABI v3 остаётся только
-для L4 `on_accept`/`on_close` (модуль без `data_mode`).
+(`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only модули
+(без `data_mode`) обязаны экспортировать `wg_abi`, `wg_caps` и хотя бы один из
+`on_accept`/`on_close`/`on_close_ex`. Legacy-модули ABI v3 отвергаются при
+загрузке snapshot.
 
 ABI и ограничения песочницы — в [плагинах](plugins.md).
 

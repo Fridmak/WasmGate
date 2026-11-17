@@ -69,10 +69,11 @@ duplicate addresses and references to missing pools fail validation.
 | `inspect_timeout` | `3s` | Headers mode: total deadline for one header block |
 | `route_pools` | empty | Pools selectable by a v4 `on_event` return value `2..N`; supported for `once`/`headers`, rejected for `stream` |
 
-For every `data_mode`, the module must export the ABI v4 surface
-(`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). Legacy ABI v3
-L7 modules are rejected at snapshot load. ABI v3 remains only for L4
-`on_accept`/`on_close` (module without `data_mode`).
+For every `data_mode` the module must export the ABI v4 surface
+(`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only modules
+(omitted `data_mode`) must export `wg_abi`, `wg_caps` and at least one of
+`on_accept`/`on_close`/`on_close_ex`. Legacy ABI v3 modules are rejected at
+snapshot load.
 
 See [plugins](plugins.md) for the ABI and sandbox limits.
 

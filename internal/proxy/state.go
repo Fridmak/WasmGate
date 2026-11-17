@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -12,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"wasmgate/internal/config"
-	"wasmgate/internal/plugin"
 	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/ratelimit"
 )
@@ -45,9 +43,8 @@ type registry struct {
 type cachedPlugin struct {
 	cfg  config.PluginConfig
 	hash [32]byte
-	// Exactly one of pl (ABI v3 L4 lifecycle) and v4 (ABI v4 L7) is set.
-	// All data modes use v4; v3 remains only for on_accept/on_close.
-	pl *plugin.Plugin
+	// All production plugins are ABI v4. L4 lifecycle and L7 events share the
+	// same Engine type; the plan decides which hooks are required.
 	v4 *abi4.Engine
 }
 
@@ -115,22 +112,18 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
 	}
 
-	// No data_mode: this is the legacy L4 lifecycle path (on_accept/on_close).
-	// L7 hooks are not allowed here; their v4 cutover is selected by data_mode.
-	opts := plugin.Options{
+	// No data_mode: L4-only lifecycle module. It must export on_accept,
+	// on_close or on_close_ex plus the v4 ABI exports; no legacy v3 runtime is
+	// involved.
+	eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
 		MaxMemoryPages: pc.MaxMemoryPages,
 		Timeout:        pc.Timeout,
-	}
-	pl, err := plugin.New(context.Background(), wasmBytes, opts)
+		Plan:           abi4.InspectLifecycle,
+	})
 	if err != nil {
-		return cachedPlugin{}, err
+		return cachedPlugin{}, fmt.Errorf("plugin: v4 lifecycle: %w", err)
 	}
-	if pl.HasData() || pl.HasHeaders() {
-		_ = pl.Close(context.Background())
-		return cachedPlugin{}, errors.New(
-			"plugin exports ABI v3 L7 hooks; use ABI v4 on_event with data_mode once, stream or headers")
-	}
-	return cachedPlugin{cfg: pc, hash: hash, pl: pl}, nil
+	return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
 }
 
 func (g *registry) commitPlugins(prepared map[string]cachedPlugin) {

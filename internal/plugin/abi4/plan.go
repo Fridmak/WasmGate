@@ -43,7 +43,18 @@ const (
 	InspectResponseHeaders
 	InspectResponseBody
 	InspectOpaqueStream
+	// InspectLifecycle enables the L4 on_accept/on_close hooks. It is valid
+	// alone for a connection-level listener; it does not use the envelope.
+	InspectLifecycle
 )
+
+// HasLifecycle reports whether the plan enables L4 lifecycle hooks.
+func (p Plan) HasLifecycle() bool { return p&InspectLifecycle != 0 }
+
+// HasEventPhases reports whether the plan enables any on_event phase.
+func (p Plan) HasEventPhases() bool {
+	return p&(InspectRequestHeaders|InspectRequestBody|InspectResponseHeaders|InspectResponseBody|InspectOpaqueStream) != 0
+}
 
 // Has reports whether the plan contains phase.
 func (p Plan) Has(phase Phase) bool {

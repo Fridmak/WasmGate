@@ -31,7 +31,7 @@
 | Устойчивость | Опциональный трёхсостоянийный circuit breaker (closed/open/half-open) |
 | Rate limiting | Скользящее окно по IP и подсети, лимиты одновременных, баны, allow-list CIDR |
 | TLS | Passthrough по SNI с выбором пула или терминация с hot reload сертификатов |
-| WASM | ABI v4 `on_event` для `once`, `headers` и `stream`; legacy ABI v3 `on_accept`/`on_close` остаётся до M3 |
+| WASM | ABI v4 `on_event` для `once`, `headers` и `stream`, плюс ABI v4 lifecycle `on_accept`/`on_close` |
 | Наблюдаемость | Admin endpoint (`/metrics`, `/healthz`, `/reload`), структурные логи, pprof по запросу |
 | Control plane | Enrollment, сертификаты, неизменяемые конфиги, подписанные релизы, деплой волнами, rollback, аудит, admin UI |
 
@@ -115,8 +115,8 @@ dotnet run --project src/WasmGate.Control.Api
 cmd/wasmgate/          точка входа и флаги
 internal/config/       схема YAML, валидация, hot reload
 internal/proxy/        листенеры, пулы, релей, snapshot
-internal/plugin/       песочница wazero и ABI v3
-internal/plugin/abi4/  ядро ABI v4: envelope, plan, engine (M0)
+internal/plugin/       legacy-рантайм ABI v3 (не в production import graph)
+internal/plugin/abi4/  рантайм ABI v4: envelope, plan, engine, lifecycle
 internal/tlspeek/      парсер SNI для passthrough
 internal/ratelimit/    скользящее окно
 internal/observe/      логи, метрики, admin endpoint

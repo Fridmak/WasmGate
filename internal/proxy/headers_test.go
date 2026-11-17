@@ -47,9 +47,6 @@ func TestProxyHeadersModeResolvesV4Engine(t *testing.T) {
 	if rl.pluginV4 == nil {
 		t.Fatal("headers listener did not resolve an ABI v4 engine")
 	}
-	if rl.plugin != nil {
-		t.Fatal("headers listener unexpectedly resolved an ABI v3 plugin")
-	}
 }
 
 func startHeadersProxy(t *testing.T, plugin config.PluginConfig) string {

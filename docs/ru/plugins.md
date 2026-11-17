@@ -1,21 +1,20 @@
-# Плагины (ABI v4; legacy v3 L4)
+# Плагины (ABI v4)
 
 Плагины — WebAssembly-модули, которые Go-хост исполняет через `wazero`. Плагин
 работает в чистой песочнице: без WASI, файловой системы, сокетов, часов и
 генератора случайных чисел. Это детерминированная функция от метаданных
 соединения.
 
-> **Статус ABI:** все `data_mode` (`once`, `headers`, `stream`) теперь строгие
-> пути ABI v4 `on_event`. Legacy-модули ABI v3 с L7-хуками отвергаются при
-> загрузке snapshot. ABI v3 остаётся только для L4 `on_accept`/`on_close` до M3.
+> **Статус ABI:** proxy теперь использует ABI v4 и для L4 lifecycle, и для всех
+> L7 `data_mode`. Legacy-модули ABI v3 отвергаются при загрузке snapshot.
+> Закоммиченные v3-примеры оставлены как история и должны быть портированы на v4.
 
 Девять эталонных плагинов лежат в [`plugins/examples/`](../../plugins/examples/);
-их `.wasm` закоммичены, но L7-примеры всё ещё экспортируют ABI v3-хуки и поэтому
-не запускаются в текущем proxy. `ipguard` остаётся рабочим на L4-пути.
+это legacy ABI v3 исходники/бинарники, кроме v4-фикстур тестов.
 
 | Плагин | Что демонстрирует | Режим | Вердикт |
 |---|---|---|---|
-| `ipguard` | `on_accept`: L4 allow/deny до `dial` | L4 (ABI v3) | `0` allow, `≠0` deny |
+| `ipguard` | legacy ABI v3 `on_accept`; не запускается до порта на v4 | legacy | `0` allow, `≠0` deny |
 | `http_guard` | legacy ABI v3 `on_data_ex`; не запускается до порта на v4 | legacy | `0` / `1` |
 | `http_headers_guard` | legacy ABI v3 `on_headers`; не принимается в `headers` до порта на v4 | legacy | `0` / `1` |
 | `http_body_guard` | `on_data_state` (ABI v3): разорванные заголовки, `Content-Length`, сигнатуры в теле, keep-alive счётчики | `stream` | `0` / `1` |
@@ -25,8 +24,9 @@
 | `redis_guard` | Разбор RESP и inline-команд, ACL для `CONFIG`/`FLUSHALL`/`EVAL` | `stream` | `0` / `1` |
 | `stream_guard` | Сигнатуры атак в теле запроса, in-place маскировка JSON-секретов | `stream` | `0` / `1` |
 
-Все строки, кроме `ipguard`, — legacy ABI v3-примеры: они оставлены для
-справки, но текущий ABI v4-only L7 loader их отвергает до порта.
+Все закоммиченные примеры, включая `ipguard`, — legacy ABI v3 и отвергаются
+текущим ABI v4-only loader до порта. Тесты используют собранные вручную
+v4-фикстуры.
 
 Полный showcase: [`configs/showcase.yaml`](../../configs/showcase.yaml).
 
@@ -38,11 +38,11 @@ listeners:
     addr: "127.0.0.1:8080"
     upstream_pool: web
     plugin:
-      path: "plugins/examples/ipguard/ipguard.wasm"
+      path: "plugins/examples/<v4-plugin>/<v4-plugin>.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB на инстанс
       timeout: 1s             # таймаут хука; 0 выбирает безопасный дефолт 1s
-      # ipguard — L4-only: data_mode не задаётся. ABI v4 L7-модули используют
-      # data_mode: "once" | "headers" | "stream".
+      # L4-only модули не задают data_mode. ABI v4 L7-модули используют:
+      # data_mode: "once" | "headers" | "stream"
       # max_header_bytes: 16384
       # inspect_timeout: 3s
       # route_pools: ["canary"] # once/headers only; stream cannot route
@@ -66,7 +66,7 @@ listeners:
 
 Строки `on_data`/`on_data_ex`/`on_data_state` описывают legacy-поверхность ABI
 v3; текущий proxy отвергает их для любого `data_mode`. `on_accept` и `on_close`
-остаются активными только на L4-пути до M3.
+активны на ABI v4 L4 lifecycle-пути.
 
 Отрицательные вердикты и `INT32_MIN` означают deny; allow — только `0`. Индекс
 маршрута вне `route_pools` — deny, а не fallback. Модуль без хуков или с
