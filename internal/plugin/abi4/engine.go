@@ -51,6 +51,8 @@ type instance struct {
 	mem       api.Memory
 	bufPtr    uint32
 	bufLen    uint32
+	outPtr    uint32
+	outLen    uint32
 	abi       uint32
 	caps      Caps
 	stack     [5]uint64
@@ -75,6 +77,7 @@ type Engine struct {
 	loadTimeout time.Duration
 	routePools  int
 	headerCap   int
+	output      bool
 	hasAccept   bool
 	hasClose    bool
 	hasCloseEx  bool
@@ -166,6 +169,7 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 	e.hasAccept = warm.onAccept != nil
 	e.hasClose = warm.onClose != nil
 	e.hasCloseEx = warm.onCloseEx != nil
+	e.output = warm.outLen != 0
 	if e.plan.HasEventPhases() {
 		e.bufPtr = warm.bufPtr
 		e.bufLen = warm.bufLen
@@ -242,6 +246,14 @@ func validateExports(compiled wazero.CompiledModule, plan Plan) error {
 	}
 	if !equalTypes(exports["wg_caps"].ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
 		return errors.New("abi4: wg_caps must return i64")
+	}
+	for _, name := range []string{"wg_out_ptr", "wg_out_len"} {
+		if fn, ok := exports[name]; ok && !equalTypes(fn.ParamTypes(), []api.ValueType{}) {
+			return fmt.Errorf("abi4: %s has wrong parameters", name)
+		}
+		if fn, ok := exports[name]; ok && !equalTypes(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return fmt.Errorf("abi4: %s must return i32", name)
+		}
 	}
 	if plan.HasEventPhases() {
 		if !equalTypes(exports["on_event"].ResultTypes(), []api.ValueType{api.ValueTypeI64}) {
@@ -382,6 +394,33 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 		}
 		inst.bufPtr = ptr
 		inst.bufLen = length
+		// Body/response plans require state output. Mutation is enabled by those
+		// opt-in plans in M4; opaque/header plans stay read-only until then.
+		needsOutput := e.plan.RequiredCaps().Has(CapStateOut) || caps.Has(CapMutation)
+		if needsOutput {
+			outPtrFn := mod.ExportedFunction("wg_out_ptr")
+			outLenFn := mod.ExportedFunction("wg_out_len")
+			if outPtrFn == nil || outLenFn == nil {
+				_ = mod.Close(ctx)
+				return nil, errors.New("abi4: output caps require wg_out_ptr and wg_out_len")
+			}
+			if err := outPtrFn.CallWithStack(ctx, stack[:]); err != nil {
+				_ = mod.Close(ctx)
+				return nil, err
+			}
+			outPtr := uint32(stack[0]) // #nosec G115 -- module-provided i32
+			if err := outLenFn.CallWithStack(ctx, stack[:]); err != nil {
+				_ = mod.Close(ctx)
+				return nil, err
+			}
+			outLen := uint32(stack[0]) // #nosec G115 -- module-provided i32
+			if uint64(outLen) < uint64(e.outCap) || uint64(outPtr)+uint64(outLen) > uint64(mem.Size()) {
+				_ = mod.Close(ctx)
+				return nil, errors.New("abi4: output window is invalid or too small")
+			}
+			inst.outPtr = outPtr
+			inst.outLen = outLen
+		}
 	}
 	if e.plan.HasLifecycle() && inst.onAccept == nil && inst.onClose == nil && inst.onCloseEx == nil {
 		_ = mod.Close(ctx)
@@ -390,40 +429,72 @@ func (e *Engine) instantiate(ctx context.Context) (*instance, error) {
 	return inst, nil
 }
 
-// OnEvent writes one envelope and invokes on_event. It does not copy the IN
-// buffer back: v4.0 is read-only. Mutations are a separate OUT-section feature.
+// EventResult is the validated result of one event. Mutation and State are
+// zero-copy views into the guest OUT window and must be consumed before the
+// next event on the same instance.
+type EventResult struct {
+	Verdict         Verdict
+	Mutation        []byte
+	MutationPresent bool
+	State           []byte
+	StatePresent    bool
+}
+
+// OnEvent writes one envelope and invokes on_event. It is the compatibility
+// convenience API for callers that only need a verdict.
 func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags Flags, ev Event) (Verdict, error) {
+	result, err := e.OnEventResult(ctx, connID, phase, flags, ev)
+	return result.Verdict, err
+}
+
+// OnEventResult invokes on_event and, when the module opted into output caps,
+// validates and returns the bounded OUT envelope. The host does not apply a
+// mutation automatically; callers commit it only after an allow verdict.
+func (e *Engine) OnEventResult(ctx context.Context, connID uint64, phase Phase, flags Flags, ev Event) (EventResult, error) {
+	deny := func(err error) (EventResult, error) {
+		return EventResult{Verdict: VerdictDeny}, err
+	}
 	if e == nil {
-		return VerdictAllow, nil
+		return EventResult{Verdict: VerdictAllow}, nil
 	}
 	if !e.plan.Has(phase) {
-		return VerdictDeny, fmt.Errorf("abi4: phase %d is not in the inspection plan", phase)
+		return deny(fmt.Errorf("abi4: phase %d is not in the inspection plan", phase))
 	}
 	if flags&^(FlagFirst|FlagLast|FlagTruncated|FlagClientToServer|FlagServerToClient) != 0 {
-		return VerdictDeny, fmt.Errorf("abi4: unknown event flags %b", flags)
+		return deny(fmt.Errorf("abi4: unknown event flags %b", flags))
 	}
 	if flags&(FlagClientToServer|FlagServerToClient) == (FlagClientToServer | FlagServerToClient) {
-		return VerdictDeny, errors.New("abi4: event cannot carry both directions")
+		return deny(errors.New("abi4: event cannot carry both directions"))
 	}
 	if len(ev.Block) == 0 {
-		return VerdictDeny, errors.New("abi4: empty event")
+		return deny(errors.New("abi4: empty event"))
 	}
 	if err := ctx.Err(); err != nil {
-		return VerdictDeny, err
+		return deny(err)
 	}
 	inst, ok := e.pool.Get().(*instance)
 	if !ok || inst == nil {
-		return VerdictDeny, fmt.Errorf("abi4: instantiate failed: %v", e.initError())
+		return deny(fmt.Errorf("abi4: instantiate failed: %v", e.initError()))
 	}
 	win, ok := inst.mem.Read(inst.bufPtr, e.inCap)
 	if !ok {
 		e.discard(inst)
-		return VerdictDeny, errors.New("abi4: IN window out of bounds")
+		return deny(errors.New("abi4: IN window out of bounds"))
 	}
 	total, err := Write(win, ev)
 	if err != nil {
 		e.pool.Put(inst)
-		return VerdictDeny, err
+		return deny(err)
+	}
+	var out []byte
+	if e.output {
+		var outputOK bool
+		out, outputOK = inst.mem.Read(inst.outPtr, e.outCap)
+		if !outputOK {
+			e.discard(inst)
+			return deny(errors.New("abi4: OUT window out of bounds"))
+		}
+		clear(out)
 	}
 
 	inst.stack[0] = connID
@@ -436,18 +507,53 @@ func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags 
 	cancel()
 	if callErr != nil {
 		e.discard(inst)
-		return VerdictDeny, callErr
+		return deny(callErr)
 	}
 	v := Verdict(int32(uint32(inst.stack[0]))) // #nosec G115 -- low i32 is the verdict
 	if err := ValidateVerdict(v, e.routePools); err != nil {
 		e.pool.Put(inst)
-		return VerdictDeny, err
+		return deny(err)
+	}
+	result := EventResult{Verdict: v}
+	if e.output {
+		// An all-zero OUT window means the guest produced no mutation/state.
+		// This keeps allow-only body policies cheap while still validating any
+		// non-empty output envelope strictly.
+		if binary.LittleEndian.Uint32(out) != 0 {
+			parsed, parseErr := ParseOutput(out)
+			if parseErr != nil {
+				e.discard(inst)
+				return deny(parseErr)
+			}
+			result.Mutation = parsed.Mutation
+			result.MutationPresent = parsed.MutationPresent
+			result.State = parsed.State
+			result.StatePresent = parsed.StatePresent
+		}
 	}
 	e.pool.Put(inst)
 	if v == VerdictDeny {
-		return VerdictDeny, nil
+		result.Mutation = nil
+		result.MutationPresent = false
+		result.State = nil
+		result.StatePresent = false
 	}
-	return v, nil
+	return result, nil
+}
+
+// OnRequestBody dispatches an opt-in request-body event.
+func (e *Engine) OnRequestBody(ctx context.Context, connID uint64, flags Flags, ev Event) (EventResult, error) {
+	return e.OnEventResult(ctx, connID, PhaseRequestBody, flags, ev)
+}
+
+// OnResponseHeaders dispatches an opt-in response-header event.
+func (e *Engine) OnResponseHeaders(ctx context.Context, connID uint64, flags Flags, ev Event) (EventResult, error) {
+	return e.OnEventResult(ctx, connID, PhaseResponseHeaders, flags, ev)
+}
+
+// OnResponseBody dispatches an opt-in response-body event.
+func (e *Engine) OnResponseBody(ctx context.Context, connID uint64, flags Flags, ev Event) (EventResult, error) {
+	return e.OnEventResult(ctx, connID, PhaseResponseBody, flags, ev)
 }
 
 // OnAccept invokes the ABI v4 L4 on_accept(ip_hi, ip_lo, port) hook. Any

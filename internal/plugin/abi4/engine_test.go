@@ -71,7 +71,7 @@ func module(onEvent []byte, abi uint32, caps uint64, ptr, length uint32) []byte 
 	}
 	i64Const := func(v uint64) []byte {
 		body := []byte{0x00, 0x42}
-		body = append(body, uleb(uint32(v))...)
+		body = append(body, sleb(int32(v))...)
 		return append(body, 0x0b)
 	}
 
@@ -81,6 +81,77 @@ func module(onEvent []byte, abi uint32, caps uint64, ptr, length uint32) []byte 
 	code = append(code, entry(i64Const(caps))...)
 	code = append(code, entry(intConst(0x41, ptr))...)
 	code = append(code, entry(intConst(0x41, length))...)
+
+	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	out = append(out, section(0x01, types)...)
+	out = append(out, section(0x03, funcs)...)
+	out = append(out, section(0x05, memory)...)
+	out = append(out, section(0x07, exports)...)
+	out = append(out, section(0x0a, code)...)
+	return out
+}
+
+func sleb(n int32) []byte {
+	var out []byte
+	for {
+		b := byte(n & 0x7f)
+		n >>= 7
+		if (n == 0 && b&0x40 == 0) || (n == -1 && b&0x40 != 0) {
+			return append(out, b)
+		}
+		out = append(out, b|0x80)
+	}
+}
+
+// outputModule writes an empty valid OUT envelope on every event. It is a
+// hand-built conformance guest for M4 state/body dispatch tests.
+func outputModule() []byte {
+	types := []byte{
+		0x03,
+		0x60, 0x05, 0x7e, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7e,
+		0x60, 0x00, 0x01, 0x7f,
+		0x60, 0x00, 0x01, 0x7e,
+	}
+	funcs := []byte{0x07, 0x00, 0x01, 0x02, 0x01, 0x01, 0x01, 0x01}
+	memory := []byte{0x01, 0x00, 0x01}
+	exports := []byte{0x08}
+	addExport := func(name string, idx uint32) {
+		exports = append(exports, uleb(uint32(len(name)))...)
+		exports = append(exports, name...)
+		exports = append(exports, 0x00)
+		exports = append(exports, uleb(idx)...)
+	}
+	exports = append(exports, 6, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00)
+	addExport("on_event", 0)
+	addExport("wg_abi", 1)
+	addExport("wg_caps", 2)
+	addExport("wg_buf_ptr", 3)
+	addExport("wg_buf_len", 4)
+	addExport("wg_out_ptr", 5)
+	addExport("wg_out_len", 6)
+
+	constI32 := func(v int32) []byte {
+		b := []byte{0x00, 0x41}
+		b = append(b, sleb(v)...)
+		return append(b, 0x0b)
+	}
+	constI64 := func(v int64) []byte {
+		b := []byte{0x00, 0x42}
+		b = append(b, sleb(int32(v))...)
+		return append(b, 0x0b)
+	}
+	// on_event returns allow. The output envelope itself is covered by
+	// WriteOutput/ParseOutput conformance tests; a real SDK guest writes it.
+	onEvent := []byte{0x00, 0x42, 0x00, 0x0b}
+
+	code := []byte{0x07}
+	code = append(code, entry(onEvent)...)
+	code = append(code, entry(constI32(0x0400))...)
+	code = append(code, entry(constI64(0x37))...)
+	code = append(code, entry(constI32(4096))...)
+	code = append(code, entry(constI32(49152))...)
+	code = append(code, entry(constI32(50000))...)
+	code = append(code, entry(constI32(4096))...)
 
 	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 	out = append(out, section(0x01, types)...)
@@ -430,6 +501,48 @@ func TestEngineHeaderIndexCap(t *testing.T) {
 	block = manyHeaders(513)
 	if v, err := e.OnRequestHeaders(ctx, 2, block); !errors.Is(err, errTooManyHeaders) || v != VerdictDeny {
 		t.Fatalf("513 headers = (%v, %v), want deny/%v", v, err, errTooManyHeaders)
+	}
+}
+
+func TestEngineBodyAndResponseDispatch(t *testing.T) {
+	ctx := context.Background()
+	e, err := New(ctx, outputModule(), Options{
+		Plan:  InspectRequestHeaders | InspectRequestBody | InspectResponseHeaders | InspectResponseBody,
+		InCap: 4096, OutCap: 1024,
+	})
+	if err != nil {
+		t.Fatalf("New body engine: %v", err)
+	}
+	defer e.Close(ctx)
+	slot, err := NewStateSlot(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range []func() (EventResult, error){
+		func() (EventResult, error) {
+			return e.DispatchWithState(ctx, 1, PhaseRequestBody, FlagFirst, Event{Block: []byte("request")}, slot)
+		},
+		func() (EventResult, error) {
+			return e.OnResponseHeaders(ctx, 1, FlagFirst|FlagLast, Event{Block: []byte("HTTP/1.1 200 OK\r\n\r\n")})
+		},
+		func() (EventResult, error) {
+			return e.OnResponseBody(ctx, 1, FlagLast, Event{Block: []byte("response")})
+		},
+	} {
+		result, err := call()
+		if err != nil || result.Verdict != VerdictAllow {
+			t.Fatalf("phase result = (%+v, %v)", result, err)
+		}
+	}
+}
+
+func TestEngineMutationCapabilityRequiresOutputWindow(t *testing.T) {
+	// The fixture declares CapMutation but does not export output-window
+	// accessors; loading must fail before any event can run.
+	if _, err := New(context.Background(), module([]byte{0x00, 0x42, 0x00, 0x0b}, 0x0400, 0xb7, 4096, 49152), Options{
+		Plan: InspectRequestHeaders, InCap: 4096, OutCap: 1024,
+	}); err == nil {
+		t.Fatal("mutation-capable module without output window was accepted")
 	}
 }
 

@@ -119,6 +119,9 @@ const (
 	CapStateIn
 	CapStateOut
 	CapOpaque
+	// CapMutation allows a guest to return an OUT mutation envelope. It is
+	// never implied by a phase; the module and host must opt in explicitly.
+	CapMutation
 )
 
 // Has reports whether all bits in need are present.

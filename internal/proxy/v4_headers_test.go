@@ -18,6 +18,18 @@ func v4ULEB(n uint32) []byte {
 	}
 }
 
+func v4SLEB(n int32) []byte {
+	var out []byte
+	for {
+		b := byte(n & 0x7f)
+		n >>= 7
+		if (n == 0 && b&0x40 == 0) || (n == -1 && b&0x40 != 0) {
+			return append(out, b)
+		}
+		out = append(out, b|0x80)
+	}
+}
+
 func v4Section(id byte, payload []byte) []byte {
 	out := []byte{id}
 	out = append(out, v4ULEB(uint32(len(payload)))...)
@@ -67,7 +79,7 @@ func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 	}
 	i64Const := func(v uint64) []byte {
 		body := []byte{0x00, 0x42}
-		body = append(body, v4ULEB(uint32(v))...)
+		body = append(body, v4SLEB(int32(v))...)
 		return append(body, 0x0b)
 	}
 
