@@ -1,9 +1,10 @@
 # Security fixes from round 2 — plan and status
 
-- **Branch:** `feat/plugin-http-headers`
+- **Branches:** `feat/plugin-http-headers` (merged into `main`), `stable`
+  (hardening and ABI v4 M0)
 - **Source report:** `WasmGate-security-report-round2.md` (review of `main` @ `4d9448f`)
 - **Plugin architecture:** [`plugin-architecture-review.md`](plugin-architecture-review.md)
-- **Status:** implemented in this branch; DPCP-1 remains a separate design item
+- **Status:** fixes implemented; DPCP-1 remains a separate design item
 
 ## Accepted findings and fixes
 
@@ -66,7 +67,7 @@ documented as a known limitation.
 gofmt -l cmd internal
 go vet ./...
 go test ./...
-CGO_ENABLED=1 go test -race ./internal/plugin ./internal/proxy ./internal/tlspeek
+CGO_ENABLED=1 go test -race ./internal/plugin ./internal/plugin/abi4 ./internal/proxy ./internal/tlspeek
 dotnet build control-plane/WasmGate.Control.sln -c Debug
 dotnet test control-plane/WasmGate.Control.sln -c Debug
 wasmgate -validate -config configs/showcase.yaml

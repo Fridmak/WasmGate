@@ -14,7 +14,8 @@
 cmd/wasmgate/          flags and process wiring
 internal/config/       YAML schema, defaults, validation, reload
 internal/proxy/        listeners, pools, relay, snapshot
-internal/plugin/       WASM sandbox and ABI
+internal/plugin/       WASM sandbox and ABI v3
+internal/plugin/abi4/  ABI v4 core (envelope, plan, engine)
 internal/tlspeek/      ClientHello/SNI parser
 internal/ratelimit/    sliding window and concurrency guard
 internal/observe/      logs, metrics, admin endpoint

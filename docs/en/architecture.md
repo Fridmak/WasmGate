@@ -48,6 +48,7 @@ a test with zero dropped connections.
 | `internal/config` | YAML schema (`KnownFields`), defaults, validation, `Resolve` for relative paths |
 | `internal/proxy` | listeners, snapshot, pools/balancers, limiter, relay, drain |
 | `internal/plugin` | `wazero` runtime, instance pool, ABI v1–v3, memory/timeout limits |
+| `internal/plugin/abi4` | ABI v4 core: envelope, inspection plan, `on_event` engine (M0; not wired yet) |
 | `internal/tlspeek` | ClientHello parser for SNI routing |
 | `internal/ratelimit` | Sliding-window limiter and concurrent-connection guard |
 | `internal/observe` | Structured logs, Prometheus metrics, admin HTTP endpoint |

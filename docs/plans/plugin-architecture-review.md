@@ -5,6 +5,20 @@
   collection of mode-specific patches, and define the next version before adding
   more modes.
 
+## 0. Implementation status
+
+- **M0 — done:** `internal/plugin/abi4` contains the stable v4 core: versioned
+  envelope, `Plan`/`Caps`/`Verdict`, and the `on_event` engine with load-time
+  validation, pooled instances and per-call timeouts. Conformance, fuzz,
+  benchmark and race tests are in the same package.
+- **M1 — next:** wire the plan and engine into `internal/proxy` for the
+  request-header phase, keeping the v3 adapter so existing configurations keep
+  working. Snapshot validation must resolve the plan once per snapshot.
+- **Not in M1:** OUT mutations, request/response body policies, opaque+HTTP
+  composition, HTTP/2 and WebSocket framing. Those stay separate milestones.
+- **Research artifacts:** the old `internal/plugin/v4` prototype and generated
+  benchmark adapters were removed; they were not production code.
+
 ## 1. Current model
 
 The host currently exports four overlapping L7 hooks and selects them from
@@ -229,23 +243,28 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
   compatibility modes.
 - Require explicit mode for L7 hooks (done).
 - Reject `on_headers`-only outside headers (done).
-- Fix example bypasses and lifecycle pairing (in progress).
+- Fix example bypasses and lifecycle pairing (done in `stable`).
 
-### Phase B — host pipeline abstraction (2–3 days)
+### Phase B — host pipeline abstraction (done as M0 core)
 
-- Add `internal/plugin/plan` or `InspectionPlan` with typed phases.
-- Resolve the plan once at snapshot build; `Proxy.Handle` asks the plan what to
-  run instead of switching on strings.
+- Add `internal/plugin/abi4` with typed phases (`Plan`), capability bits and
+  route/verdict validation.
+- Resolve the plan once at snapshot build; the data path must not switch on
+  mode strings.
 - Keep v3 adapters so behavior does not change yet.
-- Tests: plan validation, no-op rejection, snapshot reload.
+- Tests: plan validation, envelope conformance, engine load/verdict/timeout,
+  fuzz and race.
 
-### Phase C — ABI v4 runtime (4–5 days)
+### Phase C — wire v4 into the proxy (M1)
 
-- Add `on_event` validation, dispatch, state slots, phase flags.
-- Implement request/response header and body phases for HTTP/1.1 with caps,
-  timeouts, framing, keep-alive and `Content-Length`/chunked.
-- Route only before dial.
-- Modern examples + conformance tests.
+- Add `on_event` dispatch to the proxy for the request-header phase.
+- Resolve the plan and capabilities during snapshot validation; reject a module
+  whose declared caps do not satisfy the plan.
+- Keep the v3 `headers`/`once`/`stream` paths as adapters.
+- Defer request/response body phases, framing, keep-alive and OUT mutations to
+  later milestones.
+- Add integration tests for allow/deny/route verdicts and timeout fail-closed
+  behavior.
 
 ### Phase D — migration and removal (3–4 days)
 
@@ -263,10 +282,11 @@ bolted on later.
 Do **not** add another hook for the next feature (body/response). Instead:
 
 1. Keep `headers` as a compatibility mode in `stable`.
-2. Build the host `InspectionPlan` and `on_event` v4 behind the scenes.
+2. Wire the existing ABI v4 core (`internal/plugin/abi4`) into the proxy for
+   request headers (M1).
 3. Migrate examples and plugin authors to phases.
 4. Leave `on_accept`/`on_close` as the only lifecycle hooks.
 
-The new headers mode is a reasonable stopgap and its host implementation is
-sound, but it should be the **last** mode-specific hook, not the pattern for the
-next feature.
+The ABI v3 headers mode remains a compatibility layer and its host
+implementation is sound, but it is the **last** mode-specific hook, not the
+pattern for the next feature.

@@ -31,7 +31,7 @@
 | Устойчивость | Опциональный трёхсостоянийный circuit breaker (closed/open/half-open) |
 | Rate limiting | Скользящее окно по IP и подсети, лимиты одновременных, баны, allow-list CIDR |
 | TLS | Passthrough по SNI с выбором пула или терминация с hot reload сертификатов |
-| WASM | L4 `on_accept`/`on_close`, L7 `on_data`/`on_data_ex`, stateful `on_data_state` (ABI v3) |
+| WASM | L4 `on_accept`/`on_close`, L7 `on_data`/`on_data_ex`, stateful `on_data_state` (ABI v3); ядро ABI v4 в `internal/plugin/abi4` (M0, ещё не подключено к proxy) |
 | Наблюдаемость | Admin endpoint (`/metrics`, `/healthz`, `/reload`), структурные логи, pprof по запросу |
 | Control plane | Enrollment, сертификаты, неизменяемые конфиги, подписанные релизы, деплой волнами, rollback, аудит, admin UI |
 
@@ -116,6 +116,7 @@ cmd/wasmgate/          точка входа и флаги
 internal/config/       схема YAML, валидация, hot reload
 internal/proxy/        листенеры, пулы, релей, snapshot
 internal/plugin/       песочница wazero и ABI v3
+internal/plugin/abi4/  ядро ABI v4: envelope, plan, engine (M0)
 internal/tlspeek/      парсер SNI для passthrough
 internal/ratelimit/    скользящее окно
 internal/observe/      логи, метрики, admin endpoint

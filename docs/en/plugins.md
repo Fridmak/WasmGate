@@ -5,6 +5,11 @@ plugin runs in a pure sandbox: no WASI, no filesystem, no sockets, no clocks and
 no randomness. A module is a deterministic function of the connection metadata it
 receives.
 
+> **ABI status:** the ABI v4 core (`internal/plugin/abi4`: envelope, plan,
+> `on_event` engine) is implemented and tested, but it is not wired into the
+> proxy yet. Until M1 this page describes the production ABI v3 contract used
+> by the shipped configurations and examples.
+
 Nine reference plugins live in [`plugins/examples/`](../../plugins/examples/); their
 `.wasm` files are committed, so Rust is not required to run them.
 

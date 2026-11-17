@@ -1,11 +1,11 @@
-# Plugin HTTP header inspection â€” design and work plan
+# Plugin HTTP header inspection — design and work plan
 
-- **Status:** design draft, implementation not started
-- **Branch:** `feat/plugin-http-headers`
+- **Status:** implemented in `main` and `stable` as the ABI v3 `headers` mode; historical design, superseded for new work by ABI v4
+- **Branch:** `feat/plugin-http-headers` (merged)
 - **Base:** `main` after the metrics merge (`8aa95f5`)
 - **Scope owner:** data plane / plugin ABI
-- **Goal release:** next minor after the plan is approved
-- **Execution plan:** [`plugin-http-headers-implementation.md`](plugin-http-headers-implementation.md) â€” locked v1 decisions, tasks, tests and security gates
+- **Goal release:** shipped in the next minor after the plan was approved
+- **Execution plan:** [`plugin-http-headers-implementation.md`](plugin-http-headers-implementation.md) — locked v1 decisions, tasks, tests and security gates
 
 ## 1. Problem
 
@@ -34,7 +34,7 @@ The first version deliberately does **not** solve:
 - HTTP/2, HPACK, WebSocket frames, CONNECT tunnels after the header block;
 - TLS passthrough traffic (the plugin would see TLS records, not HTTP);
 - a host-side HTTP parser or header normalisation;
-- plugin-controlled â€œread moreâ€ loops. This was considered and rejected: it
+- plugin-controlled “read more” loops. This was considered and rejected: it
   leaks transport framing into every plugin, adds an ABI failure mode, and needs
   the same hard caps anyway.
 
@@ -233,16 +233,16 @@ The prefix byte count must be included in `tx` for `on_close` accounting, as the
 
 ## 5. Detailed work breakdown
 
-### Phase 0 â€” baseline and benchmarks (0.5 day)
+### Phase 0 — baseline and benchmarks (0.5 day)
 
 - Add a repeatable benchmark matrix: no plugin, `once`, `headers`, `stream`.
 - Payloads: 1 KiB request with one-chunk headers, 16 KiB headers split across
-  2â€“3 reads, 1 MiB upload.
+  2–3 reads, 1 MiB upload.
 - Record requests/sec, p50/p99, CPU, allocations, and whether `splice(2)` is
   used (Linux, `strace` or a counter).
 - Store results in the PR description; do not commit generated profiles.
 
-### Phase 1 â€” buffer primitives (1 day)
+### Phase 1 — buffer primitives (1 day)
 
 - `internal/tlspeek/sni.go`: add `Bytes()`, `Fill()`, and tests for:
   - append into free capacity;
@@ -254,7 +254,7 @@ The prefix byte count must be included in `tx` for `on_close` accounting, as the
   deadline; unit-test it with `net.Pipe`.
 - No extra allocation per connection; verify with an allocation test.
 
-### Phase 2 â€” configuration and validation (0.5 day)
+### Phase 2 — configuration and validation (0.5 day)
 
 Files:
 
@@ -268,7 +268,7 @@ Validation must run before a snapshot is published. A bad reload must be
 rejected without disturbing existing connections (the current fail-closed
 semantics already provide this).
 
-### Phase 3 â€” plugin ABI (1 day)
+### Phase 3 — plugin ABI (1 day)
 
 Files:
 
@@ -290,7 +290,7 @@ Files:
 - Keep ABI v3: the new export is additive and optional. Document it as an
   extension, not a breaking version bump.
 
-### Phase 4 â€” proxy integration (1.5 days)
+### Phase 4 — proxy integration (1.5 days)
 
 Files:
 
@@ -316,7 +316,7 @@ Files:
 - `internal/proxy/copy_test.go` or a new benchmark file: verify the body path
   still uses the fast path on Linux.
 
-### Phase 5 â€” SDK and example (1 day)
+### Phase 5 — SDK and example (1 day)
 
 - `plugins/examples/common/src/lib.rs`:
   - strict `parse_request_headers`;
@@ -330,7 +330,7 @@ Files:
   example.
 - Add the example to `configs/showcase.yaml` and `docs/en|ru/plugins.md`.
 
-### Phase 6 â€” documentation (0.5 day)
+### Phase 6 — documentation (0.5 day)
 
 - `docs/en/plugins.md` / `docs/ru/plugins.md`:
   - ABI table: `on_headers`;
@@ -343,7 +343,7 @@ Files:
 - `deployments/observability/README.md` and dashboard: only if new metrics are
   added.
 
-### Phase 7 â€” verification and hardening (1 day)
+### Phase 7 — verification and hardening (1 day)
 
 - `go vet ./...`, `go test ./...`, `go test -race ./...` (Linux container for
   race), `golangci-lint` if available.
@@ -356,16 +356,16 @@ Files:
 
 | Phase | Deliverable | Depends on | Estimate |
 |---|---|---|---|
-| 0 | benchmark baseline | â€” | 0.5 d |
+| 0 | benchmark baseline | — | 0.5 d |
 | 1 | `Bytes`/`Fill`, prefix reader, tests | 0 | 1 d |
 | 2 | config fields, validation, defaults | 1 | 0.5 d |
 | 3 | `on_headers`, fallback, ABI tests | 1 | 1 d |
-| 4 | proxy `headers` path, routing, integration tests | 1â€“3 | 1.5 d |
+| 4 | proxy `headers` path, routing, integration tests | 1–3 | 1.5 d |
 | 5 | strict SDK parser + example plugin + `.wasm` | 3 | 1 d |
-| 6 | en/ru docs, config samples | 2â€“5 | 0.5 d |
+| 6 | en/ru docs, config samples | 2–5 | 0.5 d |
 | 7 | fuzz, race, security matrix, benchmarks | all | 1 d |
 
-Overall estimate: **5â€“7 working days** including tests and documentation, not
+Overall estimate: **5–7 working days** including tests and documentation, not
 counting the WG-02/NEW-2 prerequisites.
 
 ## 6. Security analysis
@@ -569,7 +569,7 @@ Still open for later versions:
 
 ## 12. Summary
 
-The cheapest useful feature is not â€œlet the plugin ask for more chunksâ€. It is
-â€œlet the host deliver one complete header block, then get out of the wayâ€. That
+The cheapest useful feature is not “let the plugin ask for more chunks”. It is
+“let the host deliver one complete header block, then get out of the way”. That
 keeps the fast path, keeps plugins simple, preserves `stream` for full
 inspection, and has a small, auditable security surface.
