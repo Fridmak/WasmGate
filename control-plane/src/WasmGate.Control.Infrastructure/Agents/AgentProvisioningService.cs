@@ -243,6 +243,18 @@ public sealed class AgentProvisioningService(
         var requestedName = name?.Trim();
         var isNewAgent = existing is null;
 
+        // A shared registration token is not proof of ownership over an existing
+        // agent. Letting it enroll an existing GUID would issue a second
+        // certificate for that agent and let the token holder impersonate it.
+        // Existing agents must use a per-agent token (record.AgentId is set) or
+        // the normal renewal path.
+        if (record.AgentId is null && existing is not null)
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.AgentMismatch,
+                "A registration token cannot enroll an existing agent; use a per-agent token.");
+        }
+
         if (existing is not null &&
             tokenEnvironment.Length > 0 &&
             !string.Equals(existing.Environment, tokenEnvironment, StringComparison.OrdinalIgnoreCase))

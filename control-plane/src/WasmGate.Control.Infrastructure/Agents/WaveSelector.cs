@@ -14,7 +14,7 @@ namespace WasmGate.Control.Infrastructure.Agents;
 /// present on the agent with an equal value; the comparison is ordinal and
 /// case-sensitive.
 /// </remarks>
-internal sealed class WaveSelector
+public sealed class WaveSelector
 {
     /// <summary>Wildcard that targets every agent.</summary>
     public const string All = "*";

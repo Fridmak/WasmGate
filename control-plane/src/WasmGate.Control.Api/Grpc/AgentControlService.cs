@@ -6,6 +6,7 @@ using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
+using WasmGate.Control.Infrastructure.Agents;
 using WasmGate.Control.V1;
 
 namespace WasmGate.Control.Api.Grpc;
@@ -391,6 +392,47 @@ public sealed class AgentControlService(
         var deployment = await deployments.FindAsync(deploymentId, cancellationToken);
         if (deployment is null || deployment.Status != DeploymentStatus.Running)
         {
+            return;
+        }
+
+        var agent = await agents.FindAsync(agentId, cancellationToken);
+        if (agent is null ||
+            !string.Equals(agent.Environment, deployment.Environment, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "ignoring apply result from agent {AgentId} for deployment {DeploymentId}: environment mismatch",
+                agentId,
+                deploymentId);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.ReleaseId) &&
+            !string.Equals(result.ReleaseId, deployment.ReleaseId.ToString("D"), StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "ignoring apply result from agent {AgentId} for deployment {DeploymentId}: release mismatch",
+                agentId,
+                deploymentId);
+            return;
+        }
+
+        var targeted = deployment.Waves.Any(wave =>
+        {
+            try
+            {
+                return WaveSelector.Parse(wave.Selector).Matches(agent);
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        });
+        if (!targeted)
+        {
+            logger.LogWarning(
+                "ignoring apply result from agent {AgentId} for deployment {DeploymentId}: agent is not a target",
+                agentId,
+                deploymentId);
             return;
         }
 

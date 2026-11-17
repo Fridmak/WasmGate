@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using Grpc.Core;
 using WasmGate.Control.Core.Abstractions.Releases;
+using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.V1;
@@ -20,6 +21,7 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 public sealed class ArtifactDownloadService(
     IArtifactStore artifacts,
+    IAgentCertificateRepository certificates,
     ControlPlaneOptions options,
     ILogger<ArtifactDownloadService> logger) : AgentArtifacts.AgentArtifactsBase
 {
@@ -41,7 +43,7 @@ public sealed class ArtifactDownloadService(
         IServerStreamWriter<ArtifactChunk> responseStream,
         ServerCallContext context)
     {
-        EnsureAuthorized(context);
+        await EnsureAuthorizedAsync(context, context.CancellationToken);
 
         var artifactId = request.Id?.Trim() ?? string.Empty;
         if (!IsSha256(artifactId))
@@ -75,28 +77,41 @@ public sealed class ArtifactDownloadService(
         logger.LogDebug("artifact {ArtifactId} streamed to agent: {Bytes} bytes", artifactId, total);
     }
 
-    /// <summary>Rejects callers that do not present an agent certificate when mTLS is required.</summary>
+    /// <summary>
+    /// Enforces the mTLS identity and the certificate's active state when the
+    /// control plane terminates TLS. Artifact downloads are as sensitive as a
+    /// control session, so a revoked certificate must not keep downloading
+    /// releases until its natural expiry.
+    /// </summary>
     /// <param name="context">Current gRPC call context.</param>
-    /// <exception cref="RpcException">The caller has no valid agent certificate.</exception>
-    private void EnsureAuthorized(ServerCallContext context)
+    /// <param name="cancellationToken">Cancels the certificate lookup.</param>
+    /// <exception cref="RpcException">The caller has no active agent certificate.</exception>
+    private async Task EnsureAuthorizedAsync(ServerCallContext context, CancellationToken cancellationToken)
     {
         if (options.GrpcTls.CertificatePath is null || !options.GrpcTls.RequireClientCertificate)
         {
             return;
         }
 
-        var certificate = context.GetHttpContext()?.Connection.ClientCertificate;
-        if (certificate is not null &&
-            AgentNaming.TryParseCertificateCommonName(
+        var certificate = AgentCertificateIdentity.GetCertificate(context);
+        if (certificate is null ||
+            !AgentNaming.TryParseCertificateCommonName(
                 certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false),
-                out _))
+                out var agentId))
         {
-            return;
+            throw new RpcException(new Status(
+                StatusCode.Unauthenticated,
+                "A client certificate with CN=wasmgate-agent:<guid> is required."));
         }
 
-        throw new RpcException(new Status(
-            StatusCode.Unauthenticated,
-            "A client certificate with CN=wasmgate-agent:<guid> is required."));
+        var thumbprint = AgentCertificateIdentity.Thumbprint(certificate);
+        if (thumbprint is null ||
+            !await certificates.IsActiveAsync(agentId, thumbprint, cancellationToken))
+        {
+            throw new RpcException(new Status(
+                StatusCode.Unauthenticated,
+                "The client certificate was revoked or has expired."));
+        }
     }
 
     /// <summary>Checks that a value is a lower-case-insensitive SHA-256 hex string.</summary>
