@@ -1,7 +1,7 @@
 // Package abi4 contains the stable building blocks for the WasmGate ABI v4
 // event-oriented plugin protocol: the versioned envelope, the inspection plan,
-// capability bits and the on_event engine. Proxy integration is deliberately
-// separate and lands in M1.
+// capability bits and the on_event engine. The proxy uses it for
+// data_mode: headers; other phases remain separate.
 package abi4
 
 import (

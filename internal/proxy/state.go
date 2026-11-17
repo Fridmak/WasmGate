@@ -13,6 +13,7 @@ import (
 
 	"wasmgate/internal/config"
 	"wasmgate/internal/plugin"
+	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/ratelimit"
 )
 
@@ -44,7 +45,10 @@ type registry struct {
 type cachedPlugin struct {
 	cfg  config.PluginConfig
 	hash [32]byte
-	pl   *plugin.Plugin
+	// Exactly one of pl (ABI v3) and v4 (ABI v4) is set. data_mode: headers
+	// is ABI v4 only; other modes still use the legacy v3 runtime.
+	pl *plugin.Plugin
+	v4 *abi4.Engine
 }
 
 func newRegistry() *registry {
@@ -77,6 +81,23 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	if ok && samePluginConfig(cur.cfg, pc) && cur.hash == hash {
 		return cur, nil
 	}
+
+	// data_mode: headers is a strict ABI v4 cutover. A v3 on_headers module is
+	// rejected here instead of silently falling back to the legacy runtime.
+	if pc.DataMode == config.DataModeHeaders {
+		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
+			MaxMemoryPages: pc.MaxMemoryPages,
+			Timeout:        pc.Timeout,
+			Plan:           abi4.InspectRequestHeaders,
+			RoutePools:     len(pc.RoutePools),
+			HeaderIndexCap: abi4.DefaultHeaderIndexCap,
+		})
+		if err != nil {
+			return cachedPlugin{}, fmt.Errorf("plugin: v4 headers: %w", err)
+		}
+		return cachedPlugin{cfg: pc, hash: hash, v4: eng}, nil
+	}
+
 	opts := plugin.Options{
 		MaxMemoryPages: pc.MaxMemoryPages,
 		Timeout:        pc.Timeout,
@@ -88,16 +109,12 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	if pc.DataMode == "" && (pl.HasData() || pl.HasHeaders()) {
 		_ = pl.Close(context.Background())
 		return cachedPlugin{}, errors.New(
-			"plugin.data_mode is required when the module exports L7 hooks; choose once, headers or stream")
+			"plugin.data_mode is required when the module exports L7 hooks; choose once, stream or headers (v4)")
 	}
 	if pc.DataMode != config.DataModeHeaders && pl.HasHeaders() && !pl.HasData() {
 		_ = pl.Close(context.Background())
 		return cachedPlugin{}, errors.New(
-			"plugin exports only on_headers; data_mode must be headers")
-	}
-	if pc.DataMode == config.DataModeHeaders && !pl.CanInspectHeaders() {
-		_ = pl.Close(context.Background())
-		return cachedPlugin{}, errors.New("plugin.data_mode headers requires on_headers, on_data or on_data_ex")
+			"plugin exports only on_headers; ABI v3 on_headers is no longer supported, use ABI v4 on_event")
 	}
 	return cachedPlugin{cfg: pc, hash: hash, pl: pl}, nil
 }

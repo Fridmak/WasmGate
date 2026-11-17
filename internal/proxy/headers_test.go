@@ -12,6 +12,46 @@ import (
 
 const validHTTPGuardRequest = "GET / HTTP/1.1\r\nHost: example.test\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n"
 
+func TestProxyHeadersModeRejectsV4MissingCaps(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:           v4ModuleCaps([]byte{0x00, 0x42, 0x00, 0x0b}, 1),
+			DataMode:       config.DataModeHeaders,
+			Timeout:        time.Second,
+			MaxHeaderBytes: 1024,
+			InspectTimeout: time.Second,
+		}
+	}))
+	if _, err := NewRuntimeChecked(cfg); err == nil {
+		t.Fatal("v4 module without header caps was accepted")
+	}
+}
+
+func TestProxyHeadersModeResolvesV4Engine(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:           v4Verdict(0),
+			DataMode:       config.DataModeHeaders,
+			Timeout:        time.Second,
+			MaxHeaderBytes: 1024,
+			InspectTimeout: time.Second,
+		}
+	}))
+	rt, err := NewRuntimeChecked(cfg)
+	if err != nil {
+		t.Fatalf("NewRuntimeChecked: %v", err)
+	}
+	rl := rt.Load().listeners["edge"]
+	if rl.pluginV4 == nil {
+		t.Fatal("headers listener did not resolve an ABI v4 engine")
+	}
+	if rl.plugin != nil {
+		t.Fatal("headers listener unexpectedly resolved an ABI v3 plugin")
+	}
+}
+
 func startHeadersProxy(t *testing.T, plugin config.PluginConfig) string {
 	t.Helper()
 	backend := startEcho(t)
@@ -91,15 +131,31 @@ func TestProxyHeadersModeRejectsStateOnlyPlugin(t *testing.T) {
 	}
 }
 
+func TestProxyHeadersModeRejectsV3OnHeaders(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:           wasmOnHeadersDenyX(),
+			DataMode:       config.DataModeHeaders,
+			Timeout:        time.Second,
+			MaxHeaderBytes: 1024,
+			InspectTimeout: time.Second,
+		}
+	}))
+	if _, err := NewRuntimeChecked(cfg); err == nil {
+		t.Fatal("ABI v3 on_headers module was accepted in headers mode")
+	}
+}
+
 func TestProxyHeadersModeCollectsSplitHeaders(t *testing.T) {
 	addr := startHeadersProxy(t, config.PluginConfig{
-		Path: "../../plugins/examples/http_guard/http_guard.wasm",
+		Wasm: v4Verdict(0),
 	})
 	conn := dial(t, addr)
 	defer conn.Close()
 
-	// The Authorization header is in the second write. once mode would expose
-	// only the first part to the stateless plugin and reject the request.
+	// The Authorization header is in the second write. The v4 engine must see
+	// the complete block, including the final empty line.
 	writeSplit(t, conn,
 		"GET / HTTP/1.1\r\nHost: example.test\r\n",
 		"Authorization: Basic dXNlcjpwYXNz\r\n\r\n",
@@ -111,7 +167,7 @@ func TestProxyHeadersModeCollectsSplitHeaders(t *testing.T) {
 
 func TestProxyHeadersModeKeepsBodyBytes(t *testing.T) {
 	addr := startHeadersProxy(t, config.PluginConfig{
-		Path: "../../plugins/examples/http_guard/http_guard.wasm",
+		Wasm: v4Verdict(0),
 	})
 	conn := dial(t, addr)
 	defer conn.Close()
@@ -126,7 +182,7 @@ func TestProxyHeadersModeKeepsBodyBytes(t *testing.T) {
 
 func TestProxyHeadersModeDeniesBeforeDial(t *testing.T) {
 	addr := startHeadersProxy(t, config.PluginConfig{
-		Wasm: wasmOnHeadersDenyX(),
+		Wasm: v4Verdict(1),
 	})
 	conn := dial(t, addr)
 	defer conn.Close()
@@ -134,14 +190,89 @@ func TestProxyHeadersModeDeniesBeforeDial(t *testing.T) {
 	expectClosed(t, conn)
 }
 
+func TestProxyHeadersModeRoutesPool(t *testing.T) {
+	defaultEcho := startEcho(t)
+	canary := startCloseServer(t)
+	cfg := validated(t, &config.Config{
+		Version: 1,
+		Listeners: []config.ListenerConfig{{
+			Name:         "edge",
+			Addr:         "127.0.0.1:0",
+			UpstreamPool: "default",
+			DialTimeout:  time.Second,
+			Plugin: config.PluginConfig{
+				Wasm:           v4Verdict(2),
+				DataMode:       config.DataModeHeaders,
+				Timeout:        time.Second,
+				MaxHeaderBytes: 1024,
+				InspectTimeout: time.Second,
+				RoutePools:     []string{"canary"},
+			},
+		}},
+		Pools: map[string]config.PoolConfig{
+			"default": {Servers: []string{defaultEcho}},
+			"canary":  {Servers: []string{canary}},
+		},
+	})
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
+	conn := dial(t, addr)
+	defer conn.Close()
+	writeSplit(t, conn, validHTTPGuardRequest)
+	expectClosed(t, conn)
+}
+
+func TestProxyHeadersModeRejectsMalformedHeaders(t *testing.T) {
+	addr := startHeadersProxy(t, config.PluginConfig{
+		Wasm: v4Verdict(0),
+	})
+	conn := dial(t, addr)
+	defer conn.Close()
+	writeSplit(t, conn, "GET / HTTP/1.1\r\nBadHeader\r\n\r\n")
+	expectClosed(t, conn)
+}
+
+func TestProxyHeadersModeRejectsTooManyHeaders(t *testing.T) {
+	addr := startHeadersProxy(t, config.PluginConfig{
+		Wasm:           v4Verdict(0),
+		MaxHeaderBytes: 16 * 1024,
+	})
+	conn := dial(t, addr)
+	defer conn.Close()
+	block := "GET / HTTP/1.1\r\n"
+	for i := 0; i < 513; i++ {
+		block += "X: y\r\n"
+	}
+	block += "\r\n"
+	writeSplit(t, conn, block)
+	expectClosed(t, conn)
+}
+
+func TestProxyHeadersModeTimesOut(t *testing.T) {
+	addr := startHeadersProxy(t, config.PluginConfig{
+		Wasm:    v4Infinite(),
+		Timeout: 20 * time.Millisecond,
+	})
+	conn := dial(t, addr)
+	defer conn.Close()
+	start := time.Now()
+	writeSplit(t, conn, validHTTPGuardRequest)
+	expectClosed(t, conn)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("v4 header timeout took %s", elapsed)
+	}
+}
+
 func TestProxyHeadersModeRejectsOversizedBlock(t *testing.T) {
 	addr := startHeadersProxy(t, config.PluginConfig{
-		Wasm:           wasmOnHeadersDenyX(),
+		Wasm:           v4Verdict(0),
 		MaxHeaderBytes: 32,
 	})
 	conn := dial(t, addr)
 	defer conn.Close()
-	writeSplit(t, conn, "GET / HTTP/1.1\r\nHost: example.test\r\nX-Pad: ", string(bytes.Repeat([]byte("a"), 64)), "\r\n\r\n")
+	block := "GET / HTTP/1.1\r\nHost: example.test\r\nX-Pad: " + string(bytes.Repeat([]byte("a"), 64)) + "\r\n\r\n"
+	// The proxy may close the connection while the oversized block is still
+	// being written, so a write error is an acceptable outcome here.
+	_, _ = io.WriteString(conn, block)
 	expectClosed(t, conn)
 }
 
@@ -155,7 +286,7 @@ func TestProxyHeadersModeRejectsPartialAndHTTP2(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			addr := startHeadersProxy(t, config.PluginConfig{
-				Wasm:           wasmOnHeadersDenyX(),
+				Wasm:           v4Verdict(0),
 				InspectTimeout: 100 * time.Millisecond,
 			})
 			conn := dial(t, addr)
@@ -164,4 +295,23 @@ func TestProxyHeadersModeRejectsPartialAndHTTP2(t *testing.T) {
 			expectClosed(t, conn)
 		})
 	}
+}
+
+func startCloseServer(tb testing.TB) string {
+	tb.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatalf("listen close backend: %v", err)
+	}
+	tb.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	return ln.Addr().String()
 }

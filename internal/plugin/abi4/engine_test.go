@@ -2,6 +2,7 @@ package abi4
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -269,7 +270,7 @@ func TestEngineRejectsMalformedHeaders(t *testing.T) {
 	}
 
 	many := []byte("GET / HTTP/1.1\r\n")
-	for i := 0; i < 129; i++ {
+	for i := 0; i < 513; i++ {
 		many = append(many, []byte("X: y\r\n")...)
 	}
 	many = append(many, '\r', '\n')
@@ -363,6 +364,35 @@ func TestEngineOpaquePlan(t *testing.T) {
 	if _, err := e.OnEvent(ctx, 1, PhaseOpaqueStream, 0, Event{}); err == nil {
 		t.Fatal("empty opaque event accepted")
 	}
+}
+
+func TestEngineHeaderIndexCap(t *testing.T) {
+	ctx := context.Background()
+	e, err := New(ctx, allowModule(), Options{
+		Plan: InspectRequestHeaders, InCap: 32 * 1024, OutCap: 1024,
+		HeaderIndexCap: 512,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close(ctx)
+
+	block := manyHeaders(512)
+	if v, err := e.OnRequestHeaders(ctx, 1, block); err != nil || v != VerdictAllow {
+		t.Fatalf("512 headers = (%v, %v)", v, err)
+	}
+	block = manyHeaders(513)
+	if v, err := e.OnRequestHeaders(ctx, 2, block); !errors.Is(err, errTooManyHeaders) || v != VerdictDeny {
+		t.Fatalf("513 headers = (%v, %v), want deny/%v", v, err, errTooManyHeaders)
+	}
+}
+
+func manyHeaders(n int) []byte {
+	block := []byte("GET / HTTP/1.1\r\n")
+	for i := 0; i < n; i++ {
+		block = append(block, []byte("X: y\r\n")...)
+	}
+	return append(block, '\r', '\n')
 }
 
 func TestEngineEnvelopeTooLarge(t *testing.T) {

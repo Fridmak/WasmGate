@@ -14,6 +14,7 @@ import (
 	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
 	"wasmgate/internal/plugin"
+	"wasmgate/internal/plugin/abi4"
 	"wasmgate/internal/tlspeek"
 )
 
@@ -177,62 +178,61 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
-	// L7 inspection before dialing. Headers mode gathers one complete HTTP/1
-	// request header block; once mode inspects the first client read; stream
-	// mode keeps inspecting every chunk after the dial. Headers and once replay
-	// the peeked bytes and hand the raw socket back to splice(2).
+	// L7 inspection before dialing. data_mode: headers is ABI v4 only and
+	// gathers one complete HTTP/1 request header block; once and stream remain
+	// legacy ABI v3 paths until their v4 phases land.
 	var streamPlugin *plugin.Plugin
-	if rl.plugin != nil {
+	if rl.pluginV4 != nil {
+		_, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
+		if err != nil {
+			return
+		}
+		pc, ok := wrapped.(*tlspeek.Conn)
+		if !ok {
+			p.log.Error("headers mode: peek did not return a buffered connection", "listener", listenerName)
+			return
+		}
+		client = pc
+		_, headers, err := readHeaderBlock(pc, rl.cfg.Plugin.MaxHeaderBytes, rl.cfg.Plugin.InspectTimeout)
+		if err != nil {
+			p.metrics.HeaderIncomplete()
+			if ok, dropped := p.sampler.Allow("headers:" + listenerName); ok {
+				p.log.Warn("request header block rejected",
+					"listener", listenerName,
+					"err", err,
+					"suppressed", dropped,
+				)
+			}
+			return
+		}
+		verdict, err := rl.pluginV4.OnRequestHeaders(ctx, connID, headers)
+		if err != nil {
+			p.metrics.PluginDiscard()
+		}
+		if err != nil || verdict == abi4.VerdictDeny {
+			p.metrics.RejectPlugin()
+			if ok, dropped := p.sampler.Allow("headers_plugin:" + listenerName); ok {
+				p.log.Warn("request headers rejected by wasm on_event hook",
+					"listener", listenerName,
+					"err", err,
+					"suppressed", dropped,
+				)
+			}
+			return
+		}
+		if routed, ok := selectRoutePool(rl, int32(verdict)); !ok {
+			p.metrics.RejectPlugin()
+			p.log.Warn("wasm on_event selected an unknown route pool", "listener", listenerName, "verdict", verdict)
+			return
+		} else if routed != nil {
+			targetPool = routed
+		}
+	} else if rl.plugin != nil {
 		switch rl.cfg.Plugin.DataMode {
 		case config.DataModeHeaders:
-			if !rl.plugin.CanInspectHeaders() {
-				p.log.Error("plugin cannot inspect headers", "listener", listenerName)
-				return
-			}
-			_, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
-			if err != nil {
-				return
-			}
-			pc, ok := wrapped.(*tlspeek.Conn)
-			if !ok {
-				p.log.Error("headers mode: peek did not return a buffered connection", "listener", listenerName)
-				return
-			}
-			client = pc
-			_, headers, err := readHeaderBlock(pc, rl.cfg.Plugin.MaxHeaderBytes, rl.cfg.Plugin.InspectTimeout)
-			if err != nil {
-				p.metrics.HeaderIncomplete()
-				if ok, dropped := p.sampler.Allow("headers:" + listenerName); ok {
-					p.log.Warn("request header block rejected",
-						"listener", listenerName,
-						"err", err,
-						"suppressed", dropped,
-					)
-				}
-				return
-			}
-			verdict, err := rl.plugin.OnHeaders(ctx, connID, headers)
-			if err != nil {
-				p.metrics.PluginDiscard()
-			}
-			if err != nil || verdict == plugin.VerdictDeny {
-				p.metrics.RejectPlugin()
-				if ok, dropped := p.sampler.Allow("headers_plugin:" + listenerName); ok {
-					p.log.Warn("request headers rejected by wasm on_headers hook",
-						"listener", listenerName,
-						"err", err,
-						"suppressed", dropped,
-					)
-				}
-				return
-			}
-			if routed, ok := selectRoutePool(rl, verdict); !ok {
-				p.metrics.RejectPlugin()
-				p.log.Warn("wasm on_headers selected an unknown route pool", "listener", listenerName, "verdict", verdict)
-				return
-			} else if routed != nil {
-				targetPool = routed
-			}
+			// Defensive: the loader never builds a v3 plugin for headers mode.
+			p.log.Error("legacy ABI v3 headers plugin is not supported", "listener", listenerName)
+			return
 
 		case "stream":
 			streamPlugin = rl.plugin
@@ -261,7 +261,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
-			if routed, ok := selectRoutePool(rl, verdict); !ok {
+			if routed, ok := selectRoutePool(rl, int32(verdict)); !ok {
 				p.metrics.RejectPlugin()
 				p.log.Warn("wasm on_data selected an unknown route pool", "listener", listenerName, "verdict", verdict)
 				return
@@ -322,10 +322,11 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	p.metrics.AddBytes(rx + tx)
 }
 
-// selectRoutePool maps a plugin verdict to route_pools. It returns (nil, true)
-// for allow/deny and (nil, false) for an invalid route index.
-func selectRoutePool(rl resolvedListener, verdict plugin.Verdict) (*pool, bool) {
-	if verdict < plugin.Verdict(2) {
+// selectRoutePool maps a plugin verdict to route_pools. It accepts the raw
+// low-32-bit verdict so both ABI v3 and v4 callers share one implementation. It
+// returns (nil, true) for allow/deny and (nil, false) for an invalid route index.
+func selectRoutePool(rl resolvedListener, verdict int32) (*pool, bool) {
+	if verdict < 2 {
 		return nil, true
 	}
 	idx := int(verdict) - 2

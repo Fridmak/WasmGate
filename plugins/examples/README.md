@@ -7,8 +7,12 @@ files are committed, so Rust is not required to run them.
 
 Documentation:
 
-- [Plugins, ABI v3, sandbox limits, build instructions](../../docs/en/plugins.md)
-- [Плагины, ABI v3, ограничения песочницы, сборка](../../docs/ru/plugins.md)
+- [Plugins, ABI status, sandbox limits, build instructions](../../docs/en/plugins.md)
+- [Плагины, статус ABI, ограничения песочницы, сборка](../../docs/ru/plugins.md)
 
-[`configs/showcase.yaml`](../../configs/showcase.yaml) wires every plugin into
-one runnable configuration.
+`http_headers_guard` still exports the legacy ABI v3 `on_headers` hook. It is
+kept for reference, but `data_mode: headers` is now ABI v4-only and rejects it
+until the example is ported to `on_event`.
+
+[`configs/showcase.yaml`](../../configs/showcase.yaml) wires the supported
+plugins into one runnable configuration.

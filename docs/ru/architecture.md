@@ -48,7 +48,7 @@ WasmGate разделён на **data plane** (сам прокси) и опци�
 | `internal/config` | схема YAML (`KnownFields`), дефолты, валидация, `Resolve` для относительных путей |
 | `internal/proxy` | листенеры, snapshot, пулы/балансировщики, лимитер, релей, drain |
 | `internal/plugin` | рантайм `wazero`, пул инстансов, ABI v1–v3, лимиты памяти/времени |
-| `internal/plugin/abi4` | ядро ABI v4: envelope, план инспекции, движок `on_event` (M0; пока не подключено) |
+| `internal/plugin/abi4` | ядро ABI v4: envelope, план инспекции, движок `on_event`; используется в `data_mode: headers` |
 | `internal/tlspeek` | парсер ClientHello для SNI-маршрутизации |
 | `internal/ratelimit` | скользящее окно и guard одновременных соединений |
 | `internal/observe` | структурные логи, метрики Prometheus, admin HTTP endpoint |

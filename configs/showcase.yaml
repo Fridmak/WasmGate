@@ -28,19 +28,20 @@ listeners:
       timeout: 1s            # per-hook timeout; 0 would select the 1s default
       data_mode: "once"
 
-  # Complete request-header inspection with one plugin call and a spliced body.
-  # The body is not inspected and only the first request of a keep-alive
-  # connection is checked; use stream mode for full per-request/body policy.
-  - name: showcase-http-headers-guard
-    addr: "127.0.0.1:8110"
-    upstream_pool: web
-    plugin:
-      path: "../plugins/examples/http_headers_guard/http_headers_guard.wasm"
-      max_memory_pages: 16
-      timeout: 1s
-      data_mode: "headers"
-      max_header_bytes: 16384
-      inspect_timeout: 3s
+  # ABI v4 request-header example is pending. The old ABI v3
+  # http_headers_guard.wasm is intentionally not listed: data_mode: "headers"
+  # is now ABI v4-only and rejects v3 on_headers modules.
+  #
+  # - name: showcase-http-headers-guard
+  #   addr: "127.0.0.1:8110"
+  #   upstream_pool: web
+  #   plugin:
+  #     path: "../plugins/examples/http_headers_guard/http_headers_guard.wasm"
+  #     max_memory_pages: 16
+  #     timeout: 1s
+  #     data_mode: "headers"
+  #     max_header_bytes: 16384
+  #     inspect_timeout: 3s
 
   # nginx `http` access rules + `proxy_hide_header`: auth, method/path policy,
   # CL/TE smuggling checks, and Server/X-Powered-By masking. Needs both

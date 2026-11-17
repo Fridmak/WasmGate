@@ -5,10 +5,10 @@
 генератора случайных чисел. Это детерминированная функция от метаданных
 соединения.
 
-> **Статус ABI:** ядро ABI v4 (`internal/plugin/abi4`: envelope, plan, движок
-> `on_event`) реализовано и покрыто тестами, но ещё не подключено к proxy. До M1
-> эта страница описывает production-контракт ABI v3, который используют
-> поставляемые конфиги и примеры.
+> **Статус ABI:** `data_mode: headers` теперь строгий путь ABI v4. Он требует
+> модуль с `on_event`/`wg_*`; legacy-модули ABI v3 с `on_headers` отвергаются
+> при загрузке snapshot. `once` и `stream` пока используют legacy-рантайм ABI
+> v3 до реализации их v4-фаз.
 
 Девять эталонных плагинов лежат в [`plugins/examples/`](../../plugins/examples/);
 их `.wasm` уже закоммичены, Rust для запуска не нужен.
@@ -17,7 +17,7 @@
 |---|---|---|---|
 | `ipguard` | `on_accept`: L4 allow/deny до `dial` | L4 | `0` allow, `≠0` deny |
 | `http_guard` | `on_data_ex`: методы/пути, Basic auth, CL+TE-smuggling, маскировка заголовков | `stream` | `0` / `1` |
-| `http_headers_guard` | `on_headers`: полный request-header block за один вызов, тело остаётся на `splice` | `headers` | `0` / `1` |
+| `http_headers_guard` | legacy ABI v3 `on_headers`; не принимается в режиме `headers` до порта на v4 | legacy | `0` / `1` |
 | `http_body_guard` | `on_data_state` (ABI v3): разорванные заголовки, `Content-Length`, сигнатуры в теле, keep-alive счётчики | `stream` | `0` / `1` |
 | `path_router` | `route_pools` по `Host` и пути | `once` | `2..4` → пулы |
 | `sni_guard` | SNI из ClientHello без терминации TLS | `once` | `2..4` → пулы |
@@ -38,10 +38,10 @@ listeners:
       path: "plugins/examples/ipguard/ipguard.wasm"
       max_memory_pages: 16    # 16 * 64 KiB = 1 MiB на инстанс
       timeout: 1s             # таймаут хука; 0 выбирает безопасный дефолт 1s
-      data_mode: "once"       # "once" (по умолчанию), "headers" или "stream"
+      data_mode: "once"       # "once" (ABI v3), "headers" (ABI v4), "stream" (ABI v3)
       max_header_bytes: 16384 # headers: максимум request-header block
       inspect_timeout: 3s     # headers: общий дедлайн на блок
-      route_pools: ["canary"] # on_data/on_headers >= 2 -> route_pools[ret-2]
+      route_pools: ["canary"] # on_event/on_data >= 2 -> route_pools[ret-2]
 ```
 
 ## Контракт хуков
@@ -51,8 +51,9 @@ listeners:
 
 | Экспорт | Сигнатура | Аргументы | Результат |
 |---|---|---|---|
+| `on_event` | `(i64, i32, i32, i32, i32) -> i64` | ABI v4: `conn_id`, `phase`, `flags`, `ptr`, `len` на envelope | Младшие 32 бита: `0` allow, `1` deny, `>= 2` route; старшие зарезервированы |
 | `on_accept` | `(i64, i64, i32) -> i32` | `ip_hi`, `ip_lo` (16-байтный канонический IP, big-endian; IPv4 — `::ffff:a.b.c.d`), порт клиента | `0` allow, любой ненулевой запрещает до `dial` |
-| `on_headers` | `(i64, i32, i32) -> i32` | `conn_id`, `ptr`, `len`; один полный HTTP/1 request-header block, включая `\r\n\r\n`; нужен `on_data_ptr()` | Те же вердикты, что у `on_data`; вызывается только в `data_mode: headers` |
+| `on_headers` | `(i64, i32, i32) -> i32` | только legacy ABI v3; в `data_mode: headers` отвергается | `0` / `1` |
 | `on_data` | `(i32, i32) -> i32` | `ptr`, `len` в линейной памяти (**обязателен `on_data_ptr() -> i32`**); до 32 KiB, можно менять на месте | `0` allow, `1` deny, `>= 2` → `route_pools[ret-2]` (только `once`) |
 | `on_data_ex` | `(i64, i32, i32, i32) -> i32` | `conn_id`, `dir` (0 client→server, 1 server→client), `ptr`, `len` | Как `on_data` |
 | `on_data_state` | `(i64, i32, i32, i32, i32, i32, i32) -> i64` | `conn_id`, `dir`, `state_ptr`, `state_len`, `state_cap` (4 KiB), `data_ptr`, `data_len`; нужны `on_data_ptr()` и `on_state_ptr()` | Младшие 32 бита — вердикт; старшие — новая длина состояния (`0..4096`) |
@@ -80,19 +81,22 @@ listeners:
 ## Режимы данных и TLS
 
 - `data_mode` **обязателен** для модулей с `on_data`, `on_data_ex`,
-  `on_data_state` или `on_headers`. `once` проверяет первое чтение клиента (до
-  16 389 байт) до `dial`, затем возвращает `splice(2)`. Это подсказка для
-  маршрутизации и мутации первого пакета, а не полноценный фильтр: для
-  фильтрации нужен `stream`.
-- `data_mode: headers` собирает один полный HTTP/1.x request-header block
-  (до `\r\n\r\n`) до `dial`, вызывает плагин один раз и возвращает `splice(2)`
-  для тела. Это политика уровня соединения: маршрутизация, auth, заголовки.
-  Инспектируется только первый запрос keep-alive соединения. Неполный,
-  превышающий лимит, просроченный блок и HTTP/2-preface отклоняются до `dial`.
-  `plugin.timeout` должен быть больше нуля; `sni_routes` без терминации TLS
-  запрещены.
-- `data_mode: stream` вызывает хук на каждый чанк в обе стороны (через
-  `on_data_ex`), отключает `splice` и не применяет `route_pools`.
+  `on_data_state` или `on_event`. `once` проверяет первое чтение клиента (до
+  16 389 байт) до `dial`, затем возвращает `splice(2)`; это пока путь ABI v3.
+  Это подсказка для маршрутизации и мутации первого пакета, а не полноценный
+  фильтр: для фильтрации нужен `stream`.
+- `data_mode: headers` — путь ABI v4 `on_event`. Он собирает один полный
+  HTTP/1.x request-header block (до `\r\n\r\n`) до `dial`, вызывает плагин один
+  раз и возвращает `splice(2)` для тела. Модуль обязан экспортировать
+  `on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr` и `wg_buf_len`; legacy-модули
+  ABI v3 с `on_headers` отвергаются. Это политика уровня соединения:
+  маршрутизация, auth, заголовки. Инспектируется только первый запрос
+  keep-alive соединения. Индекс заголовков ограничен 512 записями; при большем
+  количестве запрос отклоняется. Неполный, превышающий лимит, просроченный,
+  malformed-блок и HTTP/2-preface отклоняются до `dial`. `plugin.timeout`
+  должен быть больше нуля; `sni_routes` без терминации TLS запрещены.
+- `data_mode: stream` вызывает legacy-хук ABI v3 на каждый чанк в обе стороны
+  (через `on_data_ex`), отключает `splice` и не применяет `route_pools`.
 - Терминация TLS расшифровывает поток до `on_data`; passthrough оставляет его
   зашифрованным, и плагин видит `ClientHello`/record'ы. На листенере с
   терминацией `sni_routes` игнорируется.

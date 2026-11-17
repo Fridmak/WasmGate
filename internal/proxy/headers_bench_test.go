@@ -14,8 +14,9 @@ import (
 const benchmarkRequest = "GET /bench HTTP/1.1\r\nHost: bench.test\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n"
 
 // BenchmarkHeadersBody measures body relay throughput for the three plugin
-// modes on the same http_guard module. once/headers inspect one prefix and then
-// splice; stream invokes the plugin on every chunk.
+// modes. once/stream use the ABI v3 http_guard module; headers uses an ABI v4
+// allow module. The body path after the header decision is what this feature is
+// meant to keep fast.
 func BenchmarkHeadersBody(b *testing.B) {
 	for _, mode := range []string{"", "headers", "stream"} {
 		name := mode
@@ -39,7 +40,7 @@ func benchBodyWithMode(b *testing.B, mode string) {
 		InspectTimeout: time.Second,
 	}
 	if mode == config.DataModeHeaders {
-		pluginCfg.Wasm = wasmOnHeadersDenyX()
+		pluginCfg.Wasm = v4Verdict(0)
 	}
 	cfg := validated(b, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
 		lc.Plugin = pluginCfg

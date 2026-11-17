@@ -11,9 +11,13 @@
   envelope, `Plan`/`Caps`/`Verdict`, and the `on_event` engine with load-time
   validation, pooled instances and per-call timeouts. Conformance, fuzz,
   benchmark and race tests are in the same package.
-- **M1 — next:** wire the plan and engine into `internal/proxy` for the
-  request-header phase, keeping the v3 adapter so existing configurations keep
-  working. Snapshot validation must resolve the plan once per snapshot.
+- **M1 — headers cutover done:** `data_mode: headers` is now a strict ABI v4
+  path wired through `internal/proxy`. It requires `on_event`/`wg_*`; legacy
+  ABI v3 `on_headers` modules are rejected at snapshot load. The request-header
+  path preserves the complete-block collection, route verdicts and body
+  `splice(2)` replay.
+- **Next:** port `once`/`stream` to v4 phases (or remove them from v1) and add
+  v4 lifecycle coverage. Until then those modes remain explicitly legacy ABI v3.
 - **Not in M1:** OUT mutations, request/response body policies, opaque+HTTP
   composition, HTTP/2 and WebSocket framing. Those stay separate milestones.
 - **Research artifacts:** the old `internal/plugin/v4` prototype and generated
@@ -239,11 +243,11 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 
 ### Phase A — freeze the current surface
 
-- Keep `once`/`headers`/`stream` behavior in stable but treat them as
-  compatibility modes.
 - Require explicit mode for L7 hooks (done).
 - Reject `on_headers`-only outside headers (done).
 - Fix example bypasses and lifecycle pairing (done in `stable`).
+- Cut `data_mode: headers` over to ABI v4 and reject legacy `on_headers`
+  modules (done). `once`/`stream` remain explicit legacy ABI v3 modes.
 
 ### Phase B — host pipeline abstraction (done as M0 core)
 
@@ -255,16 +259,17 @@ events; `http_body_guard` uses body events; `path_router` uses request headers;
 - Tests: plan validation, envelope conformance, engine load/verdict/timeout,
   fuzz and race.
 
-### Phase C — wire v4 into the proxy (M1)
+### Phase C — wire v4 into the proxy (M1 headers cutover done)
 
-- Add `on_event` dispatch to the proxy for the request-header phase.
+- Add `on_event` dispatch to the proxy for the request-header phase (done).
 - Resolve the plan and capabilities during snapshot validation; reject a module
-  whose declared caps do not satisfy the plan.
-- Keep the v3 `headers`/`once`/`stream` paths as adapters.
+  whose declared caps do not satisfy the plan (done through `abi4.New`).
+- `data_mode: headers` uses only ABI v4; v3 `on_headers` is rejected. `once` and
+  `stream` remain legacy ABI v3 adapters until their v4 phases land.
 - Defer request/response body phases, framing, keep-alive and OUT mutations to
   later milestones.
-- Add integration tests for allow/deny/route verdicts and timeout fail-closed
-  behavior.
+- Integration tests cover allow/deny/route verdicts, malformed/oversized
+  headers, header-count limits and timeout fail-closed behavior.
 
 ### Phase D — migration and removal (3–4 days)
 
@@ -281,12 +286,11 @@ bolted on later.
 
 Do **not** add another hook for the next feature (body/response). Instead:
 
-1. Keep `headers` as a compatibility mode in `stable`.
-2. Wire the existing ABI v4 core (`internal/plugin/abi4`) into the proxy for
-   request headers (M1).
+1. Use ABI v4 for `data_mode: headers`; legacy `on_headers` is no longer a
+   compatibility path (done).
+2. Port `once`/`stream` to v4 phases or remove them from v1.
 3. Migrate examples and plugin authors to phases.
 4. Leave `on_accept`/`on_close` as the only lifecycle hooks.
 
-The ABI v3 headers mode remains a compatibility layer and its host
-implementation is sound, but it is the **last** mode-specific hook, not the
-pattern for the next feature.
+The ABI v3 `headers` mode is gone; the remaining v3 modes are explicitly
+legacy and should not be used as the pattern for the next feature.

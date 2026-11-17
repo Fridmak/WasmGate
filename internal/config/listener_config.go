@@ -40,7 +40,9 @@ const (
 )
 
 // DataModeHeaders is the plugin.data_mode value that inspects one complete
-// HTTP/1 request header block before dialing the upstream.
+// HTTP/1 request header block before dialing the upstream. It is a strict ABI
+// v4 path: the module must export on_event/wg_* and is loaded by abi4.Engine.
+// Legacy ABI v3 on_headers modules are rejected.
 const DataModeHeaders = "headers"
 
 // ListenerConfig describes a single front-facing TCP listener.
@@ -78,7 +80,7 @@ type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
-	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk)
+	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (ABI v4 complete HTTP/1 request headers, splice) or "stream" (every chunk, legacy ABI v3)
 	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
 	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)

@@ -20,6 +20,10 @@ const (
 	DefaultLoadTimeout    = 5 * time.Second
 	DefaultInCap          = 40 * 1024
 	DefaultOutCap         = 4 * 1024
+	// DefaultHeaderIndexCap bounds the pooled header index used by
+	// OnRequestHeaders. 512 entries is already far above real-world HTTP
+	// requests and keeps the per-event buffer at 8 KiB.
+	DefaultHeaderIndexCap = 512
 )
 
 // Options configures the v4 engine. Plan is required: it is the explicit
@@ -31,6 +35,9 @@ type Options struct {
 	InCap          int
 	OutCap         int
 	RoutePools     int
+	// HeaderIndexCap is the maximum number of headers accepted by
+	// OnRequestHeaders. Zero selects DefaultHeaderIndexCap.
+	HeaderIndexCap int
 }
 
 type instance struct {
@@ -62,6 +69,7 @@ type Engine struct {
 	timeout     time.Duration
 	loadTimeout time.Duration
 	routePools  int
+	headerCap   int
 	nextID      atomic.Uint64
 	discarded   atomic.Int64
 	pool        sync.Pool
@@ -98,6 +106,12 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		uint64(opts.InCap)+uint64(opts.OutCap) > maxU32 {
 		return nil, errors.New("abi4: invalid window capacities")
 	}
+	if opts.HeaderIndexCap == 0 {
+		opts.HeaderIndexCap = DefaultHeaderIndexCap
+	}
+	if opts.HeaderIndexCap < 1 || opts.HeaderIndexCap > maxEntries {
+		return nil, fmt.Errorf("abi4: header index cap must be between 1 and %d", maxEntries)
+	}
 	if opts.MaxMemoryPages == 0 {
 		opts.MaxMemoryPages = DefaultMaxMemoryPages
 	}
@@ -132,6 +146,7 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		timeout:     opts.Timeout,
 		loadTimeout: DefaultLoadTimeout,
 		routePools:  opts.RoutePools,
+		headerCap:   opts.HeaderIndexCap,
 	}
 	warm, err := e.instantiate(loadCtx)
 	if err != nil {
@@ -177,7 +192,7 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Engine, error) {
 		return inst
 	}
 	e.idxPool.New = func() any {
-		buf := make([]Ent, 128)
+		buf := make([]Ent, e.headerCap)
 		return &buf
 	}
 	e.pool.Put(warm)
@@ -372,15 +387,16 @@ func (e *Engine) OnEvent(ctx context.Context, connID uint64, phase Phase, flags 
 }
 
 // OnRequestHeaders is the typed request-header entry point for M1 integration.
-// The header index is pooled; SplitHeaders rejects overlong or malformed
-// requests instead of silently truncating the index.
+// The header index is pooled and bounded by Options.HeaderIndexCap;
+// SplitHeaders rejects overlong or malformed requests instead of silently
+// truncating the index.
 func (e *Engine) OnRequestHeaders(ctx context.Context, connID uint64, block []byte) (Verdict, error) {
 	if e == nil {
 		return VerdictAllow, nil
 	}
 	buf, _ := e.idxPool.Get().(*[]Ent)
 	if buf == nil {
-		b := make([]Ent, 128)
+		b := make([]Ent, e.headerCap)
 		buf = &b
 	}
 	defer e.idxPool.Put(buf)

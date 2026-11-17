@@ -30,7 +30,7 @@ plain relay never copies payload through user space.
 | Resilience | Optional three-state circuit breaker (closed/open/half-open) |
 | Rate limiting | Per-IP and per-subnet sliding window, concurrent limits, bans, CIDR allow list |
 | TLS | SNI passthrough with pool routing, or termination with certificate hot reload |
-| WASM | L4 `on_accept`/`on_close`, L7 `on_data`/`on_data_ex`, stateful `on_data_state` (ABI v3); ABI v4 core in `internal/plugin/abi4` (M0, not wired into the proxy yet) |
+| WASM | L4 `on_accept`/`on_close`, ABI v4 `on_event` for `data_mode: headers`; legacy ABI v3 `once`/`stream` hooks (`on_data`, `on_data_ex`, `on_data_state`) |
 | Observability | Admin endpoint (`/metrics`, `/healthz`, `/reload`), structured logs, pprof on demand |
 | Control plane | Enrollment, certificates, immutable configurations, signed releases, wave deployments, rollback, audit, admin UI |
 
