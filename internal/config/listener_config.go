@@ -77,7 +77,7 @@ func (t TLSConfig) Enabled() bool {
 type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
-	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = no per-call timer
+	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
 	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk)
 	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
