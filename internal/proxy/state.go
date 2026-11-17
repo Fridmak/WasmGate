@@ -83,10 +83,19 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	// rejected here instead of silently falling back to the legacy runtime.
 	switch pc.DataMode {
 	case config.DataModeHeaders:
+		plan := abi4.InspectRequestHeaders
+		switch pc.BodyPolicy {
+		case config.BodyPolicyRequest:
+			plan |= abi4.InspectRequestBody
+		case config.BodyPolicyResponse:
+			plan |= abi4.InspectResponseHeaders | abi4.InspectResponseBody
+		case config.BodyPolicyBoth:
+			plan |= abi4.InspectRequestBody | abi4.InspectResponseHeaders | abi4.InspectResponseBody
+		}
 		eng, err := abi4.New(context.Background(), wasmBytes, abi4.Options{
 			MaxMemoryPages: pc.MaxMemoryPages,
 			Timeout:        pc.Timeout,
-			Plan:           abi4.InspectRequestHeaders,
+			Plan:           plan,
 			RoutePools:     len(pc.RoutePools),
 			HeaderIndexCap: abi4.DefaultHeaderIndexCap,
 		})
@@ -142,6 +151,7 @@ func samePluginConfig(a, b config.PluginConfig) bool {
 		a.MaxMemoryPages == b.MaxMemoryPages &&
 		a.Timeout == b.Timeout &&
 		a.DataMode == b.DataMode &&
+		a.BodyPolicy == b.BodyPolicy &&
 		a.MaxHeaderBytes == b.MaxHeaderBytes &&
 		a.InspectTimeout == b.InspectTimeout &&
 		slices.Equal(a.RoutePools, b.RoutePools) &&

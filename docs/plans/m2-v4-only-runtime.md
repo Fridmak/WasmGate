@@ -126,5 +126,5 @@ an explicit v4 phase, not added as another mode.
 - `data_mode: once`, `stream` and `headers` resolve only `abi4.Engine`.
 - ABI v3 is no longer in the production proxy import graph.
 - v3 L7/L4 modules are rejected; committed v3 examples are marked legacy.
-- M4 is the next milestone: OUT mutations, state slots and body/response
-  protocol primitives.
+- M4 protocol primitives are complete. M5 owns HTTP framing and proxy body
+  integration; M6 owns final legacy cleanup.

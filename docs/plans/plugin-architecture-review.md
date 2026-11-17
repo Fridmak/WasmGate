@@ -22,8 +22,10 @@
 - **M3 — lifecycle cutover done:** L4 `on_accept`/`on_close` now use
   `abi4.Engine` (`Plan: InspectLifecycle`). The production proxy no longer
   imports `internal/plugin`; the v3 package remains historical/test-only.
-- **Next:** M4 — OUT mutations, state slots, body/response phases and v4
-  example ports. The v3 package can be deleted after the ports.
+- **M4 — protocol primitives done:** OUT envelope, bounded state slots and typed
+  body/response phase APIs are implemented and tested.
+- **Next:** M5 — HTTP/1 Content-Length integration and v4 SDK/example ports;
+  M6 removes the remaining legacy package/artifacts after those ports.
 - **Not in M3:** OUT mutations, request/response body policies, opaque+HTTP
   composition, HTTP/2 and WebSocket framing. Those stay separate milestones.
 - **Research artifacts:** the old `internal/plugin/v4` prototype and generated

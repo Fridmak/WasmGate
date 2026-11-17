@@ -68,12 +68,17 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 | `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389`. v4-индекс принимает не более 512 заголовков; больше — fail closed |
 | `inspect_timeout` | `3s` | Режим headers: общий дедлайн на один header block |
 | `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` `2..N`; поддерживаются для `once`/`headers`, запрещены для `stream` |
+| `body_policy` | пусто | `request`, `response` или `both`; opt-in Content-Length body/response phases с `data_mode: headers` |
 
 Для любого `data_mode` модуль обязан экспортировать ABI v4-контракт
 (`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only модули
 (без `data_mode`) обязаны экспортировать `wg_abi`, `wg_caps` и хотя бы один из
 `on_accept`/`on_close`/`on_close_ex`. Legacy-модули ABI v3 отвергаются при
 загрузке snapshot.
+
+В M5 поддерживается только однозначный framing через `Content-Length`.
+`Transfer-Encoding`, дубли и некорректный `Content-Length` отвергаются до
+использования upstream.
 
 ABI и ограничения песочницы — в [плагинах](plugins.md).
 

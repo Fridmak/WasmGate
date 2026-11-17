@@ -182,6 +182,8 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	// L7 inspection before dialing. All data modes are ABI v4; ABI v3 is used
 	// only for the L4 on_accept/on_close lifecycle path.
 	var streamHook streamInspector
+	var bodyInspector *httpBodyInspector
+	var requestHeaders []byte
 	if rl.pluginV4 != nil {
 		switch rl.cfg.Plugin.DataMode {
 		case config.DataModeHeaders:
@@ -207,6 +209,7 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
+			requestHeaders = headers
 			verdict, err := rl.pluginV4.OnRequestHeaders(ctx, connID, headers)
 			if err != nil {
 				p.metrics.PluginDiscard()
@@ -228,6 +231,17 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				return
 			} else if routed != nil {
 				targetPool = routed
+			}
+			if rl.cfg.Plugin.BodyPolicy != "" {
+				bodyInspector, err = newHTTPBodyInspector(rl.pluginV4, connID, headers,
+					rl.cfg.Plugin.BodyPolicy, rl.cfg.Plugin.MaxHeaderBytes)
+				if err != nil {
+					p.metrics.RejectPlugin()
+					return
+				}
+				streamHook = func(ctx context.Context, _ uint64, dir int32, chunk []byte) (int32, error) {
+					return bodyInspector.inspect(ctx, dir, chunk)
+				}
 			}
 
 		case config.DataModeOnce:
@@ -289,7 +303,13 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 	var prefix int64
 	if pc, ok := client.(*tlspeek.Conn); ok {
 		if streamHook != nil && len(pc.Bytes()) > 0 {
-			verdict, err := streamHook(ctx, connID, 0, pc.Bytes())
+			var verdict int32
+			var err error
+			if bodyInspector != nil {
+				verdict, err = bodyInspector.inspectRequestPrefix(ctx, pc.Bytes(), requestHeaders)
+			} else {
+				verdict, err = streamHook(ctx, connID, 0, pc.Bytes())
+			}
 			if err != nil {
 				p.metrics.PluginDiscard()
 			}

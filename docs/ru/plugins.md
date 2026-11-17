@@ -46,6 +46,7 @@ listeners:
       # max_header_bytes: 16384
       # inspect_timeout: 3s
       # route_pools: ["canary"] # once/headers only; stream cannot route
+      # body_policy: "request"  # policy фаз Content-Length request/response
 ```
 
 ## Контракт хуков
@@ -103,8 +104,8 @@ v3; текущий proxy отвергает их для любого `data_mode`
   терминации TLS запрещены.
 - `data_mode: stream` вызывает `on_event` на каждый чанк в обе стороны,
   отключает `splice` и не умеет маршрутизировать: `route_pools` запрещены.
-  В M2 поддерживается только allow/deny; in-place mutation и stateful body
-  политики отвергаются до M4.
+  Body-политики выбираются отдельно через `body_policy` на
+  `data_mode: headers`.
 - Терминация TLS расшифровывает поток до `on_event`; passthrough оставляет его
   зашифрованным, и плагин видит `ClientHello`/record'ы. На листенере с
   терминацией `sni_routes` игнорируется.
@@ -112,7 +113,8 @@ v3; текущий proxy отвергает их для любого `data_mode`
 ## Legacy-состояние ABI v3
 
 `on_data_state` относится к legacy-рантайму ABI v3. Текущий ABI v4-only L7-путь
-его отвергает; state slots запланированы на M4. Эталонная v3-реализация
+его отвергает; state slots реализованы в M4, а HTTP framing и владение state в
+proxy реализуются в M5. Эталонная v3-реализация
 [`http_body_guard`](../../plugins/examples/http_body_guard) сохранена как
 историческая.
 

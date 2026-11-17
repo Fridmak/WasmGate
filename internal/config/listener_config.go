@@ -49,6 +49,12 @@ const (
 	// DataModeStream inspects every chunk in both directions. It is ABI v4,
 	// disables splice(2) and cannot route.
 	DataModeStream = "stream"
+	// BodyPolicyRequest inspects a Content-Length request body after headers.
+	BodyPolicyRequest = "request"
+	// BodyPolicyResponse inspects response headers and a Content-Length response body.
+	BodyPolicyResponse = "response"
+	// BodyPolicyBoth inspects both Content-Length request and response bodies.
+	BodyPolicyBoth = "both"
 )
 
 // ListenerConfig describes a single front-facing TCP listener.
@@ -87,6 +93,7 @@ type PluginConfig struct {
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
 	DataMode       string        `yaml:"data_mode"`        // "once" (first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk); all three are ABI v4
+	BodyPolicy     string        `yaml:"body_policy"`      // "request", "response" or "both"; requires data_mode: headers
 	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
 	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
@@ -223,6 +230,15 @@ func (l *ListenerConfig) Validate() error {
 	}
 	if l.Plugin.DataMode == DataModeStream && len(l.Plugin.RoutePools) > 0 {
 		return errors.New("plugin.route_pools is not supported with data_mode stream")
+	}
+	switch l.Plugin.BodyPolicy {
+	case "":
+	case BodyPolicyRequest, BodyPolicyResponse, BodyPolicyBoth:
+		if l.Plugin.DataMode != DataModeHeaders {
+			return errors.New("plugin.body_policy requires plugin.data_mode headers")
+		}
+	default:
+		return fmt.Errorf("unknown plugin.body_policy %q (want request, response or both)", l.Plugin.BodyPolicy)
 	}
 	if l.Plugin.MaxHeaderBytes == 0 {
 		l.Plugin.MaxHeaderBytes = DefaultMaxHeaderBytes

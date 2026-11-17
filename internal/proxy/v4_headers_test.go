@@ -55,10 +55,10 @@ func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 		0x60, 0x00, 0x01, 0x7f,
 		0x60, 0x00, 0x01, 0x7e,
 	}
-	funcs := []byte{0x05, 0x00, 0x01, 0x02, 0x01, 0x01}
+	funcs := []byte{0x07, 0x00, 0x01, 0x02, 0x01, 0x01, 0x01, 0x01}
 	memory := []byte{0x01, 0x00, 0x01}
 
-	exports := []byte{0x06}
+	exports := []byte{0x08}
 	addExport := func(name string, idx uint32) {
 		exports = append(exports, v4ULEB(uint32(len(name)))...)
 		exports = append(exports, name...)
@@ -71,6 +71,8 @@ func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 	addExport("wg_caps", 2)
 	addExport("wg_buf_ptr", 3)
 	addExport("wg_buf_len", 4)
+	addExport("wg_out_ptr", 5)
+	addExport("wg_out_len", 6)
 
 	intConst := func(op byte, v uint32) []byte {
 		body := []byte{0x00, op}
@@ -83,12 +85,14 @@ func v4ModuleCaps(onEvent []byte, caps uint64) []byte {
 		return append(body, 0x0b)
 	}
 
-	code := []byte{0x05}
+	code := []byte{0x07}
 	code = append(code, v4Entry(onEvent)...)
 	code = append(code, v4Entry(intConst(0x41, 0x0400))...)
 	code = append(code, v4Entry(i64Const(caps))...)
 	code = append(code, v4Entry(intConst(0x41, 4096))...)
 	code = append(code, v4Entry(intConst(0x41, 49152))...)
+	code = append(code, v4Entry(intConst(0x41, 50000))...)
+	code = append(code, v4Entry(intConst(0x41, 4096))...)
 
 	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 	out = append(out, v4Section(0x01, types)...)

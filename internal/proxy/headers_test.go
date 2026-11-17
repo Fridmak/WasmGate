@@ -294,6 +294,69 @@ func TestProxyHeadersModeRejectsPartialAndHTTP2(t *testing.T) {
 	}
 }
 
+func TestProxyHeadersBodyPolicyRequestContentLength(t *testing.T) {
+	addr := startHeadersProxy(t, config.PluginConfig{
+		Wasm:       v4Verdict(0),
+		BodyPolicy: config.BodyPolicyRequest,
+	})
+	conn := dial(t, addr)
+	defer conn.Close()
+	request := "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello"
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := readAllEcho(t, conn, len(request)); got != request {
+		t.Fatalf("echo = %q, want %q", got, request)
+	}
+}
+
+func TestProxyHeadersBodyPolicyResponseContentLength(t *testing.T) {
+	backend := startBanner(t, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nX-body!")
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:           v4Verdict(0),
+			DataMode:       config.DataModeHeaders,
+			BodyPolicy:     config.BodyPolicyResponse,
+			Timeout:        time.Second,
+			MaxHeaderBytes: 1024,
+			InspectTimeout: time.Second,
+		}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
+	conn := dial(t, addr)
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got := make([]byte, len("HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nX-body!"))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if string(got) != "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nX-body!" {
+		t.Fatalf("response = %q", got)
+	}
+}
+
+func TestProxyHeadersBodyPolicyRejectsChunkedFraming(t *testing.T) {
+	backend := startEcho(t)
+	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+		lc.Plugin = config.PluginConfig{
+			Wasm:           v4Verdict(0),
+			DataMode:       config.DataModeHeaders,
+			BodyPolicy:     config.BodyPolicyRequest,
+			Timeout:        time.Second,
+			MaxHeaderBytes: 1024,
+			InspectTimeout: time.Second,
+		}
+	}))
+	addr := startServer(t, NewServer(testLogger(), NewRuntime(cfg), nil))
+	conn := dial(t, addr)
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n")
+	expectClosed(t, conn)
+}
+
 func startCloseServer(tb testing.TB) string {
 	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

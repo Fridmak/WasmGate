@@ -48,6 +48,7 @@ listeners:
       # max_header_bytes: 16384
       # inspect_timeout: 3s
       # route_pools: ["canary"] # once/headers only; stream cannot route
+      # body_policy: "request"  # Content-Length request/response phase policy
 ```
 
 ## Hook contract
@@ -104,8 +105,8 @@ whose signature does not match, fails validation before the snapshot is swapped.
   zero, and `sni_routes` without TLS termination is rejected.
 - `data_mode: stream` calls `on_event` for every chunk in both directions,
   disables `splice`, and cannot route: `route_pools` is rejected. M2 supports
-  allow/deny only; in-place mutation and stateful body policies are rejected
-  until M4.
+  allow/deny only; HTTP body policies are selected separately with
+  `body_policy` on `data_mode: headers`.
 - TLS termination decrypts the stream before `on_event`; TLS passthrough keeps
   it encrypted, so the plugin sees `ClientHello`/records. `sni_routes` is
   ignored on a listener with termination.
@@ -113,7 +114,8 @@ whose signature does not match, fails validation before the snapshot is swapped.
 ## Legacy ABI v3 state
 
 `on_data_state` is part of the legacy ABI v3 runtime. The current ABI v4-only
-L7 path rejects it; state slots are planned for M4. The reference v3
+L7 path rejects it; state slots are implemented in M4, while HTTP framing and
+proxy ownership are implemented in M5. The reference v3
 implementation remains [`http_body_guard`](../../plugins/examples/http_body_guard)
 for design history.
 

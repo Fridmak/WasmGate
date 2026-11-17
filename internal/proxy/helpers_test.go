@@ -78,6 +78,7 @@ func startBanner(tb testing.TB, payload string) string {
 				return
 			}
 			_, _ = io.WriteString(c, payload)
+			time.Sleep(500 * time.Millisecond)
 			_ = c.Close()
 		}
 	}()
