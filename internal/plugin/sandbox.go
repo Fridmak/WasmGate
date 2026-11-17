@@ -578,7 +578,7 @@ func (p *Plugin) onDataPlain(ctx context.Context, connID uint64, dir int32, payl
 		defer cancel()
 	}
 
-	if clearScratch || inst.lastConnID != connID {
+	if clearScratch || connID == 0 || inst.lastConnID != connID {
 		scratch, ok := inst.mod.Memory().Read(inst.dataPtr, inst.dataCap)
 		if !ok {
 			p.discarded.Add(1)

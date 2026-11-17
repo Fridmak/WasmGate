@@ -73,9 +73,10 @@ whose signature does not match, fails validation before the snapshot is swapped.
 
 ## Data modes and TLS
 
-- `data_mode: once` (default) inspects the first client read (up to 16 389 bytes)
-  before `dial` and then resumes `splice(2)`. It is a routing/mutation hint, not a
-  full filter: use `stream` for filtering.
+- `data_mode` is **required** for any module exporting `on_data`, `on_data_ex`,
+  `on_data_state` or `on_headers`. `once` inspects the first client read (up to
+  16 389 bytes) before `dial` and then resumes `splice(2)`. It is a
+  routing/mutation hint, not a full filter: use `stream` for filtering.
 - `data_mode: headers` gathers one complete HTTP/1.x request header block
   (through `\r\n\r\n`) before `dial`, calls the plugin once, and then resumes
   `splice(2)` for the body. It is intended for connection-level routing/auth/

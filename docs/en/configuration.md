@@ -64,7 +64,7 @@ duplicate addresses and references to missing pools fail validation.
 | `path` | — | `.wasm` file; empty disables the plugin |
 | `max_memory_pages` | `16` | Linear-memory cap per instance (16 × 64 KiB = 1 MiB) |
 | `timeout` | `1s` | Per-hook timeout; omitted or `0` selects the safe 1s default. Required (`> 0`) for `data_mode: headers` |
-| `data_mode` | `once` | `once` inspects the first client packet and keeps `splice`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk |
+| `data_mode` | required | `once` inspects the first client packet and keeps `splice`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk. Required when the module exports an L7 hook |
 | `max_header_bytes` | `16384` | Headers mode: maximum request header block; hard cap `16389` |
 | `inspect_timeout` | `3s` | Headers mode: total deadline for one header block |
 | `route_pools` | empty | Pools selectable by an `on_data`/`on_headers` return value `2..N` |

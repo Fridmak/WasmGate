@@ -85,6 +85,16 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	if err != nil {
 		return cachedPlugin{}, err
 	}
+	if pc.DataMode == "" && (pl.HasData() || pl.HasHeaders()) {
+		_ = pl.Close(context.Background())
+		return cachedPlugin{}, errors.New(
+			"plugin.data_mode is required when the module exports L7 hooks; choose once, headers or stream")
+	}
+	if pc.DataMode != config.DataModeHeaders && pl.HasHeaders() && !pl.HasData() {
+		_ = pl.Close(context.Background())
+		return cachedPlugin{}, errors.New(
+			"plugin exports only on_headers; data_mode must be headers")
+	}
 	if pc.DataMode == config.DataModeHeaders && !pl.CanInspectHeaders() {
 		_ = pl.Close(context.Background())
 		return cachedPlugin{}, errors.New("plugin.data_mode headers requires on_headers, on_data or on_data_ex")

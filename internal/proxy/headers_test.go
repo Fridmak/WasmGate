@@ -59,6 +59,22 @@ func expectClosed(t *testing.T, conn net.Conn) {
 	}
 }
 
+func TestProxyHeadersModeRejectsInertHeadersPlugin(t *testing.T) {
+	backend := startEcho(t)
+	for _, mode := range []string{"once", "stream"} {
+		cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {
+			lc.Plugin = config.PluginConfig{
+				Wasm:     wasmOnHeadersDenyX(),
+				DataMode: mode,
+				Timeout:  time.Second,
+			}
+		}))
+		if _, err := NewRuntimeChecked(cfg); err == nil {
+			t.Fatalf("headers-only plugin was inert but accepted in %s mode", mode)
+		}
+	}
+}
+
 func TestProxyHeadersModeRejectsStateOnlyPlugin(t *testing.T) {
 	backend := startEcho(t)
 	cfg := validated(t, edgeConfig([]string{backend}, func(lc *config.ListenerConfig) {

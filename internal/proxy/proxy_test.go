@@ -445,6 +445,7 @@ func TestProxyWasmOnDataMutatesAndRoutesPool(t *testing.T) {
 			DialTimeout:  time.Second,
 			Plugin: config.PluginConfig{
 				Wasm:       wasmMutateAndRoute,
+				DataMode:   "once",
 				RoutePools: []string{"canary"},
 			},
 		}},

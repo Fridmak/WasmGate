@@ -7,6 +7,7 @@ package controlplane
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -91,6 +92,15 @@ func (o *Options) normalize() error {
 	case "http":
 		if !o.Insecure {
 			return fmt.Errorf("control plane: %s uses http:// but Insecure is not set", o.Endpoint)
+		}
+		host := strings.ToLower(u.Hostname())
+		if host != "localhost" {
+			ip := net.ParseIP(host)
+			if ip == nil || !ip.IsLoopback() {
+				return fmt.Errorf(
+					"control plane: http:// is allowed only for loopback; %q is remote",
+					u.Hostname())
+			}
 		}
 	default:
 		return fmt.Errorf("control plane: unsupported endpoint scheme %q (want http or https)", u.Scheme)

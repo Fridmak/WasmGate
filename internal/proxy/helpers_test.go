@@ -148,6 +148,11 @@ func edgeConfig(backends []string, mutate func(*config.ListenerConfig)) *config.
 	if mutate != nil {
 		mutate(&lc)
 	}
+	// Tests that attach an L7 plugin but do not care about the mode use the
+	// historical default explicitly; production configuration must choose.
+	if lc.Plugin.Enabled() && lc.Plugin.DataMode == "" {
+		lc.Plugin.DataMode = "once"
+	}
 	return &config.Config{
 		Version:   1,
 		Listeners: []config.ListenerConfig{lc},

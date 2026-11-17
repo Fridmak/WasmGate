@@ -223,6 +223,15 @@ func TestOptionsNormalize(t *testing.T) {
 	}
 
 	if err := (&Options{
+		Endpoint:   "http://cp.example:9096",
+		Insecure:   true,
+		ConfigPath: "x.yaml",
+		ReleaseKey: "key.pub",
+	}).normalize(); err == nil {
+		t.Fatal("normalize accepted insecure http:// on a non-loopback host")
+	}
+
+	if err := (&Options{
 		Endpoint:   "https://cp.example:9096",
 		ConfigPath: "x.yaml",
 	}).normalize(); err == nil {

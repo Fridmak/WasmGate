@@ -18,6 +18,9 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 public sealed class GrpcAgentSession : IAgentSession
 {
+    /// <summary>Upper bound for one server-to-agent write, including flow-control backpressure.</summary>
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(10);
+
     private readonly IServerStreamWriter<ControlMessage> _writer;
     private readonly CancellationTokenSource _lifetime;
     private readonly SemaphoreSlim _writeSlim = new(1, 1);
@@ -50,18 +53,30 @@ public sealed class GrpcAgentSession : IAgentSession
     public async ValueTask SendAsync(AgentCommand command, CancellationToken cancellationToken)
     {
         var message = ToControlMessage(command);
+        using var timeout = new CancellationTokenSource(SendTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             _lifetime.Token,
-            cancellationToken);
+            cancellationToken,
+            timeout.Token);
 
-        await _writeSlim.WaitAsync(linked.Token);
         try
         {
-            await _writer.WriteAsync(message, linked.Token);
+            await _writeSlim.WaitAsync(linked.Token);
+            try
+            {
+                await _writer.WriteAsync(message, linked.Token);
+            }
+            finally
+            {
+                _writeSlim.Release();
+            }
         }
-        finally
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
-            _writeSlim.Release();
+            // The agent accepted the stream but stopped reading. Keeping the
+            // session would block every future deployment behind this write.
+            _lifetime.Cancel();
+            throw;
         }
     }
 
