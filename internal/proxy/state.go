@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -83,6 +85,10 @@ func (g *registry) preparePlugin(name string, pc config.PluginConfig) (cachedPlu
 	if err != nil {
 		return cachedPlugin{}, err
 	}
+	if pc.DataMode == config.DataModeHeaders && !pl.CanInspectHeaders() {
+		_ = pl.Close(context.Background())
+		return cachedPlugin{}, errors.New("plugin.data_mode headers requires on_headers, on_data or on_data_ex")
+	}
 	return cachedPlugin{cfg: pc, hash: hash, pl: pl}, nil
 }
 
@@ -102,6 +108,9 @@ func samePluginConfig(a, b config.PluginConfig) bool {
 		a.MaxMemoryPages == b.MaxMemoryPages &&
 		a.Timeout == b.Timeout &&
 		a.DataMode == b.DataMode &&
+		a.MaxHeaderBytes == b.MaxHeaderBytes &&
+		a.InspectTimeout == b.InspectTimeout &&
+		slices.Equal(a.RoutePools, b.RoutePools) &&
 		bytes.Equal(a.Wasm, b.Wasm)
 }
 

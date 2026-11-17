@@ -67,6 +67,7 @@ const (
 	StateCapacity = 4 * 1024
 
 	hookOnAccept    = "on_accept"
+	hookOnHeaders   = "on_headers"
 	hookOnData      = "on_data"
 	hookOnDataEx    = "on_data_ex"
 	hookOnDataState = "on_data_state"
@@ -95,6 +96,7 @@ type Plugin struct {
 	compiled     wazero.CompiledModule
 	timeout      time.Duration
 	hasAccept    bool
+	hasHeaders   bool
 	hasData      bool
 	hasDataEx    bool
 	hasDataState bool
@@ -178,6 +180,7 @@ func (p *Plugin) Discarded() int64 {
 type instance struct {
 	mod         api.Module
 	onAccept    api.Function
+	onHeaders   api.Function
 	onData      api.Function
 	onDataEx    api.Function
 	onDataState api.Function
@@ -233,6 +236,7 @@ func New(ctx context.Context, wasmBytes []byte, opts Options) (*Plugin, error) {
 		compiled:     compiled,
 		timeout:      opts.Timeout,
 		hasAccept:    flags.hasAccept,
+		hasHeaders:   flags.hasHeaders,
 		hasData:      flags.hasData,
 		hasDataEx:    flags.hasDataEx,
 		hasDataState: flags.hasDataState,
@@ -273,6 +277,20 @@ func (p *Plugin) HasData() bool {
 	return p != nil && (p.hasData || p.hasDataEx || p.hasDataState)
 }
 
+// HasHeaders reports whether the compiled module exports the optional
+// on_headers hook.
+func (p *Plugin) HasHeaders() bool {
+	return p != nil && p.hasHeaders
+}
+
+// CanInspectHeaders reports whether headers mode has a usable hook: either
+// on_headers or one of the stateless on_data hooks. A module with only
+// on_data_state is intentionally rejected for headers mode because the host
+// does not allocate a per-connection StateBuf on that path.
+func (p *Plugin) CanInspectHeaders() bool {
+	return p != nil && (p.hasHeaders || p.hasData || p.hasDataEx)
+}
+
 // HasState reports whether the compiled module exports the ABI v3 stateful
 // on_data_state hook.
 func (p *Plugin) HasState() bool {
@@ -284,6 +302,7 @@ func (p *Plugin) Timeout() time.Duration { return p.timeout }
 
 type exportFlags struct {
 	hasAccept    bool
+	hasHeaders   bool
 	hasData      bool
 	hasDataEx    bool
 	hasDataState bool
@@ -302,6 +321,13 @@ func validateExports(compiled wazero.CompiledModule) (exportFlags, error) {
 			return f, fmt.Errorf("plugin: %s must have signature (i64, i64, i32) -> i32", hookOnAccept)
 		}
 		f.hasAccept = true
+	}
+	if fn, ok := exports[hookOnHeaders]; ok {
+		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI64, api.ValueTypeI32, api.ValueTypeI32}) ||
+			!slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return f, fmt.Errorf("plugin: %s must have signature (i64, i32, i32) -> i32", hookOnHeaders)
+		}
+		f.hasHeaders = true
 	}
 	if fn, ok := exports[hookOnData]; ok {
 		if !slices.Equal(fn.ParamTypes(), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}) ||
@@ -353,15 +379,15 @@ func validateExports(compiled wazero.CompiledModule) (exportFlags, error) {
 		}
 		f.hasCloseEx = true
 	}
-	if (f.hasData || f.hasDataEx || f.hasDataState) && exports[hookOnDataPtr] == nil {
-		return f, fmt.Errorf("plugin: %s is required when on_data/on_data_ex/on_data_state is exported", hookOnDataPtr)
+	if (f.hasHeaders || f.hasData || f.hasDataEx || f.hasDataState) && exports[hookOnDataPtr] == nil {
+		return f, fmt.Errorf("plugin: %s is required when %s/on_data/on_data_ex/on_data_state is exported", hookOnDataPtr, hookOnHeaders)
 	}
 	if f.hasDataState && exports[hookOnStatePtr] == nil {
 		return f, fmt.Errorf("plugin: %s is required when %s is exported", hookOnStatePtr, hookOnDataState)
 	}
-	if !f.hasAccept && !f.hasData && !f.hasDataEx && !f.hasDataState && !f.hasClose && !f.hasCloseEx {
-		return f, fmt.Errorf("plugin: module must export %s, %s, %s, %s, %s or %s",
-			hookOnAccept, hookOnData, hookOnDataEx, hookOnDataState, hookOnClose, hookOnCloseEx)
+	if !f.hasAccept && !f.hasHeaders && !f.hasData && !f.hasDataEx && !f.hasDataState && !f.hasClose && !f.hasCloseEx {
+		return f, fmt.Errorf("plugin: module must export %s, %s, %s, %s, %s, %s or %s",
+			hookOnAccept, hookOnHeaders, hookOnData, hookOnDataEx, hookOnDataState, hookOnClose, hookOnCloseEx)
 	}
 	return f, nil
 }
@@ -394,6 +420,7 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 	inst := &instance{
 		mod:         mod,
 		onAccept:    mod.ExportedFunction(hookOnAccept),
+		onHeaders:   mod.ExportedFunction(hookOnHeaders),
 		onData:      mod.ExportedFunction(hookOnData),
 		onDataEx:    mod.ExportedFunction(hookOnDataEx),
 		onDataState: mod.ExportedFunction(hookOnDataState),
@@ -402,7 +429,7 @@ func (p *Plugin) instantiate(ctx context.Context) (*instance, error) {
 		dataCap:     ScratchCapacity,
 		stateCap:    StateCapacity,
 	}
-	if p.hasData || p.hasDataEx || p.hasDataState {
+	if p.hasHeaders || p.hasData || p.hasDataEx || p.hasDataState {
 		mem := mod.Memory()
 		if mem == nil {
 			_ = mod.Close(ctx)
@@ -509,6 +536,17 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 	if p != nil && p.hasDataState {
 		return p.OnDataState(ctx, connID, dir, payload, nil)
 	}
+	return p.onDataPlain(ctx, connID, dir, payload, false)
+}
+
+// onDataPlain invokes the stateless on_data/on_data_ex hooks, bypassing
+// on_data_state even when the module also exports it. The headers fallback uses
+// this path because headers mode does not allocate a StateBuf.
+//
+// clearScratch zeroes the complete scratch window before copying the payload.
+// It is used by headers mode to guarantee that a plugin cannot observe bytes
+// left by an earlier connection.
+func (p *Plugin) onDataPlain(ctx context.Context, connID uint64, dir int32, payload []byte, clearScratch bool) (Verdict, error) {
 	if p == nil || (!p.hasData && !p.hasDataEx) || len(payload) == 0 {
 		return VerdictAllow, nil
 	}
@@ -524,6 +562,16 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.timeout)
 		defer cancel()
+	}
+
+	if clearScratch {
+		scratch, ok := inst.mod.Memory().Read(inst.dataPtr, inst.dataCap)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
+		}
+		clear(scratch)
 	}
 
 	n := uint32(len(payload)) // #nosec G115 -- capped by inst.dataCap below
@@ -566,6 +614,77 @@ func (p *Plugin) OnDataConn(ctx context.Context, connID uint64, dir int32, paylo
 	if v != int32(VerdictDeny) {
 		// memory.grow inside on_data may have replaced the backing array, so
 		// re-read the scratch region instead of using the stale dst slice.
+		fresh, ok := inst.mod.Memory().Read(inst.dataPtr, n)
+		if !ok {
+			p.discarded.Add(1)
+			_ = inst.mod.Close(context.Background())
+			return VerdictDeny, errors.New("plugin: scratch memory out of bounds after hook")
+		}
+		copy(payload[:n], fresh)
+	}
+	p.pool.Put(inst)
+	return Verdict(v), nil
+}
+
+// OnHeaders invokes the optional on_headers(conn_id, ptr, len) hook with one
+// complete HTTP/1 request header block. Modules without on_headers fall back to
+// the stateless on_data/on_data_ex hooks (dir=0), so an existing plugin can be
+// used in headers mode without rebuilding.
+//
+// The host guarantees that payload is at most ScratchCapacity bytes and that the
+// full scratch window is zeroed first; a plugin therefore cannot observe bytes
+// from a previous connection.
+func (p *Plugin) OnHeaders(ctx context.Context, connID uint64, payload []byte) (Verdict, error) {
+	if p == nil {
+		return VerdictAllow, nil
+	}
+	if !p.hasHeaders {
+		return p.onDataPlain(ctx, connID, 0, payload, true)
+	}
+	if len(payload) == 0 {
+		return VerdictAllow, nil
+	}
+	if len(payload) > ScratchCapacity {
+		return VerdictDeny, fmt.Errorf("plugin: header block is %d bytes, scratch is %d", len(payload), ScratchCapacity)
+	}
+	inst, ok := p.pool.Get().(*instance)
+	if !ok || inst == nil {
+		return VerdictDeny, fmt.Errorf("plugin: instantiate failed: %v", p.initError())
+	}
+
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+
+	scratch, ok := inst.mod.Memory().Read(inst.dataPtr, inst.dataCap)
+	if !ok {
+		p.discarded.Add(1)
+		_ = inst.mod.Close(context.Background())
+		return VerdictDeny, errors.New("plugin: scratch memory out of bounds")
+	}
+	clear(scratch)
+	n := uint32(len(payload)) // #nosec G115 -- bounded by ScratchCapacity above
+	copy(scratch[:n], payload)
+
+	inst.stack[0] = connID
+	inst.stack[1] = uint64(inst.dataPtr)
+	inst.stack[2] = uint64(n)
+	if err := inst.onHeaders.CallWithStack(ctx, inst.stack[:3]); err != nil {
+		p.discarded.Add(1)
+		_ = inst.mod.Close(context.Background())
+		return VerdictDeny, err
+	}
+
+	v := int32(uint32(inst.stack[0])) // #nosec G115 -- strict i32 ABI: 0=allow, 1=deny, >=2=route_pools[v-2]
+	if v < int32(VerdictAllow) {
+		p.pool.Put(inst)
+		return VerdictDeny, nil
+	}
+	if v != int32(VerdictDeny) {
+		// memory.grow inside on_headers may have replaced the backing array, so
+		// re-read the scratch region instead of using the stale slice.
 		fresh, ok := inst.mod.Memory().Read(inst.dataPtr, n)
 		if !ok {
 			p.discarded.Add(1)

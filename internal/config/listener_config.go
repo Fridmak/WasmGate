@@ -25,7 +25,23 @@ const (
 	// DefaultTLSHandshakeTimeout bounds the TLS handshake when tls is enabled.
 	// It costs one deadline on the accepted socket and does not affect plain TCP.
 	DefaultTLSHandshakeTimeout = 10 * time.Second
+
+	// DefaultMaxHeaderBytes bounds the HTTP/1 request header block inspected by
+	// data_mode: headers. The underlying peek buffer is 5 + 16 KiB, so a larger
+	// block cannot be replayed without a different buffer policy.
+	DefaultMaxHeaderBytes = 16 * 1024
+
+	// MaxHeaderBytesLimit is the hard ceiling imposed by the peek buffer.
+	MaxHeaderBytesLimit = 5 + 16*1024
+
+	// DefaultInspectTimeout bounds all reads that make up one header block.
+	// It is a total deadline, not a per-read deadline.
+	DefaultInspectTimeout = 3 * time.Second
 )
+
+// DataModeHeaders is the plugin.data_mode value that inspects one complete
+// HTTP/1 request header block before dialing the upstream.
+const DataModeHeaders = "headers"
 
 // ListenerConfig describes a single front-facing TCP listener.
 type ListenerConfig struct {
@@ -62,7 +78,9 @@ type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
 	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = no per-call timer
-	DataMode       string        `yaml:"data_mode"`        // L7 on_data mode: ""/"once" (first packet, preserves splice) or "stream" (every chunk)
+	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk)
+	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
+	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
 	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
 	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
 }
@@ -182,8 +200,30 @@ func (l *ListenerConfig) Validate() error {
 	}
 	switch l.Plugin.DataMode {
 	case "", "once", "stream":
+	case DataModeHeaders:
+		if !l.Plugin.Enabled() {
+			return errors.New("plugin.data_mode headers requires a plugin")
+		}
+		if l.Plugin.Timeout <= 0 {
+			return errors.New("plugin.timeout must be greater than zero when plugin.data_mode is headers")
+		}
+		if len(l.SNIRoutes) > 0 && !l.TLS.Enabled() {
+			return errors.New("plugin.data_mode headers cannot inspect TLS passthrough traffic; remove sni_routes or enable TLS termination")
+		}
 	default:
-		return fmt.Errorf("unknown plugin.data_mode %q (want once or stream)", l.Plugin.DataMode)
+		return fmt.Errorf("unknown plugin.data_mode %q (want once, headers or stream)", l.Plugin.DataMode)
+	}
+	if l.Plugin.MaxHeaderBytes == 0 {
+		l.Plugin.MaxHeaderBytes = DefaultMaxHeaderBytes
+	}
+	if l.Plugin.MaxHeaderBytes < 1 || l.Plugin.MaxHeaderBytes > MaxHeaderBytesLimit {
+		return fmt.Errorf("plugin.max_header_bytes must be between 1 and %d", MaxHeaderBytesLimit)
+	}
+	if l.Plugin.InspectTimeout == 0 {
+		l.Plugin.InspectTimeout = DefaultInspectTimeout
+	}
+	if l.Plugin.InspectTimeout < 0 {
+		return errors.New("plugin.inspect_timeout cannot be negative")
 	}
 	if l.TLS.Enabled() {
 		hasFiles := l.TLS.CertFile != "" && l.TLS.KeyFile != ""

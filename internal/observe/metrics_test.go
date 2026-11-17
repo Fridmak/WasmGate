@@ -51,6 +51,7 @@ func TestMetricsNilSafe(t *testing.T) {
 	m.RejectRate()
 	m.RejectPlugin()
 	m.PluginDiscard()
+	m.HeaderIncomplete()
 	m.DialFail()
 	m.UpstreamRetry()
 	m.AddBytes(1)
@@ -106,6 +107,19 @@ func TestWritePrometheusEscapesLabel(t *testing.T) {
 	want := `wasmgate_upstream_active{server="a\"b\\c\nd:1"} 1`
 	if !strings.Contains(buf.String(), want) {
 		t.Fatalf("label not escaped once: want %s in\n%s", want, buf.String())
+	}
+}
+
+func TestMetricsHeaderIncomplete(t *testing.T) {
+	m := NewMetrics()
+	m.HeaderIncomplete()
+	if s := m.Snapshot(); s.HeaderIncomplete != 1 {
+		t.Fatalf("HeaderIncomplete = %d, want 1", s.HeaderIncomplete)
+	}
+	var buf bytes.Buffer
+	m.WritePrometheus(&buf, nil)
+	if !strings.Contains(buf.String(), "wasmgate_plugin_header_incomplete_total 1") {
+		t.Fatalf("counter missing from\n%s", buf.String())
 	}
 }
 

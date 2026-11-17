@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"wasmgate/internal/config"
 	"wasmgate/internal/observe"
 	"wasmgate/internal/plugin"
 	"wasmgate/internal/tlspeek"
@@ -163,16 +164,70 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 		}
 	}
 
-	// L7 first-packet inspection ("once" mode, the default when on_data is
-	// exported): inspect (and optionally mutate or route) the initial client
-	// request in the WASM sandbox BEFORE dialing the upstream, then DrainTo
-	// replays the packet and hands the raw socket back to splice(2) for the
-	// rest of the connection.
+	// L7 inspection before dialing. Headers mode gathers one complete HTTP/1
+	// request header block; once mode inspects the first client read; stream
+	// mode keeps inspecting every chunk after the dial. Headers and once replay
+	// the peeked bytes and hand the raw socket back to splice(2).
 	var streamPlugin *plugin.Plugin
-	if rl.plugin != nil && rl.plugin.HasData() {
-		if rl.cfg.Plugin.DataMode == "stream" {
+	if rl.plugin != nil {
+		switch rl.cfg.Plugin.DataMode {
+		case config.DataModeHeaders:
+			if !rl.plugin.CanInspectHeaders() {
+				p.log.Error("plugin cannot inspect headers", "listener", listenerName)
+				return
+			}
+			_, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
+			if err != nil {
+				return
+			}
+			pc, ok := wrapped.(*tlspeek.Conn)
+			if !ok {
+				p.log.Error("headers mode: peek did not return a buffered connection", "listener", listenerName)
+				return
+			}
+			client = pc
+			_, headers, err := readHeaderBlock(pc, rl.cfg.Plugin.MaxHeaderBytes, rl.cfg.Plugin.InspectTimeout)
+			if err != nil {
+				p.metrics.HeaderIncomplete()
+				if ok, dropped := p.sampler.Allow("headers:" + listenerName); ok {
+					p.log.Warn("request header block rejected",
+						"listener", listenerName,
+						"err", err,
+						"suppressed", dropped,
+					)
+				}
+				return
+			}
+			verdict, err := rl.plugin.OnHeaders(ctx, connID, headers)
+			if err != nil {
+				p.metrics.PluginDiscard()
+			}
+			if err != nil || verdict == plugin.VerdictDeny {
+				p.metrics.RejectPlugin()
+				if ok, dropped := p.sampler.Allow("headers_plugin:" + listenerName); ok {
+					p.log.Warn("request headers rejected by wasm on_headers hook",
+						"listener", listenerName,
+						"err", err,
+						"suppressed", dropped,
+					)
+				}
+				return
+			}
+			if routed, ok := selectRoutePool(rl, verdict); !ok {
+				p.metrics.RejectPlugin()
+				p.log.Warn("wasm on_headers selected an unknown route pool", "listener", listenerName, "verdict", verdict)
+				return
+			} else if routed != nil {
+				targetPool = routed
+			}
+
+		case "stream":
 			streamPlugin = rl.plugin
-		} else {
+
+		default:
+			if !rl.plugin.HasData() {
+				break
+			}
 			chunk, wrapped, err := tlspeek.PeekChunk(client, rl.cfg.DialTimeout)
 			if err != nil {
 				return
@@ -193,14 +248,12 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 				}
 				return
 			}
-			if verdict >= plugin.Verdict(2) {
-				idx := int(verdict) - 2
-				if idx < 0 || idx >= len(rl.routePools) || rl.routePools[idx] == nil {
-					p.metrics.RejectPlugin()
-					p.log.Warn("wasm on_data selected an unknown route pool", "listener", listenerName, "verdict", verdict)
-					return
-				}
-				targetPool = rl.routePools[idx]
+			if routed, ok := selectRoutePool(rl, verdict); !ok {
+				p.metrics.RejectPlugin()
+				p.log.Warn("wasm on_data selected an unknown route pool", "listener", listenerName, "verdict", verdict)
+				return
+			} else if routed != nil {
+				targetPool = routed
 			}
 		}
 	}
@@ -258,6 +311,19 @@ func (p *Proxy) Handle(ctx context.Context, listenerName string, client net.Conn
 			p.metrics.PluginDiscard()
 		}
 	}
+}
+
+// selectRoutePool maps a plugin verdict to route_pools. It returns (nil, true)
+// for allow/deny and (nil, false) for an invalid route index.
+func selectRoutePool(rl resolvedListener, verdict plugin.Verdict) (*pool, bool) {
+	if verdict < plugin.Verdict(2) {
+		return nil, true
+	}
+	idx := int(verdict) - 2
+	if idx < 0 || idx >= len(rl.routePools) || rl.routePools[idx] == nil {
+		return nil, false
+	}
+	return rl.routePools[idx], true
 }
 
 func (p *Proxy) dialWithRetry(ctx context.Context, listenerName string, targetPool *pool, timeout time.Duration) (*upstream, net.Conn, bool) {

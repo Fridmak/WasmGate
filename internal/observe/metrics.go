@@ -33,16 +33,17 @@ type Metrics struct {
 	startedAt    time.Time
 	buildVersion atomic.Pointer[string]
 
-	accepted        atomic.Int64 // total client connections accepted
-	closed          atomic.Int64 // total connection handlers finished
-	active          atomic.Int64 // connections currently being proxied
-	rejectedLimit   atomic.Int64 // connections refused by max_conns
-	rejectedRate    atomic.Int64 // connections refused by per-IP rate_limit
-	rejectedPlugin  atomic.Int64 // connections refused by a WASM on_accept/on_data plugin
-	pluginDiscarded atomic.Int64 // WASM instances destroyed after a trap or timeout
-	dialFailed      atomic.Int64 // upstream dials that failed
-	upstreamRetries atomic.Int64 // upstream dial retries onto another server in the pool
-	bytes           atomic.Int64 // bytes relayed, both directions combined
+	accepted         atomic.Int64 // total client connections accepted
+	closed           atomic.Int64 // total connection handlers finished
+	active           atomic.Int64 // connections currently being proxied
+	rejectedLimit    atomic.Int64 // connections refused by max_conns
+	rejectedRate     atomic.Int64 // connections refused by per-IP rate_limit
+	rejectedPlugin   atomic.Int64 // connections refused by a WASM on_accept/on_data plugin
+	pluginDiscarded  atomic.Int64 // WASM instances destroyed after a trap or timeout
+	headerIncomplete atomic.Int64 // headers mode: incomplete/oversized/HTTP-2 header blocks
+	dialFailed       atomic.Int64 // upstream dials that failed
+	upstreamRetries  atomic.Int64 // upstream dial retries onto another server in the pool
+	bytes            atomic.Int64 // bytes relayed, both directions combined
 
 	reloads       atomic.Uint64 // successful configuration reloads
 	configVersion atomic.Uint64 // version of the current configuration snapshot
@@ -119,6 +120,15 @@ func (m *Metrics) PluginDiscard() {
 	m.pluginDiscarded.Add(1)
 }
 
+// HeaderIncomplete records one headers-mode request whose header block could
+// not be read completely: timeout, EOF, size limit or HTTP/2 preface.
+func (m *Metrics) HeaderIncomplete() {
+	if m == nil {
+		return
+	}
+	m.headerIncomplete.Add(1)
+}
+
 // DialFail records a failed dial to an upstream.
 func (m *Metrics) DialFail() {
 	if m == nil {
@@ -174,6 +184,7 @@ type MetricsSnapshot struct {
 	ConnectionsRateRejected   int64
 	ConnectionsPluginRejected int64
 	PluginInstancesDiscarded  int64
+	HeaderIncomplete          int64
 	UpstreamDialFailures      int64
 	UpstreamRetries           int64
 	RelayedBytes              int64
@@ -195,6 +206,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ConnectionsRateRejected:   m.rejectedRate.Load(),
 		ConnectionsPluginRejected: m.rejectedPlugin.Load(),
 		PluginInstancesDiscarded:  m.pluginDiscarded.Load(),
+		HeaderIncomplete:          m.headerIncomplete.Load(),
 		UpstreamDialFailures:      m.dialFailed.Load(),
 		UpstreamRetries:           m.upstreamRetries.Load(),
 		RelayedBytes:              m.bytes.Load(),
@@ -235,6 +247,7 @@ func (m *Metrics) WritePrometheus(w io.Writer, upstreams []UpstreamStat) {
 	counter("wasmgate_connections_rate_rejected_total", "Connections refused by the per-IP rate or concurrency limiter.", s.ConnectionsRateRejected)
 	counter("wasmgate_connections_plugin_rejected_total", "Connections refused by a WASM plugin hook.", s.ConnectionsPluginRejected)
 	counter("wasmgate_plugin_instances_discarded_total", "WASM instances destroyed after a trap or timeout.", s.PluginInstancesDiscarded)
+	counter("wasmgate_plugin_header_incomplete_total", "Headers-mode requests rejected before dial (incomplete, oversized or HTTP/2).", s.HeaderIncomplete)
 	counter("wasmgate_upstream_dial_failures_total", "Upstream dials that failed.", s.UpstreamDialFailures)
 	counter("wasmgate_upstream_retries_total", "Transparent upstream dial retries across pool servers.", s.UpstreamRetries)
 	counter("wasmgate_relayed_bytes_total", "Bytes relayed in both directions.", s.RelayedBytes)

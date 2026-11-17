@@ -46,6 +46,28 @@ func (c *Conn) Bytes() []byte {
 	return c.data
 }
 
+// Fill reads more bytes into the existing peek buffer, up to its capacity. It
+// never consumes the prefix returned by Bytes; callers that need the bytes
+// can keep using that slice until DrainTo. Fill and Read must not be mixed on
+// the same connection: Read consumes the prefix, Fill appends to it.
+//
+// A return of (0, nil) means the buffer is already full. A released buffer (after
+// DrainTo or Close) returns net.ErrClosed.
+func (c *Conn) Fill() (int, error) {
+	if c.buf == nil {
+		return 0, net.ErrClosed
+	}
+	free := cap(c.data) - len(c.data)
+	if free <= 0 {
+		return 0, nil
+	}
+	n, err := c.Conn.Read(c.data[len(c.data):cap(c.data)])
+	if n > 0 {
+		c.data = c.data[:len(c.data)+n]
+	}
+	return n, err
+}
+
 // Read serves any remaining peeked bytes before reading from the underlying conn.
 func (c *Conn) Read(p []byte) (int, error) {
 	if len(c.data) > 0 {
