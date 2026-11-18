@@ -25,6 +25,7 @@ services:
       WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
       WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"
       WASMGATE_CP_GRPC_LISTEN: "https://0.0.0.0:9096"
+      WASMGATE_CP_HTTP_LISTEN: "http://0.0.0.0:9097"
       WASMGATE_CP_GRPC_TLS_CERT: "/certs/server.crt"
       WASMGATE_CP_GRPC_TLS_KEY: "/certs/server.key"
       WASMGATE_CP_GRPC_CLIENT_CA: "/data/ca/agents-ca.crt"

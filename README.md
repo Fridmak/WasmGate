@@ -56,6 +56,14 @@ absolute MB/s are not comparable with bare metal. Reproduce with `make bench` or
 see [benchmarks](docs/en/benchmarks.md) for methodology, raw output and the
 Windows comparison.
 
+## Releases
+
+Tagged releases are published on the repository's **Releases** page. A release
+contains prebuilt data-plane archives (Linux amd64/arm64, Windows amd64), a
+self-contained Native AOT control-plane archive for Linux amd64, Docker images,
+`SHA256SUMS` and copy-paste start commands. Start with the release notes; the
+full deployment guide is in [docs/en/deployment.md](docs/en/deployment.md).
+
 ## Quick start
 
 ```bash

@@ -24,6 +24,38 @@ Always validate before shipping:
 and exits non-zero on any problem. Runtime secrets such as
 `WASMGATE_ADMIN_TOKEN` are not required for validation.
 
+## Releases
+
+Official builds are published from SemVer tags (`vMAJOR.MINOR.PATCH`) on the
+repository's **Releases** page. Use `v0.1.0` for the first release, `v0.1.1` for a
+patch, `v0.2.0` for the next feature release, and `v0.2.0-rc.1` for a release
+candidate. Each release contains:
+
+- data-plane archives for Linux amd64, Linux arm64 and Windows amd64;
+- a self-contained Native AOT control-plane archive for Linux amd64, including
+  the `wasmgate` validator used by the control plane;
+- Docker images `ghcr.io/<owner>/wasmgate:<tag>` and
+  `ghcr.io/<owner>/wasmgate-control:<tag>`;
+- an example `configs/wasmgate.yaml` inside each archive;
+- `SHA256SUMS` and copy-paste start commands in the release notes.
+
+The control-plane archive does not need the .NET runtime. Extract it, set
+`WASMGATE_CP_WASMGATE_BIN` to the bundled `wasmgate`, and start
+`wasmgate-control`. The archive targets glibc x86_64 (built on Ubuntu 22.04,
+glibc 2.35+); on Alpine or another musl-based host use the container image. For a
+one-machine development setup, set `WASMGATE_CP_LOCAL=true`; for a fleet, follow
+the TLS/mTLS enrollment flow.
+
+To cut a release, merge the changes to `stable`, create a SemVer tag and push it:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow runs the Go/.NET tests, builds every archive and image, and
+publishes the GitHub release. It also accepts a manual re-run of an existing tag.
+
 ## File layout
 
 ```

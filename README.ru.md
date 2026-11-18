@@ -57,6 +57,14 @@ WSL2 — это настоящее ядро Linux, поэтому `splice(2)` и
 `make bench`; методика, сырой вывод и сравнение с Windows — в
 [бенчмарках](docs/ru/benchmarks.md).
 
+## Релизы
+
+Релизы по тегам публикуются на странице **Releases** репозитория. В релизе:
+готовые архивы data plane (Linux amd64/arm64, Windows amd64), self-contained
+Native AOT архив control plane для Linux amd64, Docker-образы, `SHA256SUMS` и
+готовые команды запуска. Начните с описания релиза; полное руководство — в
+[docs/ru/deployment.md](docs/ru/deployment.md).
+
 ## Быстрый старт
 
 ```bash

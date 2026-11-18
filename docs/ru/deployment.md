@@ -24,6 +24,38 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 завершается с ошибкой при любой проблеме. Runtime-секреты вроде
 `WASMGATE_ADMIN_TOKEN` для валидации не нужны.
 
+## Релизы
+
+Официальные сборки публикуются по SemVer-тегам (`vMAJOR.MINOR.PATCH`) на
+странице **Releases** репозитория. Первый релиз — `v0.1.0`, патч — `v0.1.1`,
+следующий функциональный — `v0.2.0`, кандидат — `v0.2.0-rc.1`. В релиз входят:
+
+- архивы data plane для Linux amd64, Linux arm64 и Windows amd64;
+- self-contained Native AOT архив control plane для Linux amd64 вместе с
+  валидатором `wasmgate`;
+- Docker-образы `ghcr.io/<owner>/wasmgate:<tag>` и
+  `ghcr.io/<owner>/wasmgate-control:<tag>`;
+- пример `configs/wasmgate.yaml` внутри каждого архива;
+- `SHA256SUMS` и готовые команды запуска в описании релиза.
+
+Control-plane архиву не нужен .NET runtime. Распакуйте его, укажите
+`WASMGATE_CP_WASMGATE_BIN` на вложенный `wasmgate` и запустите
+`wasmgate-control`. Архив рассчитан на glibc x86_64 (собран на Ubuntu 22.04,
+glibc 2.35+); на Alpine или другом musl-хосте используйте контейнерный образ.
+Для локального стенда на одной машине включите `WASMGATE_CP_LOCAL=true`; для
+парка используйте TLS/mTLS и enrollment.
+
+Чтобы выпустить релиз, влейте изменения в `stable`, создайте SemVer-тег и
+запушьте его:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Release workflow прогонит Go/.NET тесты, соберёт все архивы и образы и
+опубликует GitHub release. Существующий тег можно перезапустить вручную.
+
 ## Раскладка файлов
 
 ```

@@ -1,0 +1,369 @@
+name: Release
+
+# A release is cut by pushing a SemVer tag:
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# The workflow publishes prebuilt data-plane archives, a Native AOT control-plane
+# bundle, Docker images and SHA256SUMS. workflow_dispatch can re-run an existing
+# tag without moving it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  DOTNET_VERSION: "10.0.404"
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Check SemVer tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::VERSION must look like v0.1.0 or v0.1.0-rc.1; got '$VERSION'"
+            exit 1
+          fi
+
+  verify:
+    name: Go and .NET tests
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Go format, vet and tests
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: .NET build, format and tests
+        run: |
+          dotnet build control-plane/WasmGate.Control.sln -c Release
+          dotnet format control-plane/WasmGate.Control.sln --verify-no-changes --no-restore
+          dotnet test control-plane/WasmGate.Control.sln -c Release --no-build --no-restore
+
+  data-plane:
+    name: Data plane (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [validate, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            extension: ""
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            extension: ""
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            extension: ".exe"
+            archive: zip
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="wasmgate-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "dist/pkg/${pkg}/configs"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "dist/pkg/${pkg}/wasmgate${{ matrix.extension }}" \
+              ./cmd/wasmgate
+          cp LICENSE "dist/pkg/${pkg}/"
+          cp configs/wasmgate.yaml "dist/pkg/${pkg}/configs/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd dist/pkg && zip -qr "../${pkg}.zip" "$pkg")
+          else
+            tar -C dist/pkg -czf "dist/${pkg}.tar.gz" "$pkg"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-plane-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/wasmgate-*
+          if-no-files-found: error
+          retention-days: 7
+
+  control-plane:
+    name: Control plane (Native AOT, linux/amd64)
+    needs: [validate, verify]
+    # Build against an older glibc so the precompiled binary runs on more
+    # distributions than the current ubuntu-latest image.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install Native AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="wasmgate-control-${VERSION}-linux-amd64"
+          mkdir -p "dist/pkg/${pkg}"
+          dotnet publish control-plane/src/WasmGate.Control.Api \
+            -c Release -r linux-x64 --self-contained \
+            -p:PublishAot=true \
+            -p:StripSymbols=true \
+            -p:DebugType=None \
+            -p:Version="${VERSION#v}" \
+            -p:InformationalVersion="${VERSION}" \
+            -o "dist/pkg/${pkg}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "dist/pkg/${pkg}/wasmgate" \
+              ./cmd/wasmgate
+          cp LICENSE "dist/pkg/${pkg}/"
+          cp configs/wasmgate.yaml "dist/pkg/${pkg}/"
+          test -x "dist/pkg/${pkg}/wasmgate-control"
+          tar -C dist/pkg -czf "dist/${pkg}.tar.gz" "$pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-linux-amd64
+          path: dist/wasmgate-control-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  docker:
+    name: Container images
+    needs: [validate, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase image owner
+        id: owner
+        shell: bash
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "OWNER=$owner" >> "$GITHUB_ENV"
+
+      - name: Build and push data plane
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deployments/docker/data-plane.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate:${{ env.VERSION }}
+
+      - name: Build and push control plane
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deployments/docker/control-plane.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate-control:${{ env.VERSION }}
+
+      - name: Point latest at the stable release
+        if: ${{ !contains(env.VERSION, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "ghcr.io/${OWNER}/wasmgate:latest" \
+            "ghcr.io/${OWNER}/wasmgate:${VERSION}"
+          docker buildx imagetools create \
+            --tag "ghcr.io/${OWNER}/wasmgate-control:latest" \
+            "ghcr.io/${OWNER}/wasmgate-control:${VERSION}"
+
+  publish:
+    name: Publish GitHub release
+    needs: [verify, data-plane, control-plane, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          ls -lh
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          # WasmGate __VERSION__
+
+          ## Downloads
+
+          | Component | Platform | Asset |
+          |---|---|---|
+          | Data plane | Linux amd64 | `wasmgate-__VERSION__-linux-amd64.tar.gz` |
+          | Data plane | Linux arm64 | `wasmgate-__VERSION__-linux-arm64.tar.gz` |
+          | Data plane | Windows amd64 | `wasmgate-__VERSION__-windows-amd64.zip` |
+          | Control plane | Linux amd64, Native AOT | `wasmgate-control-__VERSION__-linux-amd64.tar.gz` |
+
+          Every archive contains the binary, `LICENSE`, and an example
+          `configs/wasmgate.yaml`. The control-plane archive also contains the
+          `wasmgate` validator binary used when publishing releases.
+
+          ## Data plane
+
+          ```bash
+          tar -xzf wasmgate-__VERSION__-linux-amd64.tar.gz
+          cd wasmgate-__VERSION__-linux-amd64
+          ./wasmgate -version
+          ./wasmgate -config configs/wasmgate.yaml -validate
+          ./wasmgate -config configs/wasmgate.yaml
+          ```
+
+          ## Control plane
+
+          The archive is a self-contained Native AOT build; the .NET runtime is not
+          required on the host. It targets glibc x86_64 (built on Ubuntu 22.04, glibc
+          2.35+); use the container image on Alpine or another musl-based host.
+
+          ```bash
+          tar -xzf wasmgate-control-__VERSION__-linux-amd64.tar.gz
+          cd wasmgate-control-__VERSION__-linux-amd64
+          export WASMGATE_CP_SQLITE_PATH="$PWD/data/control.db"
+          export WASMGATE_CP_GRPC_LISTEN="http://127.0.0.1:9096"
+          export WASMGATE_CP_HTTP_LISTEN="http://127.0.0.1:9097"
+          export WASMGATE_CP_WASMGATE_BIN="$PWD/wasmgate"
+          ./wasmgate-control
+          # Admin UI: http://127.0.0.1:9097/
+          ```
+
+          For a non-loopback admin listener set `WASMGATE_CP_ADMIN_TOKEN`. For a
+          one-machine development setup, add `WASMGATE_CP_LOCAL=true` and start the
+          data plane with `-cp-local -cp http://127.0.0.1:9096`. Local mode trusts
+          every local process; use it only on a single-user host.
+
+          ## Container images
+
+          ```bash
+          # Only needed if the GHCR package is private.
+          docker login ghcr.io
+
+          docker pull ghcr.io/__OWNER__/wasmgate:__VERSION__
+
+          # Single-host local mode. On Linux, host networking keeps the listeners
+          # on loopback and persists SQLite, keys and artifacts in a named volume.
+          docker run --rm --network host \
+            -v wasmgate-cp:/data \
+            -e WASMGATE_CP_LOCAL=true \
+            -e WASMGATE_CP_SQLITE_PATH=/data/control.db \
+            -e WASMGATE_CP_SIGNING_KEY=/data/keys/release-signing.key \
+            -e WASMGATE_CP_ARTIFACT_ROOT=/data/artifacts \
+            -e WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097 \
+            -e WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:9096 \
+            ghcr.io/__OWNER__/wasmgate-control:__VERSION__
+          # Admin UI: http://127.0.0.1:9097/
+          ```
+
+          For a fleet, use the TLS/mTLS compose scenario and set
+          `WASMGATE_CP_ADMIN_TOKEN`; the image is built from source in Docker, so
+          no local .NET SDK is needed.
+
+          ## Verify
+
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+          EOF
+          sed -i "s/__VERSION__/${VERSION}/g; s/__OWNER__/${GITHUB_REPOSITORY_OWNER,,}/g" release-notes.md
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/* --clobber
+            gh release edit "$VERSION" \
+              --title "WasmGate $VERSION" \
+              --notes-file release-notes.md
+          else
+            gh release create "$VERSION" dist/* \
+              --title "WasmGate $VERSION" \
+              --notes-file release-notes.md
+          fi
