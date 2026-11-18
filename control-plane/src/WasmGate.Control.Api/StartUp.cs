@@ -52,6 +52,7 @@ public static class StartUp
             return new ControlPlaneOptions
             {
                 SqlitePath = Env("WASMGATE_CP_SQLITE_PATH") ?? "data/control.db",
+                Local = EnvBool("WASMGATE_CP_LOCAL", false),
                 GrpcListen = Env("WASMGATE_CP_GRPC_LISTEN") ?? "http://127.0.0.1:9096",
                 HttpListen = Env("WASMGATE_CP_HTTP_LISTEN") ?? "http://127.0.0.1:9097",
                 ArtifactRoot = Env("WASMGATE_CP_ARTIFACT_ROOT") ?? "data/artifacts",

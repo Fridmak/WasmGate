@@ -468,6 +468,16 @@ async function viewDashboard() {
     </div>
 
     <div class="panel">
+      <div class="panel-head"><h2>Maintenance</h2><div class="spacer"></div>
+        <button class="btn small" data-action="backup-download" type="button">Download SQLite backup</button></div>
+      <div class="panel-body">
+        <p class="muted">Creates a consistent snapshot with SQLite <code>VACUUM INTO</code>
+          and downloads it. The snapshot contains token hashes, certificates and
+          configuration documents; store it like the rest of the control-plane data.</p>
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><h2>Recent deployments</h2><div class="spacer"></div>
         <button class="btn small" data-view="deployments" type="button">Open</button></div>
       <div class="panel-body flush">
@@ -838,6 +848,37 @@ async function resolveEnvironment(select, input) {
 }
 
 const ACTIONS = {
+  async 'backup-download'() {
+    const response = await fetch('/api/v1/backup', {
+      method: 'POST',
+      headers: authHeaders(false),
+    });
+
+    if (response.status === 401) {
+      showUnauthorized();
+      throw new Error('Unauthorized: set the admin token');
+    }
+
+    if (!response.ok) {
+      const text = (await response.text()).trim();
+      throw new Error(text || `HTTP ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = match ? match[1] : 'wasmgate-control.db';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Backup downloaded', 'ok');
+  },
+
   async 'agent-new'() {
     const environments = await ensureEnvironments();
     showModal('New agent', `

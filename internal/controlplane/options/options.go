@@ -74,6 +74,11 @@ type Options struct {
 	RenewBefore time.Duration
 	// Insecure allows a plaintext http:// endpoint.
 	Insecure bool
+	// Local enables trusted loopback mode: no enrollment token, no client
+	// certificate and no separate release key are required. It is accepted only
+	// for an http:// loopback endpoint; the control plane must run with
+	// WASMGATE_CP_LOCAL=true or on its default loopback plaintext listener.
+	Local bool
 	// ReconnectMin and ReconnectMax bound the exponential reconnect backoff.
 	ReconnectMin time.Duration
 	ReconnectMax time.Duration
@@ -92,8 +97,24 @@ func buildVersion() string {
 
 // Normalize applies defaults and validates required fields.
 func (o *Options) Normalize() error {
+	if strings.TrimSpace(o.Endpoint) == "" && o.Local {
+		o.Endpoint = "http://127.0.0.1:9096"
+	}
 	if strings.TrimSpace(o.Endpoint) == "" {
 		return errors.New("control plane: endpoint is required")
+	}
+
+	if o.Local {
+		if !strings.HasPrefix(strings.ToLower(o.Endpoint), "http://") {
+			return errors.New("control plane: local mode requires an http:// loopback endpoint")
+		}
+		if strings.TrimSpace(o.EnrollToken) != "" {
+			return errors.New("control plane: local mode does not use an enrollment token")
+		}
+		if strings.TrimSpace(o.ServerCA) != "" {
+			return errors.New("control plane: local mode does not use a server CA")
+		}
+		o.Insecure = true
 	}
 
 	u, err := url.Parse(o.Endpoint)
@@ -126,7 +147,7 @@ func (o *Options) Normalize() error {
 		return errors.New("control plane: config path is required")
 	}
 
-	if strings.TrimSpace(o.ReleaseKey) == "" {
+	if !o.Local && strings.TrimSpace(o.ReleaseKey) == "" {
 		return errors.New(
 			"control plane: release key is required; pass the control-plane public key " +
 				"(release-signing.key.pub) so release signatures can be verified")

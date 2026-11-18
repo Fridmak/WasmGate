@@ -64,6 +64,54 @@ configuration versions, releases, deployments with rollback and the audit trail.
 The token is kept in `sessionStorage`. The environment picker in the top bar
 switches every screen; it also creates new environments.
 
+## Local mode (one machine, no certificates)
+
+When the control plane and data plane run on the same host, no TLS certificate,
+agent certificate, enrollment token or release key is needed. Start the control
+plane with local mode enabled:
+
+```bash
+WASMGATE_CP_LOCAL=true \
+WASMGATE_CP_SQLITE_PATH=/var/lib/wasmgate-control/control.db \
+WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:9096 \
+WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097 \
+wasmgate-control
+```
+
+Then start the data plane with `-cp-local`:
+
+```bash
+wasmgate -config /etc/wasmgate/wasmgate.yaml \
+  -cp-local -cp http://127.0.0.1:9096 \
+  -cp-state /var/lib/wasmgate/agent
+```
+
+Local mode is deliberately narrow:
+
+- only loopback or Unix-socket listeners are accepted;
+- enrollment and certificate renewal are disabled, so no agent CA is created;
+- the release manifest is still parsed and matched, but its signature is not
+  verified because no release key is configured;
+- the data plane stores only `agent.id` and applied-release state; there is no
+  `agent.key`, `agent.crt` or CA file;
+- the admin token remains optional on loopback, as usual.
+
+Use it for a single-host demo or development. A fleet that crosses machine
+boundaries must use TLS/mTLS and enrollment tokens.
+
+## Backup
+
+The dashboard's **Maintenance** panel has **Download SQLite backup**, which calls
+`POST /api/v1/backup`. The control plane runs `VACUUM INTO`, streams the snapshot
+and deletes the temporary file. The same operation is available from a shell:
+
+```bash
+wasmgate-control --backup /var/backups/wasmgate/control.db
+```
+
+The snapshot contains token hashes, certificates and configuration documents;
+protect it like the live database.
+
 ## Environments
 
 An environment is a hard deployment scope, not a label. Every agent belongs to
@@ -223,6 +271,7 @@ reconnect with exponential backoff (1→30 s).
 
 | Variable | Default |
 |---|---|
+| `WASMGATE_CP_LOCAL` | `false`; loopback plaintext, no enrollment/certificates |
 | `WASMGATE_CP_SQLITE_PATH` | `data/control.db` |
 | `WASMGATE_CP_GRPC_LISTEN` | `http://127.0.0.1:9096` |
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |

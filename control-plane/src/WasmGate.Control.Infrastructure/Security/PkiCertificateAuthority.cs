@@ -45,11 +45,20 @@ public sealed class PkiCertificateAuthority : ICertificateAuthority
         }
     }
 
-    /// <summary>Creates the authority and ensures the CA key pair exists.</summary>
+    /// <summary>
+    /// Creates the authority and ensures the CA exists when Kestrel needs it for
+    /// client-certificate validation.
+    /// </summary>
     public PkiCertificateAuthority(ControlPlaneOptions options)
     {
         _options = options;
-        _ = CaCertificate;
+        if (options.GrpcTls.IsConfigured && options.GrpcTls.RequireClientCertificate)
+        {
+            // Kestrel loads ClientCaPath while building the server, so the CA
+            // must exist before the endpoint is configured. Local plaintext mode
+            // never takes this path and creates no CA files.
+            _ = CaCertificate;
+        }
     }
 
     /// <inheritdoc />

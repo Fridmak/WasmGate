@@ -104,6 +104,10 @@ pools:
 и продлевают его автоматически; версии конфигурации становятся подписанными
 релизами и раскатываются волнами. На admin-порту есть встроенная панель.
 
+На одной машине `WASMGATE_CP_LOCAL=true` и `wasmgate -cp-local` полностью
+убирают TLS, сертификаты агентов и enrollment-токены: CP и DP общаются по
+loopback.
+
 ```bash
 cd control-plane
 dotnet build WasmGate.Control.sln

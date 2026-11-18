@@ -47,9 +47,13 @@ func NewAgent(opts Options, reloader Reloader, log *slog.Logger) (*Agent, error)
 	if log == nil {
 		log = slog.Default()
 	}
-	releaseKey, err := release.LoadReleaseKey(opts.ReleaseKey)
-	if err != nil {
-		return nil, err
+	var releaseKey *ecdsa.PublicKey
+	if !opts.Local || strings.TrimSpace(opts.ReleaseKey) != "" {
+		loaded, err := release.LoadReleaseKey(opts.ReleaseKey)
+		if err != nil {
+			return nil, err
+		}
+		releaseKey = loaded
 	}
 	return &Agent{opts: opts, log: log, reloader: reloader, releaseKey: releaseKey}, nil
 }
@@ -92,24 +96,33 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) runOnce(ctx context.Context, state *session.StateStore) error {
-	id, err := identity.Load(a.opts.StateDir)
-	switch {
-	case errors.Is(err, identity.ErrIncompleteIdentity):
-		a.log.Warn("incomplete agent identity, enrolling again", "state_dir", a.opts.StateDir)
-		id, err = a.enroll(ctx)
+	var id *identity.Identity
+	var err error
+	if a.opts.Local {
+		id, err = identity.EnsureLocalID(a.opts.StateDir, a.opts.AgentID)
 		if err != nil {
-			return fmt.Errorf("enrollment: %w", err)
+			return fmt.Errorf("local identity: %w", err)
 		}
-	case err != nil:
-		return err
-	case id == nil:
-		id, err = a.enroll(ctx)
-		if err != nil {
-			return fmt.Errorf("enrollment: %w", err)
+	} else {
+		id, err = identity.Load(a.opts.StateDir)
+		switch {
+		case errors.Is(err, identity.ErrIncompleteIdentity):
+			a.log.Warn("incomplete agent identity, enrolling again", "state_dir", a.opts.StateDir)
+			id, err = a.enroll(ctx)
+			if err != nil {
+				return fmt.Errorf("enrollment: %w", err)
+			}
+		case err != nil:
+			return err
+		case id == nil:
+			id, err = a.enroll(ctx)
+			if err != nil {
+				return fmt.Errorf("enrollment: %w", err)
+			}
 		}
 	}
 
-	if id != nil && !strings.HasPrefix(strings.ToLower(a.opts.Endpoint), "http://") {
+	if !a.opts.Local && id != nil && !strings.HasPrefix(strings.ToLower(a.opts.Endpoint), "http://") {
 		remaining := time.Until(id.NotAfter)
 		switch {
 		case remaining <= 0:

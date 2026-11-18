@@ -23,6 +23,16 @@ public sealed class ControlPlaneOptions
     public string SqlitePath { get; init; } = "data/control.db";
 
     /// <summary>
+    /// Trusted loopback mode for a control plane and data plane on one machine.
+    /// </summary>
+    /// <remarks>
+    /// Local mode requires plaintext loopback listeners and never issues agent
+    /// certificates. A data plane connects with <c>-cp-local</c> and no enrollment
+    /// token. Use it for a single-host demo or development, not for a fleet.
+    /// </remarks>
+    public bool Local { get; init; }
+
+    /// <summary>
     /// Agent gRPC endpoint. HTTP/2 only.
     /// </summary>
     /// <remarks>

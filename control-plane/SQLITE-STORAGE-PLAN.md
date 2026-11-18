@@ -86,10 +86,28 @@ wasmgate-control --backup /var/backups/wasmgate/control.db
 ```
 
 `VACUUM INTO` creates a consistent, compact copy while the CP is running. The
-destination must not exist. Back up the database together with the CA, signing
-key and artifacts.
+destination must not exist. The admin UI also exposes this as
+**Dashboard → Maintenance → Download SQLite backup**, which calls
+`POST /api/v1/backup` and streams the snapshot. Back up the database together
+with the CA, signing key and artifacts.
 
-## 7. Verification
+## 7. Local mode
+
+A control plane and data plane on one machine can run without any TLS or agent
+certificates, enrollment token or release key on the data plane:
+
+```text
+WASMGATE_CP_LOCAL=true          # control plane: loopback plaintext only
+wasmgate -cp-local              # data plane: loopback, no client certificate
+```
+
+Local mode disables enrollment and renewal, creates no agent CA, and the data
+plane persists only `agent.id` plus applied-release state. Release manifests are
+still parsed and matched, but not signature-verified because no release key is
+configured on the data plane; the control plane may still keep its own signing
+key for normal release creation. This is a single-host development/demo mode, not a fleet mode.
+
+## 8. Verification
 
 Environment: .NET SDK 10.0.404, runtime 10.0.15, Microsoft.Data.Sqlite 10.0.15,
 SQLite 3.53.3.
@@ -97,17 +115,19 @@ SQLite 3.53.3.
 ```text
 dotnet build -c Release                          pass, 0 warnings
 dotnet format --verify-no-changes                pass
-dotnet test                                      all pass
+dotnet test                                      106 pass
+Go tests                                        all pass
 Native AOT container + SQLite                    /readyz, agent create, restart
-compose: CP + DP + plugin deployment             Succeeded
-proxy policy after deploy                        unauthenticated denied, Basic 200
-second CP on same database                       fails with the lock message
+local mode CP + DP + all 9 example plugins      routes and guards verified, no cert/token/release-key
+compose TLS: enroll, plugin deploy, restart     mTLS session and policy survive
+backup CLI + POST /api/v1/backup                snapshot readable
+second CP on same database                      fails with the lock message
 ```
 
 The SQLite spike proves the Dapper.AOT + Microsoft.Data.Sqlite combination under
 Native AOT and in a distroless image.
 
-## 8. Known limitations
+## 9. Known limitations
 
 - Exactly one control-plane process per database file.
 - The database must live on local disk, not NFS.
@@ -116,12 +136,14 @@ Native AOT and in a distroless image.
 - If the deployment requires an external managed database, this is a deliberate
   future extension, not a supported mode today.
 
-## 9. Completed phases
+## 10. Completed phases
 
 - [x] Storage abstraction and SQLite connection/schema/initializer.
 - [x] SQLite repositories for all control-plane entities.
 - [x] WAL, `BEGIN IMMEDIATE`, single-process lock and readiness probe.
 - [x] SQLite integration tests, concurrency tests, backup test.
+- [x] Local mode: no TLS, agent certificates, enrollment tokens or release key.
+- [x] Backup CLI and the admin UI download endpoint.
 - [x] Local demo, control-plane-only and single-node systemd scenarios use
       SQLite only.
 - [x] EN/RU documentation and CI AOT smoke.

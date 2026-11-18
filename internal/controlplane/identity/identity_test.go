@@ -104,3 +104,35 @@ func TestNewKeyAndCSR(t *testing.T) {
 		t.Fatalf("CN = %q", got)
 	}
 }
+
+func TestEnsureLocalIDCreatesOnlyAgentID(t *testing.T) {
+	dir := t.TempDir()
+	first, err := EnsureLocalID(dir, "")
+	if err != nil {
+		t.Fatalf("EnsureLocalID: %v", err)
+	}
+	if !guidPattern.MatchString(first.AgentID) {
+		t.Fatalf("agent id = %q", first.AgentID)
+	}
+	for _, name := range []string{agentIDFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	for _, name := range []string{agentKeyFile, agentCertFile, agentCAFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("local mode created %s (err=%v)", name, err)
+		}
+	}
+
+	second, err := EnsureLocalID(dir, "11111111-1111-1111-1111-111111111111")
+	if err != nil || second.AgentID != first.AgentID {
+		t.Fatalf("stable id = %q, %v (want %q)", second.AgentID, err, first.AgentID)
+	}
+
+	requested := "22222222-2222-2222-2222-222222222222"
+	requestedID, err := EnsureLocalID(t.TempDir(), requested)
+	if err != nil || requestedID.AgentID != requested {
+		t.Fatalf("requested id = %q, %v", requestedID.AgentID, err)
+	}
+}

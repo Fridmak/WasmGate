@@ -342,3 +342,21 @@ func TestApplyRestoresConfigWhenReloadFails(t *testing.T) {
 		t.Fatalf("failed apply changed state: %+v saved=%v", state.st, state.saved)
 	}
 }
+
+func TestParseUnsignedReleaseForLocalMode(t *testing.T) {
+	release := &wasmgatepb.ApplyRelease{
+		ReleaseId:    "3f1d4c9e-0a2b-4c5d-8e9f-1a2b3c4d5e6f",
+		ConfigSha256: "2f7c9a1b3d5e7f9012345678abcdef01",
+		Manifest:     []byte(testManifest),
+		Artifacts: []*wasmgatepb.ArtifactRef{
+			{Id: "3e4e631671e2774007daa3772d771eb714e217a74b97c6aa944f3e445a09994b", Name: "plugins/ipguard.wasm"},
+		},
+	}
+	manifest, err := parseUnsignedRelease(release)
+	if err != nil || manifest.ReleaseID != release.ReleaseId {
+		t.Fatalf("parseUnsignedRelease = %+v, %v", manifest, err)
+	}
+	if _, err := parseUnsignedRelease(&wasmgatepb.ApplyRelease{ReleaseId: release.ReleaseId}); err == nil {
+		t.Fatal("parseUnsignedRelease accepted a missing manifest")
+	}
+}

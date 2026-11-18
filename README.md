@@ -103,6 +103,10 @@ fleet: agents enroll with a one-time token, receive an mTLS certificate and
 renew it automatically; configuration versions become signed releases deployed in
 waves. A built-in admin UI is served on the admin port.
 
+On one machine, `WASMGATE_CP_LOCAL=true` and `wasmgate -cp-local` skip TLS,
+agent certificates and enrollment tokens entirely; the control plane and data
+plane talk over loopback.
+
 ```bash
 cd control-plane
 dotnet build WasmGate.Control.sln

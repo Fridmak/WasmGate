@@ -81,8 +81,16 @@ func Apply(
 	}
 
 	// The signature is checked before the document is parsed: an unsigned or
-	// altered release must not even reach the configuration parser.
-	manifest, err := verifyRelease(key, release)
+	// altered release must not even reach the configuration parser. Local mode
+	// has no release key; it trusts the loopback control plane and validates the
+	// manifest fields only.
+	var manifest releaseManifest
+	var err error
+	if key == nil {
+		manifest, err = parseUnsignedRelease(release)
+	} else {
+		manifest, err = verifyRelease(key, release)
+	}
 	if err != nil {
 		return fail(fmt.Errorf("verify release: %w", err))
 	}

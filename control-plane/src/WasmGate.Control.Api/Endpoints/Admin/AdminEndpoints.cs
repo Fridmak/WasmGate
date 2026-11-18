@@ -1,6 +1,7 @@
 using WasmGate.Control.Api.Endpoints.Agents;
 using WasmGate.Control.Api.Endpoints.Artifacts;
 using WasmGate.Control.Api.Endpoints.Audit;
+using WasmGate.Control.Api.Endpoints.Backup;
 using WasmGate.Control.Api.Endpoints.Environments;
 using WasmGate.Control.Api.Endpoints.Health;
 using WasmGate.Control.Api.Endpoints.Metrics;
@@ -33,5 +34,6 @@ internal static class AdminEndpoints
             .MapAgentEndpoints()
             .MapEnvironmentEndpoints()
             .MapMetricsEndpoints()
-            .MapAuditEndpoints();
+            .MapAuditEndpoints()
+            .MapBackupEndpoints();
 }

@@ -65,6 +65,22 @@ func LoadReleaseKey(path string) (*ecdsa.PublicKey, error) {
 	return nil, fmt.Errorf("control plane: %s contains no PUBLIC KEY PEM block", path)
 }
 
+// parseUnsignedRelease validates the manifest and its match with the command
+// without checking a signature. It is used only in trusted loopback mode, where
+// the control plane and data plane run on the same host and no release key is
+// configured.
+func parseUnsignedRelease(release *wasmgatepb.ApplyRelease) (releaseManifest, error) {
+	manifest := release.GetManifest()
+	if len(manifest) == 0 {
+		return releaseManifest{}, errors.New("release manifest is missing")
+	}
+	parsed, err := parseReleaseManifest(manifest)
+	if err != nil {
+		return releaseManifest{}, err
+	}
+	return parsed, parsed.matches(release)
+}
+
 // verifyRelease checks that the release was signed by the control plane and that
 // the signed manifest describes exactly this message. It returns the parsed
 // manifest so callers can enforce environment scope.

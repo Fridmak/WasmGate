@@ -63,6 +63,54 @@ wasmgate-control --backup /var/backups/wasmgate/control.db
 `sessionStorage`. Переключатель среды в верхней панели меняет данные на всех
 экранах и позволяет создать новую среду.
 
+## Локальный режим (одна машина, без сертификатов)
+
+Если control plane и data plane запущены на одном хосте, TLS-сертификаты,
+сертификат агента, enrollment-токен и release key не нужны. Запустите CP с
+локальным режимом:
+
+```bash
+WASMGATE_CP_LOCAL=true \
+WASMGATE_CP_SQLITE_PATH=/var/lib/wasmgate-control/control.db \
+WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:9096 \
+WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097 \
+wasmgate-control
+```
+
+DP запускается с `-cp-local`:
+
+```bash
+wasmgate -config /etc/wasmgate/wasmgate.yaml \
+  -cp-local -cp http://127.0.0.1:9096 \
+  -cp-state /var/lib/wasmgate/agent
+```
+
+Локальный режим намеренно ограничен:
+
+- разрешены только loopback/Unix-socket listeners;
+- enrollment и продление сертификатов отключены, CA агента не создаётся;
+- манифест релиза по-прежнему разбирается и сверяется с командой, но подпись
+  не проверяется, потому что release key не задан;
+- DP хранит только `agent.id` и applied state; файлов `agent.key`, `agent.crt`
+  и CA нет;
+- admin-токен на loopback по-прежнему опционален.
+
+Это режим для локального стенда и разработки. Для парка машин используйте
+TLS/mTLS и enrollment-токены.
+
+## Backup
+
+В панели на Dashboard есть **Maintenance → Download SQLite backup**. Кнопка
+вызывает `POST /api/v1/backup`: CP выполняет `VACUUM INTO`, отдаёт файл и
+удаляет временную копию. То же самое из shell:
+
+```bash
+wasmgate-control --backup /var/backups/wasmgate/control.db
+```
+
+Снимок содержит хеши токенов, сертификаты и конфигурации; храните его так же
+защищённо, как рабочую базу.
+
 ## Среды
 
 Среда — это жёсткая граница деплоя, а не метка. Каждый агент принадлежит ровно
@@ -220,6 +268,7 @@ Prometheus + Grafana.
 
 | Переменная | По умолчанию |
 |---|---|
+| `WASMGATE_CP_LOCAL` | `false`; loopback plaintext, без enrollment и сертификатов |
 | `WASMGATE_CP_SQLITE_PATH` | `data/control.db` |
 | `WASMGATE_CP_GRPC_LISTEN` | `http://127.0.0.1:9096` |
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |

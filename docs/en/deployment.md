@@ -106,6 +106,27 @@ wasmgate-control --backup /var/backups/wasmgate/control.db
 Without Docker, see [control plane](control-plane.md) for the environment
 variables and the manual run.
 
+## Local one-machine demo (no certificates)
+
+For a control plane and one data plane on the same host, use local mode. It
+requires only the two binaries, a SQLite path, a data-plane config and a backend:
+
+```bash
+export WASMGATE_CP_LOCAL=true
+export WASMGATE_CP_SQLITE_PATH=/tmp/wasmgate/control.db
+export WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:9096
+export WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097
+./wasmgate-control
+
+./wasmgate -config /etc/wasmgate/wasmgate.yaml \
+  -cp-local -cp http://127.0.0.1:9096 \
+  -cp-state /var/lib/wasmgate/agent
+```
+
+There are no TLS certificates, no CA files, no enrollment token and no release
+key. The data plane keeps only `agent.id` and applied-release state. Local mode
+is loopback-only and intended for a single host, not for a fleet.
+
 ## Deployment scenarios
 
 Ready-made assets for five common layouts:

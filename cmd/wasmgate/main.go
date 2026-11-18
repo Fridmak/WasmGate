@@ -42,6 +42,7 @@ func run() error {
 		versionOnly   = flag.Bool("version", false, "print the build version and exit")
 
 		cpEndpoint   = flag.String("cp", "", "control-plane gRPC endpoint (https:// for mTLS); empty = standalone")
+		cpLocal      = flag.Bool("cp-local", false, "trusted loopback mode: no enrollment token, client certificate or release key")
 		cpToken      = flag.String("cp-token", os.Getenv("WASMGATE_ENROLL_TOKEN"), "one-time enrollment token used when no agent certificate exists")
 		cpState      = flag.String("cp-state", "state", "directory for the agent identity and applied-release state")
 		cpName       = flag.String("cp-name", "", "agent name reported to the control plane (default: host name)")
@@ -177,7 +178,17 @@ func run() error {
 	// control-plane managed: every applied release is written there.
 	cpCtx, cpCancel := context.WithCancel(context.Background())
 	defer cpCancel()
+	if *cpLocal && *cpEndpoint == "" {
+		*cpEndpoint = "http://127.0.0.1:9096"
+	}
 	if *cpEndpoint != "" {
+		if *cpLocal {
+			if *cpToken != "" || *cpServerCA != "" || *cpInsecure {
+				log.Warn("local mode ignores enrollment token, server CA and -cp-insecure")
+			}
+			*cpToken = ""
+			*cpServerCA = ""
+		}
 		labels, err := parseLabels(*cpLabels)
 		if err != nil {
 			return err
@@ -197,6 +208,7 @@ func run() error {
 			ReleaseKey:  *cpReleaseKey,
 			RenewBefore: *cpRenewBefore,
 			Insecure:    *cpInsecure,
+			Local:       *cpLocal,
 		}, srv, log)
 		if err != nil {
 			return err

@@ -107,6 +107,27 @@ wasmgate-control --backup /var/backups/wasmgate/control.db
 Без Docker — см. [control plane](control-plane.md): переменные окружения и ручной
 запуск.
 
+## Локальный стенд на одной машине (без сертификатов)
+
+Если CP и один DP работают на одном хосте, включите локальный режим. Нужны
+только два бинарника, путь к SQLite, конфиг DP и бэкенд:
+
+```bash
+export WASMGATE_CP_LOCAL=true
+export WASMGATE_CP_SQLITE_PATH=/tmp/wasmgate/control.db
+export WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:9096
+export WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097
+./wasmgate-control
+
+./wasmgate -config /etc/wasmgate/wasmgate.yaml \
+  -cp-local -cp http://127.0.0.1:9096 \
+  -cp-state /var/lib/wasmgate/agent
+```
+
+Ни TLS-сертификатов, ни CA, ни enrollment-токена, ни release key. DP хранит
+только `agent.id` и applied-release state. Режим работает только на loopback и
+предназначен для одной машины, а не для парка.
+
 ## Сценарии развёртывания
 
 Готовые заготовки для пяти типовых схем:

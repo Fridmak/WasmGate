@@ -2,6 +2,7 @@ using Google.Protobuf;
 using Grpc.Core;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
+using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
 using WasmGate.Control.V1;
 
@@ -21,6 +22,7 @@ namespace WasmGate.Control.Api.Grpc;
 public sealed class AgentEnrollmentService(
     IAgentProvisioningService provisioning,
     IAgentCertificateRepository certificates,
+    ControlPlaneOptions options,
     ILogger<AgentEnrollmentService> logger) : AgentEnrollment.AgentEnrollmentBase
 {
     /// <summary>
@@ -33,6 +35,13 @@ public sealed class AgentEnrollmentService(
         EnrollRequest request,
         ServerCallContext context)
     {
+        if (options.Local)
+        {
+            throw new RpcException(new Status(
+                StatusCode.Unimplemented,
+                "Agent enrollment is disabled in local mode; use -cp-local on the data plane."));
+        }
+
         try
         {
             var result = await provisioning.EnrollAsync(
@@ -70,6 +79,13 @@ public sealed class AgentEnrollmentService(
         RenewRequest request,
         ServerCallContext context)
     {
+        if (options.Local)
+        {
+            throw new RpcException(new Status(
+                StatusCode.Unimplemented,
+                "Certificate renewal is disabled in local mode."));
+        }
+
         if (!AgentCertificateIdentity.TryGetAgentId(context, out var certificateAgentId))
         {
             throw new RpcException(new Status(
