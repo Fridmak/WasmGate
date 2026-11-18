@@ -2,9 +2,9 @@
 #
 # The gateway is a raw TCP reverse proxy: it accepts connections on `listeners`
 # and forwards them to one of the backends in the referenced pool. Optional
-# layers on top: rate limiting, WASM plugins (L4 hooks + L7 `on_data` /
-# `on_data_ex` / `on_data_state`), TLS passthrough (SNI peek) or termination,
-# health checks and a circuit breaker.
+# layers on top: rate limiting, WASM plugins (L4 lifecycle hooks + L7 `on_event`
+# phases), TLS passthrough (SNI peek) or termination, health checks and a
+# circuit breaker.
 #
 # Validation: `wasmgate -config configs/wasmgate.yaml -validate`.
 version: 1
@@ -28,7 +28,7 @@ listeners:
                               # splice). When enabled, the deadline is refreshed by activity
                               # in EITHER direction, so a slow one-way download is not cut;
                               # set e.g. 60s in production to reap silent conns.
-    rate_limit:               # optional per-IP/subnet sliding-window rate limit (F2)
+    rate_limit:               # optional per-IP/subnet sliding-window rate limit
       max: 200                # max new connections per IP per window (0 = disabled)
       subnet_max: 1000        # max new connections per subnet per window (0 = disabled)
       max_concurrent: 0       # concurrent connections per IP (0 = disabled; WARN at startup)
@@ -39,12 +39,11 @@ listeners:
       ban_duration: 5s        # base ban TTL on violation, exponentially backed off up to 16x (0 = no ban)
       allow_cidrs:            # CIDRs bypassed before counting
         - "127.0.0.1/32"
-    # Optional WASM plugin. All plugins are ABI v4 now; the committed v3
-    # examples are rejected. The v4 lifecycle path uses on_accept/on_close.
-    # The module must export at least one hook.
+    # Optional WASM plugin. All committed examples are ABI v4; legacy v3 modules
+    # are rejected. L4 modules use on_accept/on_close; L7 modules use on_event.
     # plugin:
     #   path: "../plugins/examples/<v4-plugin>/<v4-plugin>.wasm"
-    #   max_memory_pages: 16   # 16 pages = 1 MiB linear-memory cap per instance
+    #   max_memory_pages: 17   # default; 17 x 64 KiB = 1.06 MiB ceiling per instance
     #   timeout: 1s            # per-hook timeout; 0 selects the safe 1s default
     #   # L4-only modules omit data_mode. L7 modules use:
     #   # data_mode: once | headers | stream
@@ -61,7 +60,7 @@ listeners:
     #
     # Optional TLS termination (hot-reloaded on SIGHUP / POST /reload):
     # the client socket becomes *tls.Conn, so `splice(2)` is disabled for the
-    # connection; in exchange WASM `on_data` sees plaintext.
+    # connection; in exchange WASM `on_event` sees plaintext.
     # tls:
     #   cert_file: "../certs/server.crt"
     #   key_file: "../certs/server.key"

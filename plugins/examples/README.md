@@ -41,5 +41,7 @@ done
 
 The Rust toolchain and target are pinned in `rust-toolchain.toml`. The
 `ipguard/tinygo` source is an alternative lifecycle example; it is not used
-to build the committed Rust artifact. See the [ABI contract](../../docs/en/plugin-abi-v4.md)
-and the plugin guides ([EN](../../docs/en/plugins.md), [RU](../../docs/ru/plugins.md)).
+to build the committed Rust artifact. See the [ABI contract](../../docs/en/plugin-abi-v4.md),
+the plugin guides ([EN](../../docs/en/plugins.md), [RU](../../docs/ru/plugins.md)) and
+the v1–v3 migration guide ([EN](../../docs/en/migration-to-v4.md),
+[RU](../../docs/ru/migration-to-v4.md)).

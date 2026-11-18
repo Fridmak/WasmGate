@@ -1,6 +1,6 @@
 # Local smoke-test configuration.
 #
-# Pairs with the PowerShell echo server in DEVELOPMENT.md §5:
+# Pairs with any TCP echo backend on 127.0.0.1:9001:
 #   :8080  →  127.0.0.1:9001
 #
 # Run:

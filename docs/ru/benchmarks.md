@@ -1,5 +1,9 @@
 # Бенчмарки
 
+> **Исторические числа.** Результаты ниже сняты 2026-11-05 на коммите
+> `18d4249`, до перехода на ABI v4. У движка v4 другой путь хуков и другая
+> стоимость dispatch. Перед решением перезапустите бенчмарки на текущем дереве.
+
 Все бенчмарки лежат рядом с кодом, который покрывают (`X.go` → `X_test.go`), и
 компилируются только `go test`; в бинарник они не попадают.
 
@@ -37,7 +41,7 @@ TCP echo-бэкенд:
 | `Throughput/zero_copy/1MiB` | **862–977 MB/s** | 262–336 MB/s |
 | `Throughput/idle_watchdog/1MiB` | 248–265 MB/s | 282–310 MB/s |
 | `Throughput/direct/1MiB` (без прокси) | 902–1092 MB/s | 620–627 MB/s |
-| `ConnectionSetup/through_proxy` | 36.0 KB/op, 64 allocs | 37.8–38.5 KB/op, 80 allocs |
+| `ConnectionSetup/through_proxy` | 36.0 KB/op, 65 allocs | 37.8–38.5 KB/op, 80 allocs |
 | `RelayLatency/through_proxy` | 56–60 µs | 109–120 µs |
 
 На Linux zero-copy быстрее буферизованного пути в **2.1–2.7×** на 64 KiB и
@@ -63,9 +67,9 @@ nginx stream и HAProxy в этой конфигурации копируют ч
 Проверки WasmGate выполняются один раз на соединение, не аллоцируют и не уводят
 основной поток с `splice`.
 
-## Микробенчмарки горячего пути
+## Исторические микробенчмарки горячего пути (pre-v4)
 
-Linux, `0 B/op, 0 allocs/op` везде:
+Linux, `0 B/op, 0 allocs/op` в том прогоне:
 
 | Бенчмарк | Результат |
 |---|---|
@@ -75,10 +79,11 @@ Linux, `0 B/op, 0 allocs/op` везде:
 | `plugin/BenchmarkOnDataState` (исторический ABI v3 fixture) | 111–122 ns/op |
 | `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
 
-Исторический stateful fixture добавлял около 30 нс к stateless `on_data`.
-Он оставлен только как старая запись; production-гости используют envelope ABI
-v4 и состояние, которым владеет host. HTTP body policy дороже из-за разбора
-фрейминга и typed-фаз.
+Строки `plugin/Benchmark*` относятся к удалённому пакету v3 и не
+воспроизводятся текущим деревом. Бенчмарки движка v4 —
+`BenchmarkOnRequestHeaders`, `BenchmarkSplitHeaders`, `BenchmarkWriteEnvelope`
+и `BenchmarkHeadersBody`; для них нужен новый прогон на Linux. Полная HTTP body
+policy дороже старого opaque-пути из-за разбора фрейминга и typed-фаз.
 
 ## Как читать числа
 

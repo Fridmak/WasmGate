@@ -38,7 +38,7 @@ type Metrics struct {
 	active           atomic.Int64 // connections currently being proxied
 	rejectedLimit    atomic.Int64 // connections refused by max_conns
 	rejectedRate     atomic.Int64 // connections refused by per-IP rate_limit
-	rejectedPlugin   atomic.Int64 // connections refused by a WASM on_accept/on_data plugin
+	rejectedPlugin   atomic.Int64 // connections refused by a WASM on_accept/on_event plugin
 	pluginDiscarded  atomic.Int64 // WASM instances destroyed after a trap or timeout
 	headerIncomplete atomic.Int64 // headers mode: incomplete/oversized/HTTP-2 header blocks
 	dialFailed       atomic.Int64 // upstream dials that failed
@@ -104,7 +104,7 @@ func (m *Metrics) RejectRate() {
 	m.rejectedRate.Add(1)
 }
 
-// RejectPlugin records a connection refused by a WASM plugin's on_accept or on_data hook.
+// RejectPlugin records a connection refused by a WASM plugin's on_accept or on_event hook.
 func (m *Metrics) RejectPlugin() {
 	if m == nil {
 		return

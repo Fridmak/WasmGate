@@ -250,13 +250,21 @@ Durations use the invariant `TimeSpan` format.
 - Admin API requires a bearer token outside loopback. The admin UI is static and
   contains no data; the API is protected.
 - Agent certificates are issued from CSRs; private keys never leave the node.
-  Revocation is enforced at session start and at renewal.
+  Revocation is enforced at session start, at renewal and before every artifact
+  download.
+- An apply result is accepted only from an agent in the deployment environment
+  whose labels match a wave selector; when present, its release id must match the
+  deployment.
 - Release signatures are verified by the control plane before dispatch and by the
   agent before applying, so a rewritten database row is rejected.
 
 ## Known limitations
 
 - One control-plane process: the session registry is in memory.
+- Release commands are replayable. An `ApplyRelease` for an older signed release
+  is indistinguishable from an operator rollback; a fix needs a deployment-level
+  signed envelope with a monotonic sequence and expiry (DPCP-1), not a
+  release-level check.
 - Waves are not health-gated; the first `ApplyResult` closes the deployment.
 - No heartbeat reaper: a half-open connection keeps an agent `Online` until the
   transport fails. Deployments themselves are reaped.

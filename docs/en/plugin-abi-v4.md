@@ -69,9 +69,10 @@ the blob. The 24-byte header has `magic:u32, version:u16=1, header_len:u16=24,
 total_len:u32, section_count:u16, stride:u16=16, arena_off:u32, arena_len:u32`.
 Magic is numeric `0x57473445` for IN and `0x5747344f` for OUT. `total_len` and
 `arena_off` are 8-byte aligned. The table follows the header; at most 8
-entries are allowed. Each entry is `type:u16, reserved:u16=0, offset:u32,
+sections are allowed. Each entry is `type:u16, reserved:u16=0, offset:u32,
 length:u32, count:u32`. Types are strictly increasing. Section offsets are
-4-byte aligned and lie past the table; nonempty sections do not overlap.
+4-byte aligned and lie past the table; nonempty sections do not overlap. The
+header index is capped at 512 entries by the engine.
 
 | ID | Section | Location |
 |---|---|---|
