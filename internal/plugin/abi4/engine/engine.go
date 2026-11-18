@@ -21,9 +21,10 @@ const (
 	maxEntries = wire.MaxEntries
 	maxU32     = wire.MaxU32
 
-	// Rust wasm32 guests reserve linker-aligned data/stack segments that need
-	// one page above the nominal 1 MiB boundary. Keep the default explicit and
-	// documented so reference guests load without per-listener overrides.
+	// DefaultMaxMemoryPages caps linear memory per instance. Reference guests
+	// built with plugins/examples/.cargo/config.toml request one or two pages,
+	// but the cap stays at 17 so modules built with Rust's default 1 MiB stack
+	// also load without a per-listener override.
 	DefaultMaxMemoryPages = 17
 	DefaultHookTimeout    = time.Second
 	DefaultLoadTimeout    = 5 * time.Second
