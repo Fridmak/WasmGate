@@ -1,19 +1,29 @@
 # CI: format/vet/lint, Go tests, Rust guest builds, and .NET tests.
 #
 # Go jobs:
-#   lint — fails on any unformatted file (gofmt), go vet, golangci-lint.
-#          The lint version is pinned to v2.15.0 because .golangci.yml uses the
-#          v2 configuration schema (golangci-lint >= 2.0).
+#   lint — fails on any unformatted file (gofmt), go vet, go.mod/go.sum drift
+#          and golangci-lint. The lint version is pinned to v2.15.0 because
+#          .golangci.yml uses the v2 configuration schema (golangci-lint >= 2.0).
 #   test — race-enabled tests on Linux (gcc is present there, so CGO for the
 #          race detector costs nothing; locally on Windows it needs mingw).
 #          Windows runs the plain test suite: it exercises the platform's
 #          signal handling and copy path, which differ from Unix.
+#
+# Rust job:
+#   Builds the reference guests with the pinned toolchain and compares every
+#   committed .wasm byte-for-byte with the fresh build. It must run from
+#   plugins/examples: Cargo reads .cargo/config.toml from the working
+#   directory, and that file selects the 16 KiB wasm stack used by the
+#   committed artifacts.
 name: CI
 
 on:
   push:
     branches: [main, stable]
   pull_request:
+
+permissions:
+  contents: read
 
 # Cancel the in-flight run of the same branch when a new push arrives: only
 # the newest commit matters.
@@ -25,6 +35,7 @@ jobs:
   lint:
     name: Lint (gofmt + vet + golangci-lint)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -44,6 +55,9 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Check go.mod and go.sum
+        run: go mod tidy -diff
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
@@ -51,6 +65,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false # let the other OS finish even if one fails
       matrix:
@@ -59,7 +75,6 @@ jobs:
             race: -race
           - os: windows-latest
             race: ""
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
@@ -74,15 +89,21 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libnginx-mod-stream || echo "nginx stream module unavailable; comparison will be skipped"
 
+      # -count=1 disables the test result cache, so a red run always reflects
+      # the current tree instead of a cached success.
       - name: go test
-        run: go test ${{ matrix.race }} ./...
+        run: go test -count=1 ${{ matrix.race }} ./...
 
-      - name: go build
-        run: go build ./...
+      # The showcase references every committed guest; -validate compiles them
+      # through the real ABI loader, so a stale or invalid artifact fails here.
+      - name: Validate showcase config and plugins (Linux)
+        if: runner.os == 'Linux'
+        run: go run ./cmd/wasmgate -config configs/showcase.yaml -validate
 
   rust-guests:
     name: ABI v4 Rust guests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: plugins/examples
@@ -109,13 +130,27 @@ jobs:
 
       - name: Verify prebuilt artifacts match the Rust sources
         run: |
+          status=0
           for module in */*.wasm; do
-            cmp -- "$module" "target/wasm32-unknown-unknown/release/${module##*/}"
+            built="target/wasm32-unknown-unknown/release/${module##*/}"
+            if ! cmp -s -- "$module" "$built"; then
+              echo "::error file=$module::prebuilt guest differs from a fresh build"
+              cmp -- "$module" "$built" || true
+              status=1
+            fi
           done
+          if [ "$status" -ne 0 ]; then
+            echo "Rebuild from plugins/examples and commit the guests:"
+            echo "  cargo build --locked --workspace --release --target wasm32-unknown-unknown"
+            echo "  for guest in */*.wasm; do cp \"target/wasm32-unknown-unknown/release/\${guest##*/}\" \"\$guest\"; done"
+            exit 1
+          fi
+          echo "all committed guests match the fresh build"
 
   dotnet:
     name: .NET (build + format + tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 

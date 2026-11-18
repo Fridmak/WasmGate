@@ -24,6 +24,12 @@ OUT contract; it is not a JSON or secret-redaction implementation. Opaque
 
 ## Build and update the prebuilt guests
 
+Run Cargo from this directory. Cargo reads `.cargo/config.toml` from the
+working directory, not from the manifest, and that file sets the 16 KiB wasm
+stack used by the committed artifacts. Building from the repository root with
+`--manifest-path` silently uses Rust's 1 MiB default and produces different
+bytes.
+
 ```bash
 cd plugins/examples
 cargo test --locked -p wg-common

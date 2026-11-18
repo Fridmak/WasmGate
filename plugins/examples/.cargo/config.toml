@@ -1,4 +1,6 @@
 # Keep the Rust wasm stack small: the host caps an instance at 17 pages
 # (1.06 MiB) by default, and event plugins reserve bounded IN and OUT windows.
+# Cargo reads this file only when it runs from plugins/examples; build from
+# this directory or the resulting bytes will not match the committed guests.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=-zstack-size=16384"]
