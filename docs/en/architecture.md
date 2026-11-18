@@ -72,9 +72,11 @@ a test with zero dropped connections.
 
 - **No CGO.** The binary is static and cross-compiles; the sandbox is pure Go
   (`wazero`), with no WASI and no syscalls for plugin guests.
-- **Allocation-free fast path.** Balancer, limiter, snapshot lookup and plugin
-  hooks perform zero allocations per connection; buffers are pooled.
-- **Fail fast.** Invalid configuration, plugin signatures, memory limits or TLS
+- **Allocation-free relay path.** Balancer, limiter and snapshot lookup allocate
+  nothing per connection; relay buffers are pooled. A v4 hook allocates a
+  deadline context per event, and accepted OUT effects are copied into
+  host-owned memory.
+- **Fail fast.** Invalid configuration, plugin exports/ABI, memory limits or TLS
   material abort validation before any listener changes.
 - **Bounded resources.** `max_conns` per listener, WASM memory pages, plugin
   timeout, connection rate limits and idle timeout are all explicit.

@@ -24,8 +24,8 @@ const ConfigVersion = 1
 type Config struct {
 	Version   int    `yaml:"version"`    // schema version (must be 1)
 	AdminAddr string `yaml:"admin_addr"` // optional: /metrics, /healthz, pprof listener; empty = disabled
-	// AdminTokenFile optionally points at a bearer token for /reload and
-	// /debug/pprof/*. WASMGATE_ADMIN_TOKEN takes precedence when set.
+	// AdminTokenFile optionally points at a bearer token for every admin
+	// endpoint. WASMGATE_ADMIN_TOKEN takes precedence when set.
 	AdminTokenFile string `yaml:"admin_token_file"`
 	// AdminPprof enables the pprof handlers. Off by default: profiling can
 	// amplify memory and stop the world.

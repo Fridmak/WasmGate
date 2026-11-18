@@ -10,9 +10,10 @@ There is no separate exporter and no client library dependency.
 | Data plane | `GET http://<admin_addr>/metrics` | `WASMGATE_ADMIN_TOKEN` when configured |
 | Control plane | `GET http://<cp-http-addr>/metrics` | `WASMGATE_CP_ADMIN_TOKEN` when configured |
 
-The data-plane admin endpoint is configured by `admin_addr`. It is loopback-only
-unless `admin_allow_remote: true`; Prometheus in another container therefore
-needs a non-loopback admin address plus the admin token.
+The data-plane admin endpoint is configured by `admin_addr` and is disabled when
+the key is empty. When set, it must be loopback unless `admin_allow_remote: true`;
+Prometheus in another container therefore needs a non-loopback admin address
+plus the admin token.
 
 The control-plane endpoint is protected by the same bearer token as `/api/v1/*`.
 Health probes stay open.

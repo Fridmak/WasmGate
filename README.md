@@ -14,7 +14,8 @@ plain relay never copies payload through user space.
 - **Zero-copy on Linux.** A plain relay reaches `splice(2)` through the standard
   `io.Copy` path; buffers are not allocated per connection.
 - **Programmable when needed.** WASM hooks run on accept, on data and on close,
-  with a strict sandbox: no WASI, a hard memory cap and an optional timeout.
+  with a strict sandbox: no WASI, a hard memory cap and a per-hook deadline
+  (1s by default).
 - **Operations built in.** Hot reload on `SIGHUP`/`POST /reload`, Prometheus
   metrics, health endpoint, rate limiting, health checks and a circuit breaker.
 - **Fleet management (optional).** A .NET control plane stores configuration
@@ -45,6 +46,10 @@ backend for every row:
 | Throughput, 1 MiB | 865.6 MB/s | **688.3 MB/s** | 230.9 MB/s | 248.3 MB/s |
 | Relay latency (1 byte RTT) | 29.2 µs | **62.0 µs** | 394.0 µs | 439.2 µs |
 | Connection setup | 402.9 µs | **917.7 µs** | 1076.9 µs | 1163.8 µs |
+
+These numbers were captured on 2026-11-05 (commit `18d4249`), before the ABI v4
+cutover. Re-run `make bench` or the Benchmarks workflow on the current tree before
+using them; the v4 hook path differs.
 
 WSL2 runs a real Linux kernel, so `splice(2)` and the relative numbers are valid;
 absolute MB/s are not comparable with bare metal. Reproduce with `make bench` or
@@ -143,6 +148,8 @@ English:
 [Architecture](docs/en/architecture.md) ·
 [Configuration](docs/en/configuration.md) ·
 [Plugins](docs/en/plugins.md) ·
+[ABI v4](docs/en/plugin-abi-v4.md) ·
+[Migration to v4](docs/en/migration-to-v4.md) ·
 [Benchmarks](docs/en/benchmarks.md) ·
 [Deployment](docs/en/deployment.md) ·
 [Control plane](docs/en/control-plane.md) ·

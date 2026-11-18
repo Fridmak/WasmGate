@@ -78,7 +78,9 @@ and `max_instances` (default 64, hard cap 1024) caps concurrent guest
 instances per listener; requests beyond the limit wait for a slot or fail on
 their deadline. `max_conns` bounds listener concurrency when configured. Load
 has a 5s deadline and each hook has its own deadline (default 1s). A trap or
-timeout fails closed and the instance is discarded.
+timeout fails closed and the instance is discarded. After `on_accept` allows a
+connection, `on_close` or `on_close_ex` runs exactly once, including TLS,
+header, routing and dial failures before the relay starts.
 
 ## Differences from the legacy v3 runtime
 
@@ -100,6 +102,8 @@ To upgrade, rebuild v3 modules as v4: export `wg_abi` and `wg_caps`, replace
 L7 hooks with `on_event`, and use the OUT envelope for state/replacements.
 Declare `CapLifecycle` on L4 modules. Code written against the initial v4
 body slice must now opt into replacements with `mutation_policy: replace`.
+The [migration guide](migration-to-v4.md) maps each legacy hook and config key
+to its v4 replacement.
 
 Build and check the reference guests:
 

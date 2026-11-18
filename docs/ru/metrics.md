@@ -10,7 +10,8 @@ WasmGate отдаёт метрики в формате Prometheus text expositio
 | Data plane | `GET http://<admin_addr>/metrics` | `WASMGATE_ADMIN_TOKEN`, если задан |
 | Control plane | `GET http://<cp-http-addr>/metrics` | `WASMGATE_CP_ADMIN_TOKEN`, если задан |
 
-Admin-эндпоинт DP задаётся `admin_addr`. По умолчанию он слушает loopback;
+Admin-эндпоинт DP задаётся `admin_addr` и выключен, если ключ пуст. Если он
+задан, адрес должен быть loopback, пока не включён `admin_allow_remote: true`;
 чтобы Prometheus из другого контейнера мог его достать, нужен non-loopback
 `admin_addr`, `admin_allow_remote: true` и токен.
 

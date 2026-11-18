@@ -10,8 +10,8 @@ wasmgate -config /etc/wasmgate/wasmgate.yaml
 kill -HUP $(pidof wasmgate)          # or: curl -X POST http://127.0.0.1:9099/reload
 ```
 
-Annotated example: [`configs/wasmgate.yaml`((../configs/wasmgate.yaml).
-Showcase with every plugin: [`configs/showcase.yaml`((../configs/showcase.yaml).
+Annotated example: [`configs/wasmgate.yaml`](../../configs/wasmgate.yaml).
+Showcase with every plugin: [`configs/showcase.yaml`](../../configs/showcase.yaml).
 
 ## Top level
 
@@ -65,7 +65,7 @@ duplicate addresses and references to missing pools fail validation.
 | `max_memory_pages` | `17` | Linear-memory cap per instance (17 × 64 KiB = 1.06 MiB; a ceiling, not an initial size) |
 | `max_instances` | `64` | Maximum concurrent guest instances per listener (hard cap `1024`); requests beyond it wait for a slot or fail on their deadline |
 | `timeout` | `1s` | Per-hook timeout; omitted or `0` selects the safe 1s default. Required (`> 0`) for `data_mode: headers` |
-| `data_mode` | required | `once` inspects the first client packet and keeps `splice`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk. All three are ABI v4 `on_event` paths. Required when the module exports an L7 hook |
+| `data_mode` | required | `once` inspects the first client packet and keeps `splice` when `idle_timeout` is `0`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body only without `body_policy` (and with `idle_timeout: 0`); `stream` inspects every chunk. All three are ABI v4 `on_event` paths. Required when the module exports an L7 hook |
 | `max_header_bytes` | `16384` | Headers mode: maximum request header block; hard cap `16389`. The v4 header index accepts at most 512 headers; more fail closed |
 | `inspect_timeout` | `3s` | Headers mode: total deadline for one header block |
 | `route_pools` | empty | Pools selectable by a v4 `on_event` return value `2..N`; supported for `once`/`headers`, rejected for `stream` |
@@ -79,8 +79,9 @@ For every `data_mode` the module must export the ABI v4 surface
 `on_accept`/`on_close`/`on_close_ex`. Legacy ABI v3 modules are rejected at
 snapshot load.
 
-M5 supports only unambiguous `Content-Length` framing. `Transfer-Encoding` and
-duplicate/invalid `Content-Length` are rejected before the upstream is used.
+The proxy supports only unambiguous `Content-Length` framing.
+`Transfer-Encoding` and duplicate/invalid `Content-Length` are rejected before
+the upstream is used.
 A declared length above `max_body_bytes` is rejected before the body is read.
 
 See [plugins](plugins.md) for the ABI and sandbox limits.

@@ -1,5 +1,10 @@
 # Benchmarks
 
+> **Historical numbers.** The results below were captured on 2026-11-05 at
+> commit `18d4249`, before the ABI v4 cutover. The v4 engine has a different
+> hook path and dispatch cost. Re-run the benchmarks on the current tree before
+> using these numbers for a decision.
+
 All benchmarks live next to the code they cover (`X.go` → `X_test.go`) and are
 compiled only by `go test`; they are not part of the binary.
 
@@ -37,7 +42,7 @@ TCP echo backend:
 | `Throughput/zero_copy/1MiB` | **862–977 MB/s** | 262–336 MB/s |
 | `Throughput/idle_watchdog/1MiB` | 248–265 MB/s | 282–310 MB/s |
 | `Throughput/direct/1MiB` (no proxy) | 902–1092 MB/s | 620–627 MB/s |
-| `ConnectionSetup/through_proxy` | 36.0 KB/op, 64 allocs | 37.8–38.5 KB/op, 80 allocs |
+| `ConnectionSetup/through_proxy` | 36.0 KB/op, 65 allocs | 37.8–38.5 KB/op, 80 allocs |
 | `RelayLatency/through_proxy` | 56–60 µs | 109–120 µs |
 
 On Linux zero-copy is **2.1–2.7×** faster than the buffered path at 64 KiB and
@@ -63,9 +68,9 @@ why they land at the same throughput as WasmGate's buffered path. WasmGate's
 feature checks run once per connection, allocate nothing, and do not move the
 bulk path off `splice`.
 
-## Hot-path microbenchmarks
+## Historical hot-path microbenchmarks (pre-v4)
 
-Linux, `0 B/op, 0 allocs/op` everywhere:
+Linux, `0 B/op, 0 allocs/op` in that run:
 
 | Benchmark | Result |
 |---|---|
@@ -75,10 +80,12 @@ Linux, `0 B/op, 0 allocs/op` everywhere:
 | `plugin/BenchmarkOnDataState` (historical ABI v3 fixture) | 111–122 ns/op |
 | `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
 
-The historical stateful fixture added roughly 30 ns over stateless `on_data`.
-It is retained only as an old benchmark record; production guests use the ABI
-v4 envelope and host-owned state. A complete HTTP body policy costs more
-because it parses framing and dispatches typed phases.
+The `plugin/Benchmark*` rows refer to the removed v3 package and are not
+reproduced by the current tree. The v4 engine benchmarks are
+`BenchmarkOnRequestHeaders`, `BenchmarkSplitHeaders`, `BenchmarkWriteEnvelope`
+and `BenchmarkHeadersBody`; they need a fresh Linux run. A complete HTTP body
+policy costs more than the old opaque path because it parses framing and
+dispatches typed phases.
 
 ## What the numbers mean
 
