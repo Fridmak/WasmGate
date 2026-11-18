@@ -90,7 +90,7 @@ by three `u16` lengths, then target form (`u8`), flags (`u8`), and four reserved
 bytes. Request fields are method, target, version; response fields at the
 same positions are reason phrase, three-digit status, version.
 
-Connection info is an optional [80-byte struct](../../internal/plugin/abi4/envelope.go)
+Connection info is an optional [80-byte struct](../../internal/plugin/abi4/envelope/envelope.go)
 whose SNI and ALPN offsets, if nonempty, point into the blob. Unknown IN
 sections may be skipped after structural validation. Unknown OUT sections
 are rejected. OUT is copied to host memory before the instance is reused.

@@ -114,12 +114,22 @@ dotnet run --project src/WasmGate.Control.Api
 ```
 cmd/wasmgate/          точка входа и флаги
 internal/config/       схема YAML, валидация, hot reload
-internal/proxy/        листенеры, пулы, релей, snapshot
+internal/proxy/        совместимый фасад и сквозные тесты
+internal/proxy/runtime/ snapshot, registry плагинов и лимиты
+internal/proxy/conn/    pipeline соединения и dial
+internal/proxy/server/  жизненный цикл листенеров, reload и probes
+internal/proxy/backend/ пулы, балансировка, health и breakers
+internal/proxy/relay/  двунаправленный relay и idle/splice paths
+internal/proxy/httpinspect/ HTTP/1 framing и body policy
 internal/plugin/abi4/  рантайм ABI v4: envelope, plan, engine, lifecycle
 internal/tlspeek/      парсер SNI для passthrough
 internal/ratelimit/    скользящее окно
 internal/observe/      логи, метрики, admin endpoint
-internal/controlplane/ клиент control plane (enroll, session, apply)
+internal/controlplane/ фасад клиента Agent
+internal/controlplane/options/ общие options
+internal/controlplane/identity/ enrollment и файлы сертификатов
+internal/controlplane/release/ подписанные релизы и артефакты
+internal/controlplane/session/ transport, heartbeat и dispatch
 control-plane/         C# control plane и тесты
 plugins/examples/      девять эталонных плагинов (Rust, готовые .wasm)
 configs/               пример и showcase-конфигурация

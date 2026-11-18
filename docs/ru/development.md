@@ -13,12 +13,27 @@
 ```
 cmd/wasmgate/          флаги и запуск процесса
 internal/config/       схема YAML, дефолты, валидация, reload
-internal/proxy/        листенеры, пулы, релей, snapshot
-internal/plugin/abi4/  рантайм ABI v4 (envelope, plan, engine, lifecycle)
+internal/proxy/        совместимый фасад и сквозные тесты
+internal/proxy/runtime/ неизменяемые snapshot, registry и лимиты
+internal/proxy/conn/    pipeline соединения и dial
+internal/proxy/server/  жизненный цикл листенеров и probes
+internal/proxy/backend/ пулы, балансировка, health и breakers
+internal/proxy/relay/  двунаправленный relay и idle/splice paths
+internal/proxy/httpinspect/ HTTP/1 framing и body policy
+internal/plugin/abi4/engine/ рантайм ABI v4 и hooks
+internal/plugin/abi4/envelope/ IN envelope и HTTP indexing
+internal/plugin/abi4/output/ OUT envelope
+internal/plugin/abi4/plan/ phases, capabilities и verdicts
+internal/plugin/abi4/state/ host-owned bounded state
+internal/plugin/abi4/wire/ section-table codec
 internal/tlspeek/      парсер ClientHello/SNI
 internal/ratelimit/    скользящее окно и guard конкурентности
 internal/observe/      логи, метрики, admin endpoint
-internal/controlplane/ клиент control plane
+internal/controlplane/ публичный фасад Agent
+internal/controlplane/options/ общие options
+internal/controlplane/identity/ enrollment и файлы сертификатов
+internal/controlplane/release/ применение подписанных релизов
+internal/controlplane/session/ gRPC-сессия и dispatch
 plugins/examples/      Rust workspace с эталонными плагинами
 control-plane/         C# solution и xunit-тесты
 configs/               пример и showcase-конфигурация
