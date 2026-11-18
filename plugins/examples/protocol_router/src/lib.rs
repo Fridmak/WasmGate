@@ -17,13 +17,9 @@
 
 #![no_std]
 
-use core::panic::PanicInfo;
-use wg_common as wg;
+use wg_common::{self as wg, v4};
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg::wg_v4_plugin!(v4::CAP_OPAQUE, inspect);
 
 const VERDICT_DEFAULT: i32 = 0;
 const VERDICT_DENY: i32 = 1;
@@ -39,16 +35,11 @@ const PG_PROTOCOL_V3: u32 = 196_608; // 0x0003_0000
 const PG_SSL_REQUEST: u32 = 80_877_103; // 0x04d2_162f
 const PG_GSSENC_REQUEST: u32 = 80_877_102; // 0x04d2_162e
 
-#[no_mangle]
-pub extern "C" fn on_data_ptr() -> i32 {
-    wg::scratch_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
-    let Some(payload) = (unsafe { wg::payload(ptr, len) }) else {
+fn inspect(call: v4::Call, event: v4::Event<'_>, _: &mut v4::Output<'_>) -> i32 {
+    if call.phase != v4::Phase::Opaque || !call.flags.contains(v4::Flags::CLIENT_TO_SERVER) {
         return VERDICT_DENY;
-    };
+    }
+    let payload = event.blob();
     if payload.is_empty() {
         return if DENY_UNKNOWN {
             VERDICT_DENY

@@ -62,14 +62,29 @@ Showcase со всеми плагинами: [`configs/showcase.yaml`((../config
 | Ключ | По умолчанию | Значение |
 |---|---|---|
 | `path` | — | Файл `.wasm`; пусто отключает плагин |
-| `max_memory_pages` | `16` | Лимит линейной памяти на инстанс (16 × 64 KiB = 1 MiB) |
+| `max_memory_pages` | `17` | Лимит линейной памяти на инстанс (17 × 64 KiB = 1,06 МиБ; Rust-гостям нужна страница для выравнивания linker) |
+| `max_instances` | `64` | Максимум одновременных инстансов гостя на listener (жёсткий предел `1024`); запросы сверх лимита ждут слот или завершаются по своему дедлайну |
 | `timeout` | `1s` | Таймаут хука; отсутствие или `0` выбирает безопасный дефолт `1s`. Для `data_mode: headers` обязателен `> 0` |
-| `data_mode` | `once` | `once` проверяет первый пакет клиента и сохраняет `splice`; `headers` собирает полный HTTP/1 request-header block и сохраняет `splice` для тела; `stream` — каждый чанк |
-| `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389` |
+| `data_mode` | обязательно | `once` проверяет первый пакет клиента и сохраняет `splice`; `headers` собирает полный HTTP/1 request-header block и сохраняет `splice` для тела; `stream` проверяет каждый чанк. Все три — пути ABI v4 `on_event`. Обязателен, если модуль экспортирует L7-хук |
+| `max_header_bytes` | `16384` | Режим headers: максимум заголовков; жёсткий предел `16389`. v4-индекс принимает не более 512 заголовков; больше — fail closed |
 | `inspect_timeout` | `3s` | Режим headers: общий дедлайн на один header block |
-| `route_pools` | пусто | Пулы, выбираемые возвратом `on_data`/`on_headers` `2..N` |
+| `route_pools` | пусто | Пулы, выбираемые возвратом v4 `on_event` `2..N`; поддерживаются для `once`/`headers`, запрещены для `stream` |
+| `body_policy` | пусто | `request`, `response` или `both`; ограничивает `headers` одним HTTP/1-обменом ([правила](plugins.md#политика-http-тела)) |
+| `max_body_bytes` | `1048576` | Максимальный заявленный `Content-Length` в любом направлении при `body_policy`; сообщения больше лимита отвергаются до чтения тела |
+| `mutation_policy` | `none` | `replace` разрешает замену блоков тела без изменения длины; требуются `body_policy` и `CapMutation` у гостя |
 
-ABI и ограничения песочницы — в [плагинах((plugins.md).
+Для любого `data_mode` модуль обязан экспортировать ABI v4-контракт
+(`on_event`, `wg_abi`, `wg_caps`, `wg_buf_ptr`, `wg_buf_len`). L4-only модули
+(без `data_mode`) обязаны экспортировать `wg_abi`, `wg_caps` и хотя бы один из
+`on_accept`/`on_close`/`on_close_ex`. Legacy-модули ABI v3 отвергаются при
+загрузке snapshot.
+
+В M5 поддерживается только однозначный framing через `Content-Length`.
+`Transfer-Encoding`, дубли и некорректный `Content-Length` отвергаются до
+использования upstream. Заявленная длина больше `max_body_bytes` отвергается
+до чтения тела.
+
+ABI и ограничения песочницы — в [плагинах](plugins.md).
 
 ### `tls`
 

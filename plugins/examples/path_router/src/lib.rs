@@ -1,32 +1,25 @@
-//! `path_router` — L7 routing by HTTP Host and path in `data_mode: "once"`.
+//! `path_router` — L7 routing by HTTP Host and path in `data_mode: headers`.
 //!
 //! This is the nginx `map`/`location -> upstream` pattern, moved into a WASM
-//! plugin. The first client packet is inspected before the upstream is dialed;
+//! plugin. The opening request head is inspected before the upstream is dialed;
 //! the verdict selects a pool from `plugin.route_pools`:
 //!
 //! ```yaml
 //! plugin:
 //!   path: "plugins/examples/path_router/path_router.wasm"
-//!   data_mode: "once"
+//!   data_mode: "headers"
+//!   timeout: 200ms
 //!   route_pools: ["api", "static", "ws"]
 //! ```
 //!
 //! verdict 0 = default pool, 1 = deny, 2 = route_pools[0], 3 = route_pools[1],
-//! 4 = route_pools[2]. After the verdict the proxy replays the peeked packet
-//! with `DrainTo` and the rest of the connection stays on `splice(2)`.
-//!
-//! Because this is the legacy `on_data(ptr, len)` hook it only sees the
-//! client -> server direction. For response routing use `on_data_ex`.
+//! 4 = route_pools[2]. The selected upstream is fixed for this connection.
 
 #![no_std]
 
-use core::panic::PanicInfo;
-use wg_common as wg;
+use wg_common::{self as wg, v4};
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg::wg_v4_plugin!(v4::CAP_HTTP_HEADERS, inspect);
 
 const VERDICT_DEFAULT: i32 = 0;
 const VERDICT_DENY: i32 = 1;
@@ -34,22 +27,12 @@ const ROUTE_API: i32 = 2; // route_pools[0]
 const ROUTE_STATIC: i32 = 3; // route_pools[1]
 const ROUTE_WS: i32 = 4; // route_pools[2]
 
-#[no_mangle]
-pub extern "C" fn on_data_ptr() -> i32 {
-    wg::scratch_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
-    let Some(payload) = (unsafe { wg::payload(ptr, len) }) else {
+fn inspect(call: v4::Call, event: v4::Event<'_>, _: &mut v4::Output<'_>) -> i32 {
+    if call.phase != v4::Phase::RequestHeaders {
         return VERDICT_DENY;
-    };
-    if !wg::looks_like_http(payload) {
-        return VERDICT_DEFAULT;
     }
-    let Some(req) = wg::parse_request(payload) else {
-        // Incomplete first line: route to the default pool, never guess.
-        return VERDICT_DEFAULT;
+    let Some(req) = event.request_line() else {
+        return VERDICT_DENY;
     };
 
     if wg::starts_with_ci(req.target, b"/health") {
@@ -63,8 +46,8 @@ pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
     }
 
     // Host-based routing takes precedence, then the path prefix.
-    if let Some(host) = wg::header_value(req.headers, b"Host") {
-        let host = strip_port(host);
+    if let Some(host) = event.headers().first(b"Host") {
+        let host = strip_port(wg::trim_ascii(host));
         if wg::starts_with_ci(host, b"api.") {
             return ROUTE_API;
         }

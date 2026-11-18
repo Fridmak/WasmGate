@@ -8,27 +8,23 @@
 //! ```yaml
 //! plugin:
 //!   path: "plugins/examples/redis_guard/redis_guard.wasm"
-//!   data_mode: "stream"     # on_data_ex is needed to see the client direction
+//!   data_mode: "stream"
 //! ```
 //!
 //! Redis has no request boundaries at the TCP level, so a single read may
 //! contain half a command, several commands, or a command plus the start of the
 //! next one. This plugin inspects the first *complete* command in the chunk and
 //! fails open when the chunk does not contain one: stateless plugins cannot
-//! buffer the remainder. That gap is what ABI v3 per-connection state fixes.
+//! buffer the remainder. Use the server's own Redis ACLs for enforcement.
 //!
 //! Verdicts in `stream` mode: 0 = forward, non-zero = close the connection.
-//! Redis replies are never inspected (`dir == 1` returns 0 immediately).
+//! Redis replies are passed unmodified.
 
 #![no_std]
 
-use core::panic::PanicInfo;
-use wg_common as wg;
+use wg_common::{self as wg, v4};
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg::wg_v4_plugin!(v4::CAP_OPAQUE, inspect);
 
 /// Administrative/destructive commands. Everything not listed here is allowed,
 /// which is the useful default for an application-facing cache endpoint.
@@ -71,21 +67,15 @@ const DENIED_SUBCOMMANDS: &[(&[u8], &[u8])] = &[
     (b"COMMAND", b"DOCS"),
 ];
 
-#[no_mangle]
-pub extern "C" fn on_data_ptr() -> i32 {
-    wg::scratch_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn on_data_ex(_conn_id: i64, dir: i32, ptr: i32, len: i32) -> i32 {
+fn inspect(call: v4::Call, event: v4::Event<'_>, _: &mut v4::Output<'_>) -> i32 {
+    if call.phase != v4::Phase::Opaque {
+        return v4::DENY;
+    }
     // Redis responses flow in the other direction and need no policy.
-    if dir != 0 {
+    if !call.flags.contains(v4::Flags::CLIENT_TO_SERVER) {
         return 0;
     }
-    let Some(payload) = (unsafe { wg::payload(ptr, len) }) else {
-        return 1;
-    };
-    let Some((command, subcommand)) = first_command(payload) else {
+    let Some((command, subcommand)) = first_command(event.blob()) else {
         // Partial or unparsable chunk: fail open, see the module docs.
         return 0;
     };

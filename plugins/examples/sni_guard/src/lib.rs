@@ -21,13 +21,9 @@
 
 #![no_std]
 
-use core::panic::PanicInfo;
-use wg_common as wg;
+use wg_common::{self as wg, v4};
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+wg::wg_v4_plugin!(v4::CAP_OPAQUE, inspect);
 
 const VERDICT_DEFAULT: i32 = 0;
 const VERDICT_DENY: i32 = 1;
@@ -38,17 +34,11 @@ const ROUTE_INTERNAL: i32 = 4;
 /// Exact host or any subdomain of it.
 const BLOCKED_DOMAINS: &[&[u8]] = &[b"blocked.example.com", b"malware.test"];
 
-#[no_mangle]
-pub extern "C" fn on_data_ptr() -> i32 {
-    wg::scratch_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn on_data(ptr: i32, len: i32) -> i32 {
-    let Some(payload) = (unsafe { wg::payload(ptr, len) }) else {
+fn inspect(call: v4::Call, event: v4::Event<'_>, _: &mut v4::Output<'_>) -> i32 {
+    if call.phase != v4::Phase::Opaque || !call.flags.contains(v4::Flags::CLIENT_TO_SERVER) {
         return VERDICT_DENY;
-    };
-    let Some(sni) = wg::parse_sni(payload) else {
+    }
+    let Some(sni) = wg::parse_sni(event.blob()) else {
         // Not a complete ClientHello: leave policy to the default pool. The
         // proxy only guarantees a full record when `sni_routes` is non-empty.
         return VERDICT_DEFAULT;

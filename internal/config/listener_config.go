@@ -37,11 +37,43 @@ const (
 	// DefaultInspectTimeout bounds all reads that make up one header block.
 	// It is a total deadline, not a per-read deadline.
 	DefaultInspectTimeout = 3 * time.Second
+
+	// DefaultMaxBodyBytes bounds a Content-Length body inspected through
+	// body_policy. It prevents a declared length from parking a connection
+	// indefinitely and caps the memory/work attributable to one exchange.
+	DefaultMaxBodyBytes int64 = 1 << 20
+
+	// DefaultMaxInstances bounds concurrent ABI v4 guest instances per plugin.
+	DefaultMaxInstances = 64
+
+	// MaxInstancesLimit is a configuration sanity ceiling. Each active
+	// instance may reserve max_memory_pages of linear memory, so allowing an
+	// unbounded value would recreate the exhaustion problem this limit exists
+	// to prevent.
+	MaxInstancesLimit = 1024
 )
 
-// DataModeHeaders is the plugin.data_mode value that inspects one complete
-// HTTP/1 request header block before dialing the upstream.
-const DataModeHeaders = "headers"
+const (
+	// DataModeOnce inspects the first client chunk before dialing. It is ABI v4
+	// and may use route_pools.
+	DataModeOnce = "once"
+	// DataModeHeaders inspects one complete HTTP/1 request header block before
+	// dialing. It is ABI v4 and may use route_pools.
+	DataModeHeaders = "headers"
+	// DataModeStream inspects every chunk in both directions. It is ABI v4,
+	// disables splice(2) and cannot route.
+	DataModeStream = "stream"
+	// BodyPolicyRequest inspects a Content-Length request body after headers.
+	BodyPolicyRequest = "request"
+	// BodyPolicyResponse inspects response headers and a Content-Length response body.
+	BodyPolicyResponse = "response"
+	// BodyPolicyBoth inspects both Content-Length request and response bodies.
+	BodyPolicyBoth = "both"
+	// MutationPolicyNone rejects every body replacement (the default).
+	MutationPolicyNone = "none"
+	// MutationPolicyReplace allows same-length replacements in inspected body events.
+	MutationPolicyReplace = "replace"
+)
 
 // ListenerConfig describes a single front-facing TCP listener.
 type ListenerConfig struct {
@@ -76,12 +108,16 @@ func (t TLSConfig) Enabled() bool {
 // PluginConfig configures an optional WebAssembly plugin attached to a listener.
 type PluginConfig struct {
 	Path           string        `yaml:"path"`             // path to .wasm binary; empty = disabled
-	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 16 pages = 1 MiB)
+	MaxMemoryPages uint32        `yaml:"max_memory_pages"` // cap in 64 KiB pages (0 = default 17 pages = 1.06 MiB)
+	MaxInstances   int           `yaml:"max_instances"`    // max concurrent guest instances per listener (0 = default 64)
 	Timeout        time.Duration `yaml:"timeout"`          // per-hook timeout; 0 = safe 1s default
-	DataMode       string        `yaml:"data_mode"`        // "once" (default; first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk)
-	MaxHeaderBytes int           `yaml:"max_header_bytes"` // headers mode: max request header block (default 16 KiB, max 16389)
+	DataMode       string        `yaml:"data_mode"`        // "once" (first packet, splice), "headers" (complete HTTP/1 request headers, splice) or "stream" (every chunk); all three are ABI v4
+	BodyPolicy     string        `yaml:"body_policy"`      // "request", "response" or "both"; requires data_mode: headers
+	MaxBodyBytes   int64         `yaml:"max_body_bytes"`   // max Content-Length body inspected by body_policy (0 = default 1 MiB)
+	MutationPolicy string        `yaml:"mutation_policy"`  // "none" (default) or "replace"; replace requires body_policy
+	MaxHeaderBytes int           `yaml:"max_header_bytes"` // max bytes per HTTP head (default 16 KiB, max 16389)
 	InspectTimeout time.Duration `yaml:"inspect_timeout"`  // headers mode: total deadline for one header block (default 3s)
-	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_data return value (2 -> index 0, 3 -> index 1, ...)
+	RoutePools     []string      `yaml:"route_pools"`      // optional pools selectable by on_event return value (2 -> index 0, 3 -> index 1, ...)
 	Wasm           []byte        `yaml:"-"`                // inline .wasm bytes for programmatic/test use
 }
 
@@ -198,8 +234,23 @@ func (l *ListenerConfig) Validate() error {
 	if l.Plugin.MaxMemoryPages > 65536 {
 		return errors.New("plugin.max_memory_pages cannot exceed 65536")
 	}
+	if l.Plugin.MaxInstances < 0 {
+		return errors.New("plugin.max_instances cannot be negative")
+	}
+	if l.Plugin.MaxInstances > MaxInstancesLimit {
+		return fmt.Errorf("plugin.max_instances cannot exceed %d", MaxInstancesLimit)
+	}
+	if l.Plugin.MaxInstances == 0 {
+		l.Plugin.MaxInstances = DefaultMaxInstances
+	}
+	if l.Plugin.MaxBodyBytes < 0 {
+		return errors.New("plugin.max_body_bytes cannot be negative")
+	}
+	if l.Plugin.MaxBodyBytes == 0 {
+		l.Plugin.MaxBodyBytes = DefaultMaxBodyBytes
+	}
 	switch l.Plugin.DataMode {
-	case "", "once", "stream":
+	case "", DataModeOnce, DataModeStream:
 	case DataModeHeaders:
 		if !l.Plugin.Enabled() {
 			return errors.New("plugin.data_mode headers requires a plugin")
@@ -212,6 +263,27 @@ func (l *ListenerConfig) Validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown plugin.data_mode %q (want once, headers or stream)", l.Plugin.DataMode)
+	}
+	if len(l.Plugin.RoutePools) > 0 && l.Plugin.DataMode != DataModeOnce && l.Plugin.DataMode != DataModeHeaders {
+		return errors.New("plugin.route_pools requires data_mode once or headers")
+	}
+	switch l.Plugin.BodyPolicy {
+	case "":
+	case BodyPolicyRequest, BodyPolicyResponse, BodyPolicyBoth:
+		if l.Plugin.DataMode != DataModeHeaders {
+			return errors.New("plugin.body_policy requires plugin.data_mode headers")
+		}
+	default:
+		return fmt.Errorf("unknown plugin.body_policy %q (want request, response or both)", l.Plugin.BodyPolicy)
+	}
+	switch l.Plugin.MutationPolicy {
+	case "", MutationPolicyNone:
+	case MutationPolicyReplace:
+		if l.Plugin.BodyPolicy == "" {
+			return errors.New("plugin.mutation_policy replace requires plugin.body_policy")
+		}
+	default:
+		return fmt.Errorf("unknown plugin.mutation_policy %q (want none or replace)", l.Plugin.MutationPolicy)
 	}
 	if l.Plugin.MaxHeaderBytes == 0 {
 		l.Plugin.MaxHeaderBytes = DefaultMaxHeaderBytes

@@ -39,19 +39,18 @@ listeners:
       ban_duration: 5s        # base ban TTL on violation, exponentially backed off up to 16x (0 = no ban)
       allow_cidrs:            # CIDRs bypassed before counting
         - "127.0.0.1/32"
-    # Optional WASM plugin (L4 on_accept / on_close + L7 on_data inspection, mutation & routing).
-    # The module must export at least one of on_accept / on_data / on_close.
+    # Optional WASM plugin. All plugins are ABI v4 now; the committed v3
+    # examples are rejected. The v4 lifecycle path uses on_accept/on_close.
+    # The module must export at least one hook.
     # plugin:
-    #   path: "../plugins/examples/ipguard/ipguard.wasm"
+    #   path: "../plugins/examples/<v4-plugin>/<v4-plugin>.wasm"
     #   max_memory_pages: 16   # 16 pages = 1 MiB linear-memory cap per instance
     #   timeout: 1s            # per-hook timeout; 0 selects the safe 1s default
-    #   data_mode: "once"      # "once" | "headers" | "stream"
-    #   # headers mode only: gather one complete HTTP/1 request header block,
-    #   # call the plugin once, then splice the body. Only the first request of a
-    #   # keep-alive connection is inspected.
-    #   max_header_bytes: 16384
-    #   inspect_timeout: 3s
-    #   route_pools: ["web"]   # selectable by on_data/on_headers return value (2 -> route_pools[0], ...)
+    #   # L4-only modules omit data_mode. L7 modules use:
+    #   # data_mode: once | headers | stream
+    #   # max_header_bytes: 16384
+    #   # inspect_timeout: 3s
+    #   # route_pools: ["web"]  # once/headers only; stream cannot route
     #
     # Optional TLS passthrough routing by SNI: the proxy reads only the
     # ClientHello, picks a pool and replays the bytes, so end-to-end TLS and

@@ -22,7 +22,7 @@ public sealed class Agent
     /// <summary>Data-plane build version reported in Hello.</summary>
     public required string Version { get; init; }
 
-    /// <summary>ABI versions supported by the data plane, for example v1, v2, v3.</summary>
+    /// <summary>Plugin ABI versions supported by the data plane, for example v4.</summary>
     public IReadOnlyList<string> AbiVersions { get; init; } = [];
 
     /// <summary>Free-form labels matched by deployment wave selectors.</summary>

@@ -46,12 +46,27 @@ WasmGate разделён на **data plane** (сам прокси) и опци�
 | Пакет | Ответственность |
 |---|---|
 | `internal/config` | схема YAML (`KnownFields`), дефолты, валидация, `Resolve` для относительных путей |
-| `internal/proxy` | листенеры, snapshot, пулы/балансировщики, лимитер, релей, drain |
-| `internal/plugin` | рантайм `wazero`, пул инстансов, ABI v1–v3, лимиты памяти/времени |
+| `internal/proxy` | совместимый фасад API data plane |
+| `internal/proxy/runtime` | неизменяемые snapshot, публикация reload, registry плагинов и лимиты |
+| `internal/proxy/conn` | лимиты соединения, pipeline плагина, dial и relay |
+| `internal/proxy/server` | bind листенеров, accept, reload, probes и shutdown |
+| `internal/proxy/backend` | пулы, балансировка, health и circuit breaker |
+| `internal/proxy/relay` | двунаправленный relay, half-close, idle watchdog и splice |
+| `internal/proxy/httpinspect` | HTTP/1 headers, framing, body policy и mutation |
+| `internal/plugin/abi4/engine` | рантайм ABI v4, lifecycle инстансов, dispatch и hooks |
+| `internal/plugin/abi4/envelope` | IN envelope ABI v4 и HTTP header indexing |
+| `internal/plugin/abi4/output` | OUT envelope ABI v4 |
+| `internal/plugin/abi4/plan` | phases, flags, plans, capabilities и verdicts |
+| `internal/plugin/abi4/state` | ограниченные host-owned state slots |
+| `internal/plugin/abi4/wire` | общая проверка и кодирование section table |
 | `internal/tlspeek` | парсер ClientHello для SNI-маршрутизации |
 | `internal/ratelimit` | скользящее окно и guard одновременных соединений |
 | `internal/observe` | структурные логи, метрики Prometheus, admin HTTP endpoint |
-| `internal/controlplane` | enroll, mTLS-сессия, heartbeat, применение релизов, продление сертификата |
+| `internal/controlplane` | публичный фасад Agent и совместимые алиасы |
+| `internal/controlplane/options` | общие options и Normalize |
+| `internal/controlplane/identity` | файлы identity, enrollment и продление сертификата |
+| `internal/controlplane/release` | проверка подписанных релизов, артефакты и apply |
+| `internal/controlplane/session` | transport, stream loop, heartbeat и dispatch |
 
 ## Ограничения дизайна
 

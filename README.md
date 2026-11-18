@@ -30,7 +30,7 @@ plain relay never copies payload through user space.
 | Resilience | Optional three-state circuit breaker (closed/open/half-open) |
 | Rate limiting | Per-IP and per-subnet sliding window, concurrent limits, bans, CIDR allow list |
 | TLS | SNI passthrough with pool routing, or termination with certificate hot reload |
-| WASM | L4 `on_accept`/`on_close`, L7 `on_data`/`on_data_ex`, stateful `on_data_state` (ABI v3) |
+| WASM | ABI v4 `on_event` for `once`, `headers` and `stream`, plus ABI v4 `on_accept`/`on_close` lifecycle |
 | Observability | Admin endpoint (`/metrics`, `/healthz`, `/reload`), structured logs, pprof on demand |
 | Control plane | Enrollment, certificates, immutable configurations, signed releases, wave deployments, rollback, audit, admin UI |
 
@@ -113,14 +113,24 @@ agent protocol and security model.
 ```
 cmd/wasmgate/          entry point and flags
 internal/config/       YAML schema, validation, hot reload
-internal/proxy/        listeners, pools, connection relay, snapshot
-internal/plugin/       wazero sandbox and ABI v3
+internal/proxy/        compatibility facade and end-to-end tests
+internal/proxy/runtime/ snapshots, plugin registry and limits
+internal/proxy/conn/    connection pipeline and dialing
+internal/proxy/server/  listener lifecycle, reload and probes
+internal/proxy/backend/ pools, balancing, health and breakers
+internal/proxy/relay/  bidirectional relay and idle/splice paths
+internal/proxy/httpinspect/ HTTP/1 framing and body policy
+internal/plugin/abi4/  ABI v4 runtime: envelope, plan, engine, lifecycle
 internal/tlspeek/      SNI parser for passthrough
 internal/ratelimit/    sliding-window limiter
 internal/observe/      logs, metrics, admin endpoint
-internal/controlplane/ control-plane client (enroll, session, apply)
+internal/controlplane/ control-plane Agent facade
+internal/controlplane/options/ shared options
+internal/controlplane/identity/ enrollment and certificate files
+internal/controlplane/release/ signed releases and artifacts
+internal/controlplane/session/ transport, heartbeat and dispatch
 control-plane/         C# control plane and tests
-plugins/examples/      eight reference plugins (Rust, prebuilt .wasm)
+plugins/examples/      nine reference plugins (Rust, prebuilt .wasm)
 configs/               example and showcase configurations
 deployments/           deployment scenarios, Dockerfiles, systemd, dev certificates
 benchmarks/            raw benchmark output

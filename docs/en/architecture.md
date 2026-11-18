@@ -46,12 +46,27 @@ a test with zero dropped connections.
 | Package | Responsibility |
 |---|---|
 | `internal/config` | YAML schema (`KnownFields`), defaults, validation, `Resolve` for relative paths |
-| `internal/proxy` | listeners, snapshot, pools/balancers, limiter, relay, drain |
-| `internal/plugin` | `wazero` runtime, instance pool, ABI v1–v3, memory/timeout limits |
+| `internal/proxy` | compatibility facade for the data-plane API |
+| `internal/proxy/runtime` | immutable snapshots, reload publication, plugin registry and limits |
+| `internal/proxy/conn` | per-connection limits, plugin pipeline, dial and relay orchestration |
+| `internal/proxy/server` | listener binding, accept loops, reload, probes and shutdown |
+| `internal/proxy/backend` | pools, balancing, upstream health and circuit breakers |
+| `internal/proxy/relay` | bidirectional relay, half-close, idle watchdog and splice path |
+| `internal/proxy/httpinspect` | HTTP/1 headers, framing, body policy and mutation |
+| `internal/plugin/abi4/engine` | ABI v4 runtime, instance lifecycle, dispatch and hooks |
+| `internal/plugin/abi4/envelope` | ABI v4 IN envelope and HTTP header indexing |
+| `internal/plugin/abi4/output` | ABI v4 OUT envelope |
+| `internal/plugin/abi4/plan` | phases, flags, plans, capabilities and verdicts |
+| `internal/plugin/abi4/state` | bounded host-owned state slots |
+| `internal/plugin/abi4/wire` | shared section-table validation and encoding |
 | `internal/tlspeek` | ClientHello parser for SNI routing |
 | `internal/ratelimit` | Sliding-window limiter and concurrent-connection guard |
 | `internal/observe` | Structured logs, Prometheus metrics, admin HTTP endpoint |
-| `internal/controlplane` | Enroll, mTLS session, heartbeats, release apply, certificate renewal |
+| `internal/controlplane` | public Agent facade and compatibility aliases |
+| `internal/controlplane/options` | shared options and normalization |
+| `internal/controlplane/identity` | agent files, enrollment and certificate renewal |
+| `internal/controlplane/release` | signed release verification, artifacts and apply |
+| `internal/controlplane/session` | transport, stream loop, heartbeat and dispatch |
 
 ## Design constraints
 

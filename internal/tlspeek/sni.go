@@ -87,12 +87,16 @@ func (c *Conn) Read(p []byte) (int, error) {
 func (c *Conn) DrainTo(w io.Writer) (net.Conn, int64, error) {
 	var written int64
 	if len(c.data) > 0 {
+		remaining := len(c.data)
 		n, err := w.Write(c.data)
 		written = int64(n)
 		c.data = nil
 		c.releaseBuf()
 		if err != nil {
 			return c.Conn, written, err
+		}
+		if n != remaining {
+			return c.Conn, written, io.ErrShortWrite
 		}
 	}
 	return c.Conn, written, nil

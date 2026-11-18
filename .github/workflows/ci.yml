@@ -1,6 +1,6 @@
-# CI: format/vet/lint plus the test matrix.
+# CI: format/vet/lint, Go tests, Rust guest builds, and .NET tests.
 #
-# Two jobs:
+# Go jobs:
 #   lint — fails on any unformatted file (gofmt), go vet, golangci-lint.
 #          The lint version is pinned to v2.15.0 because .golangci.yml uses the
 #          v2 configuration schema (golangci-lint >= 2.0).
@@ -12,7 +12,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, stable]
   pull_request:
 
 # Cancel the in-flight run of the same branch when a new push arrives: only
@@ -79,6 +79,39 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+  rust-guests:
+    name: ABI v4 Rust guests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/examples
+    steps:
+      - uses: actions/checkout@v5
+
+      # Keep CI pinned to the toolchain and target declared in
+      # plugins/examples/rust-toolchain.toml. A runner image may ship Rust,
+      # but it does not guarantee this version or the wasm32 target.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.100.0"
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - name: SDK tests and formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked -p wg-common
+
+      - name: Build Wasm guests
+        run: cargo build --locked --workspace --release --target wasm32-unknown-unknown
+
+      - name: Verify prebuilt artifacts match the Rust sources
+        run: |
+          for module in */*.wasm; do
+            cmp -- "$module" "target/wasm32-unknown-unknown/release/${module##*/}"
+          done
 
   dotnet:
     name: .NET (build + format + tests)

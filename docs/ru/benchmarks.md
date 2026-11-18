@@ -72,12 +72,13 @@ Linux, `0 B/op, 0 allocs/op` везде:
 | `ratelimit/BenchmarkAllow` | 65.4 ns/op (параллельно: 20.4 ns/op) |
 | `plugin/BenchmarkOnAccept` | 81.3 ns/op (параллельно: 24.7 ns/op) |
 | `plugin/BenchmarkOnData` (L7) | 76.0 ns/op |
-| `plugin/BenchmarkOnDataState` (ABI v3) | 111–122 ns/op |
+| `plugin/BenchmarkOnDataState` (исторический ABI v3 fixture) | 111–122 ns/op |
 | `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
 
-ABI v3 добавляет около 30 нс к stateless `on_data`: это копия до 4 KiB
-состояния, а не «второй прокси». Полный stateful-плагин (`http_body_guard`)
-стоит ~2.29 µs на чанк, потому что разбирает HTTP.
+Исторический stateful fixture добавлял около 30 нс к stateless `on_data`.
+Он оставлен только как старая запись; production-гости используют envelope ABI
+v4 и состояние, которым владеет host. HTTP body policy дороже из-за разбора
+фрейминга и typed-фаз.
 
 ## Как читать числа
 

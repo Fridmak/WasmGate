@@ -123,3 +123,21 @@ func TestConnFillEOF(t *testing.T) {
 		t.Fatalf("Fill after peer close = %v, want io.EOF", err)
 	}
 }
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestDrainToRejectsShortWrite(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() { _, _ = server.Write([]byte("ab")) }()
+	_, wrapped, err := PeekChunk(client, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, n, err := wrapped.(*Conn).DrainTo(shortWriter{}); n != 1 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short drain = (%d, %v)", n, err)
+	}
+}

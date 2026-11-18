@@ -100,6 +100,12 @@ func TestListenerValidateFillsDefaults(t *testing.T) {
 	if l.IdleTimeout != config.DefaultIdleTimeout {
 		t.Fatalf("idle timeout = %s, want %s", l.IdleTimeout, config.DefaultIdleTimeout)
 	}
+	if l.Plugin.MaxBodyBytes != config.DefaultMaxBodyBytes {
+		t.Fatalf("max body bytes = %d, want %d", l.Plugin.MaxBodyBytes, config.DefaultMaxBodyBytes)
+	}
+	if l.Plugin.MaxInstances != config.DefaultMaxInstances {
+		t.Fatalf("max instances = %d, want %d", l.Plugin.MaxInstances, config.DefaultMaxInstances)
+	}
 }
 
 func TestListenerValidateRejects(t *testing.T) {
@@ -129,20 +135,29 @@ func TestListenerValidateRejects(t *testing.T) {
 	badCIDR.RateLimit.AllowCIDRs = []string{"not-a-cidr"}
 	shortWindow := valid
 	shortWindow.RateLimit = config.RateLimit{Max: 10, Window: time.Millisecond}
+	negInstances := valid
+	negInstances.Plugin.MaxInstances = -1
+	manyInstances := valid
+	manyInstances.Plugin.MaxInstances = config.MaxInstancesLimit + 1
+	negBody := valid
+	negBody.Plugin.MaxBodyBytes = -1
 
 	cases := map[string]config.ListenerConfig{
-		"missing name":     noName,
-		"missing addr":     noAddr,
-		"missing pool":     noPool,
-		"malformed addr":   badAddr,
-		"negative dial":    negDial,
-		"negative idle":    negIdle,
-		"negative maxconn": negConns,
-		"negative rate":    negRate,
-		"negative subnet":  negSubnet,
-		"negative ban":     negBan,
-		"bad allow cidr":   badCIDR,
-		"short window":     shortWindow,
+		"missing name":       noName,
+		"missing addr":       noAddr,
+		"missing pool":       noPool,
+		"malformed addr":     badAddr,
+		"negative dial":      negDial,
+		"negative idle":      negIdle,
+		"negative maxconn":   negConns,
+		"negative rate":      negRate,
+		"negative subnet":    negSubnet,
+		"negative ban":       negBan,
+		"bad allow cidr":     badCIDR,
+		"short window":       shortWindow,
+		"negative instances": negInstances,
+		"too many instances": manyInstances,
+		"negative body":      negBody,
 	}
 	for name, l := range cases {
 		if err := l.Validate(); err == nil {
