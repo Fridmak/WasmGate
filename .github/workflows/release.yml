@@ -253,6 +253,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: data-plane-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: control-plane-*
           path: dist
           merge-multiple: true
 
