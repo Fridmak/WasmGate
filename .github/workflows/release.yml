@@ -173,7 +173,8 @@ jobs:
               -o "dist/pkg/${pkg}/wasmgate" \
               ./cmd/wasmgate
           cp LICENSE "dist/pkg/${pkg}/"
-          cp configs/wasmgate.yaml "dist/pkg/${pkg}/"
+          mkdir -p "dist/pkg/${pkg}/configs"
+          cp configs/wasmgate.yaml "dist/pkg/${pkg}/configs/"
           test -x "dist/pkg/${pkg}/wasmgate-control"
           tar -C dist/pkg -czf "dist/${pkg}.tar.gz" "$pkg"
 
