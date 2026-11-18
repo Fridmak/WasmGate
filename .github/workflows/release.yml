@@ -23,7 +23,7 @@ permissions:
   packages: write
 
 env:
-  VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
   DOTNET_VERSION: "10.0.404"
 
 jobs:
@@ -39,8 +39,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::VERSION must look like v0.1.0 or v0.1.0-rc.1; got '$VERSION'"
+          if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release tag must look like v0.1.0 or v0.1.0-rc.1; got '$RELEASE_VERSION'"
             exit 1
           fi
 
@@ -108,11 +108,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg="wasmgate-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          pkg="wasmgate-${RELEASE_VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
           mkdir -p "dist/pkg/${pkg}/configs"
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath \
-              -ldflags="-s -w -X main.version=${VERSION}" \
+              -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
               -o "dist/pkg/${pkg}/wasmgate${{ matrix.extension }}" \
               ./cmd/wasmgate
           cp LICENSE "dist/pkg/${pkg}/"
@@ -157,19 +157,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg="wasmgate-control-${VERSION}-linux-amd64"
+          pkg="wasmgate-control-${RELEASE_VERSION}-linux-amd64"
           mkdir -p "dist/pkg/${pkg}"
           dotnet publish control-plane/src/WasmGate.Control.Api \
             -c Release -r linux-x64 --self-contained \
             -p:PublishAot=true \
             -p:StripSymbols=true \
             -p:DebugType=None \
-            -p:Version="${VERSION#v}" \
-            -p:InformationalVersion="${VERSION}" \
+            -p:Version="${RELEASE_VERSION#v}" \
+            -p:InformationalVersion="${RELEASE_VERSION}" \
             -o "dist/pkg/${pkg}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -trimpath \
-              -ldflags="-s -w -X main.version=${VERSION}" \
+              -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
               -o "dist/pkg/${pkg}/wasmgate" \
               ./cmd/wasmgate
           cp LICENSE "dist/pkg/${pkg}/"
@@ -219,8 +219,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            VERSION=${{ env.VERSION }}
-          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate:${{ env.VERSION }}
+            VERSION=${{ env.RELEASE_VERSION }}
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate:${{ env.RELEASE_VERSION }}
 
       - name: Build and push control plane
         uses: docker/build-push-action@v6
@@ -230,20 +230,20 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            VERSION=${{ env.VERSION }}
-          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate-control:${{ env.VERSION }}
+            VERSION=${{ env.RELEASE_VERSION }}
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/wasmgate-control:${{ env.RELEASE_VERSION }}
 
       - name: Point latest at the stable release
-        if: ${{ !contains(env.VERSION, '-') }}
+        if: ${{ !contains(env.RELEASE_VERSION, '-') }}
         shell: bash
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             --tag "ghcr.io/${OWNER}/wasmgate:latest" \
-            "ghcr.io/${OWNER}/wasmgate:${VERSION}"
+            "ghcr.io/${OWNER}/wasmgate:${RELEASE_VERSION}"
           docker buildx imagetools create \
             --tag "ghcr.io/${OWNER}/wasmgate-control:latest" \
-            "ghcr.io/${OWNER}/wasmgate-control:${VERSION}"
+            "ghcr.io/${OWNER}/wasmgate-control:${RELEASE_VERSION}"
 
   publish:
     name: Publish GitHub release
@@ -348,7 +348,7 @@ jobs:
           sha256sum -c SHA256SUMS
           ```
           EOF
-          sed -i "s/__VERSION__/${VERSION}/g; s/__OWNER__/${GITHUB_REPOSITORY_OWNER,,}/g" release-notes.md
+          sed -i "s/__VERSION__/${RELEASE_VERSION}/g; s/__OWNER__/${GITHUB_REPOSITORY_OWNER,,}/g" release-notes.md
 
       - name: Create or update release
         shell: bash
@@ -357,13 +357,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" dist/* --clobber
-            gh release edit "$VERSION" \
-              --title "WasmGate $VERSION" \
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" dist/* --clobber
+            gh release edit "$RELEASE_VERSION" \
+              --title "WasmGate $RELEASE_VERSION" \
               --notes-file release-notes.md
           else
-            gh release create "$VERSION" dist/* \
-              --title "WasmGate $VERSION" \
+            gh release create "$RELEASE_VERSION" dist/* \
+              --title "WasmGate $RELEASE_VERSION" \
               --notes-file release-notes.md
           fi
