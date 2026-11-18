@@ -1,7 +1,6 @@
 using WasmGate.Control.Infrastructure.Storage;
 
 namespace WasmGate.Control.Api.Endpoints.Health;
-
 /// <summary>
 /// Liveness and readiness probes.
 /// </summary>
@@ -23,11 +22,11 @@ internal static class HealthEndpoints
     }
 
     /// <summary>Reports readiness: the process answers and the storage schema is reachable.</summary>
-    /// <param name="probe">Provider-specific readiness probe.</param>
+    /// <param name="probe">SQLite readiness probe.</param>
     /// <param name="cancellationToken">Cancels the probe.</param>
     /// <returns><c>ok</c> when a trivial query against the schema succeeds, otherwise HTTP 503.</returns>
     private static async Task<IResult> CheckReady(
-        IStorageProbe probe,
+        SqliteStorageProbe probe,
         CancellationToken cancellationToken)
     {
         try

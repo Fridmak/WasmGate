@@ -4,7 +4,7 @@ namespace WasmGate.Control.Infrastructure.Repositories;
 
 /// <summary>
 /// Translates SQLite constraint errors into the same domain situations the
-/// PostgreSQL adapters report.
+/// repositories report.
 /// </summary>
 /// <remarks>
 /// SQLite reports a foreign-key failure as extended code 787. The primary code

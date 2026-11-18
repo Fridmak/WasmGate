@@ -32,7 +32,7 @@ internal static class MetricsEndpoints
     {
         IReadOnlyList<Agent> list;
         using var dbTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // A scrape must return even when PostgreSQL is slow or unreachable:
+        // A scrape must return even when SQLite is slow or unreachable:
         // Prometheus gives up after its own scrape timeout and marks the target
         // down, hiding the process metrics that are still perfectly valid.
         dbTimeout.CancelAfter(TimeSpan.FromSeconds(2));

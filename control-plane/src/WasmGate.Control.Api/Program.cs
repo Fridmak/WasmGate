@@ -19,6 +19,23 @@ using AdminJsonContext = WasmGate.Control.Api.Contracts.AdminJsonContext;
 // The content root is the application directory, not the working directory: the
 // admin UI lives in wwwroot next to the binary and must be found regardless of
 // where the service was started.
+var options = IHostApplicationBuilder.GetCpOptions();
+
+// A tag/release build can copy the database without starting the listeners.
+if (args.Length > 0 && args[0] == "--backup")
+{
+    if (args.Length != 2)
+    {
+        Console.Error.WriteLine("usage: wasmgate-control --backup <path>");
+        Environment.ExitCode = 2;
+        return;
+    }
+
+    await SqliteBackup.BackupAsync(options.SqlitePath, args[1], CancellationToken.None);
+    Console.WriteLine($"backup written to {Path.GetFullPath(args[1])}");
+    return;
+}
+
 var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
 {
     Args = args,
@@ -26,12 +43,11 @@ var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
 });
 
 builder.SetupLogging();
-builder.Services.ConfigureHttpJsonOptions(options =>
+builder.Services.ConfigureHttpJsonOptions(json =>
 {
-    options.SerializerOptions.TypeInfoResolverChain.Insert(0, AdminJsonContext.Default);
+    json.SerializerOptions.TypeInfoResolverChain.Insert(0, AdminJsonContext.Default);
 });
 
-var options = IHostApplicationBuilder.GetCpOptions();
 StartupSecurity.Validate(options);
 builder.WebHost.ConfigureKestrel(kestrel =>
 {
@@ -52,10 +68,9 @@ builder.Services.AddHostedService<DeploymentReaper>();
 
 var app = builder.Build();
 
-// Prepare the selected store before serving. SQLite creates its directory,
-// takes the single-process lock and applies the embedded schema; PostgreSQL is
-// a no-op and keeps its explicit migration workflow.
-await app.Services.GetRequiredService<IStorageInitializer>().InitializeAsync(CancellationToken.None);
+// Prepare the SQLite store before serving: create its directory, take the
+// single-process lock, enable WAL and apply the embedded schema.
+await app.Services.GetRequiredService<SqliteStorageInitializer>().InitializeAsync(CancellationToken.None);
 
 // Create the release-signing key before serving: agents read the matching
 // public key when they start, and enrollment can precede the first release.

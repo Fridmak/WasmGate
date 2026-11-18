@@ -1,9 +1,7 @@
 # Control plane with SQLite, no data plane.
 #
 # Use this when agents run elsewhere (VMs, Kubernetes, another compose project).
-# SQLite is the default single-node store. For PostgreSQL use the overlay:
-#
-#   docker compose -f compose.yml -f compose.postgres.yml up -d --build
+# SQLite is built in, so no database container is required.
 #
 #   ./deployments/scripts/dev-certs.sh
 #   cp deployments/scenarios/03-control-plane/.env.example \
@@ -32,7 +30,6 @@ services:
       dockerfile: deployments/docker/control-plane.Dockerfile
     restart: unless-stopped
     environment:
-      WASMGATE_CP_STORAGE: "sqlite"
       WASMGATE_CP_SQLITE_PATH: "/data/control.db"
       WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
       WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"

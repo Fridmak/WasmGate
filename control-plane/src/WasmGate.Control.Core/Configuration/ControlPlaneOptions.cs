@@ -13,24 +13,7 @@ namespace WasmGate.Control.Core.Configuration;
 public sealed class ControlPlaneOptions
 {
     /// <summary>
-    /// Connection string used when <see cref="PostgresConnectionString"/> is not set.
-    /// Port 6767 is used instead of the default 5432 so that a locally installed
-    /// PostgreSQL service cannot shadow the development container.
-    /// </summary>
-    public const string DefaultPostgresConnectionString =
-        "Host=127.0.0.1;Port=6767;Database=wasmgate;Username=wasmgate;Password=wasmgate";
-
-    /// <summary>
-    /// Npgsql connection string for the control-plane database.
-    /// </summary>
-    public string PostgresConnectionString { get; init; } = DefaultPostgresConnectionString;
-
-    /// <summary>Storage backend selected for this process.</summary>
-    public StorageProvider Storage { get; init; } = StorageProvider.Postgres;
-
-    /// <summary>
-    /// SQLite database file used when <see cref="Storage"/> is
-    /// <see cref="StorageProvider.Sqlite"/>.
+    /// SQLite database file used by the control plane.
     /// </summary>
     /// <remarks>
     /// A relative path is resolved against the control-plane process working
@@ -147,14 +130,4 @@ public sealed class ControlPlaneOptions
 
     /// <summary>Largest configuration document accepted by the admin API, in bytes.</summary>
     public int MaxConfigBytes { get; init; } = 1024 * 1024;
-}
-
-/// <summary>Durable store used by the control plane.</summary>
-public enum StorageProvider
-{
-    /// <summary>PostgreSQL through Npgsql. The default for existing deployments.</summary>
-    Postgres = 0,
-
-    /// <summary>Single-file SQLite database for single-node installations.</summary>
-    Sqlite = 1,
 }

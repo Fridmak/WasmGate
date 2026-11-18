@@ -7,9 +7,11 @@ namespace WasmGate.Control.Infrastructure.Storage;
 /// The probe reads from <c>agents</c>, so a file without the schema reports
 /// not-ready instead of looking healthy after a simple <c>SELECT 1</c>.
 /// </remarks>
-public sealed class SqliteStorageProbe(SqliteConnectionFactory connections) : IStorageProbe
+public sealed class SqliteStorageProbe(SqliteConnectionFactory connections)
 {
-    /// <inheritdoc />
+    /// <summary>Returns true when the schema answers a trivial query.</summary>
+    /// <param name="cancellationToken">Cancels the probe.</param>
+    /// <returns>True when the store is ready.</returns>
     public async Task<bool> CheckAsync(CancellationToken cancellationToken)
     {
         try

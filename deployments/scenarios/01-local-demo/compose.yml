@@ -1,7 +1,6 @@
 # Local demo: control plane + one data plane + nginx backend.
 #
-# SQLite is the default store, so no database container is needed. For the
-# PostgreSQL path use the overlay:
+# SQLite is the built-in store, so no database container is needed:
 #
 #   ./deployments/scripts/dev-certs.sh
 #   cp deployments/scenarios/01-local-demo/.env.example \
@@ -10,10 +9,6 @@
 #   docker compose -f deployments/scenarios/01-local-demo/compose.yml up -d --build
 #   # create an agent in the UI, put its id/token in .env, then:
 #   docker compose -f deployments/scenarios/01-local-demo/compose.yml --profile dp up -d
-#
-# PostgreSQL variant:
-#   docker compose -f deployments/scenarios/01-local-demo/compose.yml \
-#                  -f deployments/scenarios/01-local-demo/compose.postgres.yml up -d --build
 #
 # The data plane is behind the "dp" profile because it needs an enrollment
 # token and an agent id created through the admin API.
@@ -26,7 +21,6 @@ services:
       dockerfile: deployments/docker/control-plane.Dockerfile
     restart: unless-stopped
     environment:
-      WASMGATE_CP_STORAGE: "sqlite"
       WASMGATE_CP_SQLITE_PATH: "/data/control.db"
       WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
       WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"

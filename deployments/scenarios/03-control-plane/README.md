@@ -3,9 +3,8 @@
 Use this scenario when the control plane runs on one host and the data planes
 run somewhere else: separate VMs, Kubernetes, or another compose project.
 
-SQLite is the default: the database lives in the `cpdata` volume at
-`/data/control.db`, so no database container is required. PostgreSQL is
-available as an overlay for production-like testing.
+SQLite is built in: the database lives in the `cpdata` volume at
+`/data/control.db`, so no database container or service is required.
 
 ## Start
 
@@ -22,13 +21,6 @@ curl -fsS http://127.0.0.1:9097/readyz
 ```
 
 Open `http://127.0.0.1:9097/` and paste the admin token.
-
-To use PostgreSQL instead of SQLite:
-
-```bash
-docker compose -f deployments/scenarios/03-control-plane/compose.yml \
-               -f deployments/scenarios/03-control-plane/compose.postgres.yml up -d --build
-```
 
 ## Add a data plane
 
@@ -62,10 +54,7 @@ For many agents, see [`../05-dp-fleet`](../05-dp-fleet).
 ## Notes
 
 - SQLite is a single file and supports exactly one control-plane process. This
-  matches the in-memory session registry. Use PostgreSQL for shared deployments.
-- In the PostgreSQL overlay, migrations are applied only when `pgdata` is first
-  initialized. For an existing database run `control-plane/migrations/001..006`
-  manually.
+  matches the in-memory session registry.
 - The data plane connects **outbound** to `9096`; no inbound port on the agent is
   needed for management.
 - The control plane keeps live sessions in memory. Run exactly one CP instance

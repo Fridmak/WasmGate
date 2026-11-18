@@ -10,7 +10,7 @@ namespace WasmGate.Control.Infrastructure.Repositories;
 /// </summary>
 /// <remarks>
 /// The log exposes no update or delete. <c>id</c> is assigned by SQLite and also
-/// defines the read order, matching the PostgreSQL <c>BIGSERIAL</c> behaviour.
+/// defines the read order.
 /// </remarks>
 public sealed class SqliteAuditLog(SqliteConnectionFactory connections) : IAuditLog
 {

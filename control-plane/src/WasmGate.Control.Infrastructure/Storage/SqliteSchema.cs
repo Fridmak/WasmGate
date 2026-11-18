@@ -9,7 +9,7 @@ namespace WasmGate.Control.Infrastructure.Storage;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The schema is the final logical shape of the PostgreSQL migrations, not a
+/// The schema is the logical control-plane shape, not a
 /// replay of their individual ALTER statements. It is created once per file and
 /// versioned with <c>PRAGMA user_version</c>.
 /// </para>

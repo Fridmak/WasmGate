@@ -48,7 +48,7 @@ public sealed class SqliteInstanceLock : IDisposable
             throw new InvalidOperationException(
                 $"SQLite database '{databasePath}' is already in use by another control-plane process. " +
                 "SQLite storage supports exactly one control-plane process per database file; " +
-                "use PostgreSQL for shared deployments.",
+                "SQLite storage is designed for a single control-plane process.",
                 ex);
         }
     }

@@ -8,8 +8,8 @@ namespace WasmGate.Control.Infrastructure.Repositories;
 /// </summary>
 /// <remarks>
 /// SQLite storage supports exactly one control-plane process, so an in-process
-/// semaphore per environment provides the same serialization as the PostgreSQL
-/// session advisory lock. The key format matches <see cref="PostgresLockKeys"/>.
+/// semaphore per environment serializes operations that must not race with
+/// environment deletion. The key is the normalized environment name.
 /// </remarks>
 public sealed class SqliteEnvironmentOperationLock : IEnvironmentOperationLock
 {

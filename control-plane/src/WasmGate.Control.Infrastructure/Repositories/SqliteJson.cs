@@ -7,9 +7,8 @@ namespace WasmGate.Control.Infrastructure.Repositories;
 /// JSON encoding helpers shared by the SQLite repositories.
 /// </summary>
 /// <remarks>
-/// The PostgreSQL adapters use JSONB/array columns and Npgsql conversion. SQLite
-/// stores both as TEXT, so the SQLite adapters serialize and parse explicitly
-/// through the source-generated <see cref="StorageJsonContext"/>.
+/// SQLite stores labels and ABI versions as TEXT, so the adapters serialize and
+/// parse explicitly through the source-generated <see cref="StorageJsonContext"/>.
 /// </remarks>
 internal static class SqliteJson
 {

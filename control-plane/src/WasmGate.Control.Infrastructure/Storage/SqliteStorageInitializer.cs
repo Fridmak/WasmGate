@@ -15,15 +15,16 @@ public sealed class SqliteStorageInitializer(
     ControlPlaneOptions options,
     SqliteConnectionFactory connections,
     SqliteInstanceLock instanceLock,
-    ILogger<SqliteStorageInitializer> logger) : IStorageInitializer
+    ILogger<SqliteStorageInitializer> logger)
 {
-    /// <inheritdoc />
+    /// <summary>Creates the directory, lock, WAL mode and schema.</summary>
+    /// <param name="cancellationToken">Cancels initialization.</param>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(options.SqlitePath))
         {
             throw new InvalidOperationException(
-                "WASMGATE_CP_SQLITE_PATH must not be empty when WASMGATE_CP_STORAGE=sqlite.");
+                "WASMGATE_CP_SQLITE_PATH must not be empty.");
         }
 
         var databasePath = Path.GetFullPath(options.SqlitePath);

@@ -98,7 +98,7 @@ The full reference is [configuration](docs/en/configuration.md); the example fil
 
 ## Control plane
 
-The optional control plane (`.NET 10`, PostgreSQL) turns the proxy into a managed
+The optional control plane (`.NET 10`, SQLite) turns the proxy into a managed
 fleet: agents enroll with a one-time token, receive an mTLS certificate and
 renew it automatically; configuration versions become signed releases deployed in
 waves. A built-in admin UI is served on the admin port.
@@ -171,7 +171,7 @@ English:
 - Go 1.26+ (the module pins a 1.27 toolchain).
 - Linux is required for zero-copy `splice(2)`; other platforms use a pooled
   buffered relay and work correctly, just slower on bulk transfer.
-- The control plane requires .NET 10 and PostgreSQL 17.
+- The control plane requires .NET 10; its SQLite store is embedded.
 
 ## License
 

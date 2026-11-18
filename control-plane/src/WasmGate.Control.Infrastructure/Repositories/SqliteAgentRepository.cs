@@ -12,7 +12,7 @@ namespace WasmGate.Control.Infrastructure.Repositories;
 /// <remarks>
 /// <c>labels</c> and <c>abi_versions</c> are JSON text; <c>status</c> is written
 /// as an enum name. The upsert deliberately does not overwrite
-/// <c>environment</c> or <c>registered_at</c>, matching the PostgreSQL adapter.
+/// <c>environment</c> or <c>registered_at</c>.
 /// </remarks>
 public sealed class SqliteAgentRepository(SqliteConnectionFactory connections) : IAgentRepository
 {
@@ -89,8 +89,8 @@ public sealed class SqliteAgentRepository(SqliteConnectionFactory connections) :
 
         // Serialise with DeleteAsync: a reconnect that started before deletion
         // must observe the tombstone instead of inserting the row again. The
-        // immediate transaction provides the same serialization as the
-        // PostgreSQL advisory lock because SQLite has a single writer.
+        // immediate transaction serializes against DeleteAsync because SQLite
+        // has a single writer.
         var deleted = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS (SELECT 1 FROM deleted_agents WHERE id = @id)",
             new { id = agent.Id },

@@ -72,7 +72,7 @@ deployments/observability/
 | `wasmgate_control_http_requests_total{method,status}` | counter | HTTP-запросы admin, API и scrape |
 | `wasmgate_control_agents{environment,status}` | gauge | агенты по среде и статусу |
 | `wasmgate_control_grpc_sessions_active` | gauge | живые gRPC-сессии агентов |
-| `wasmgate_control_agent_query_failures_total` | counter | scrape, не сумевшие прочитать агентов из PostgreSQL |
+| `wasmgate_control_agent_query_failures_total` | counter | scrape, не сумевшие прочитать агентов из SQLite |
 | `wasmgate_control_uptime_seconds` | gauge | uptime процесса |
 | `wasmgate_control_working_set_bytes` | gauge | resident working set |
 | `wasmgate_control_gc_heap_bytes` | gauge | managed heap |

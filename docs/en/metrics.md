@@ -72,7 +72,7 @@ See [`deployments/observability/README.md`](../../deployments/observability/READ
 | `wasmgate_control_http_requests_total{method,status}` | counter | admin, API and scrape HTTP requests |
 | `wasmgate_control_agents{environment,status}` | gauge | registered agents grouped by environment and status |
 | `wasmgate_control_grpc_sessions_active` | gauge | live agent control sessions |
-| `wasmgate_control_agent_query_failures_total` | counter | scrapes that could not read agents from PostgreSQL |
+| `wasmgate_control_agent_query_failures_total` | counter | scrapes that could not read agents from SQLite |
 | `wasmgate_control_uptime_seconds` | gauge | process uptime |
 | `wasmgate_control_working_set_bytes` | gauge | resident working set |
 | `wasmgate_control_gc_heap_bytes` | gauge | managed heap size |

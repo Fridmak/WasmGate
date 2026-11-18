@@ -458,14 +458,27 @@ public sealed class SqliteStorageTests
     }
 
     [Fact]
-    public void TimestampsRoundTripThroughUnixMilliseconds()
+    public async Task BackupCreatesAReadableSnapshot()
     {
-        var value = DateTimeOffset.UtcNow;
-        var stored = SqliteTimestamps.ToParameter(value);
-        var restored = SqliteTimestamps.FromColumn(stored);
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        await agents.UpsertAsync(NewAgent("backup-agent", "prod"), CancellationToken.None);
 
-        Assert.Equal(value.ToUnixTimeMilliseconds(), restored.ToUnixTimeMilliseconds());
-        Assert.Equal(TimeSpan.Zero, restored.Offset);
+        var backupPath = Path.Combine(Path.GetDirectoryName(db.DatabasePath)!, "backup.db");
+        await SqliteBackup.BackupAsync(db.DatabasePath, backupPath, CancellationToken.None);
+
+        Assert.True(File.Exists(backupPath));
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = backupPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM agents";
+        Assert.Equal(1L, Convert.ToInt64(await command.ExecuteScalarAsync()));
     }
 
     private static Agent NewAgent(string name, string environment) => new()

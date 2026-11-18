@@ -2,7 +2,7 @@
 
 WasmGate's data plane is a static, CGO-free binary. A production node needs the
 binary, one YAML file, plugin files and TLS material. The control plane is optional
-and runs as a separate service with PostgreSQL.
+and runs as a separate service with an embedded SQLite database.
 
 ## Build
 
@@ -76,7 +76,7 @@ docker run -d --name wasmgate --restart unless-stopped --network host \
 `--network host` keeps `splice(2)` and client IPs intact; user-space NAT in front
 of the container hides part of the zero-copy gain.
 
-## Control plane (SQLite by default)
+## Control plane (SQLite)
 
 [`deployments/scenarios/03-control-plane/compose.yml`](../../deployments/scenarios/03-control-plane/compose.yml)
 starts the control plane with a SQLite database in the `cpdata` volume, publishes
@@ -94,25 +94,13 @@ curl -fsS http://127.0.0.1:9097/readyz
 # admin UI: http://127.0.0.1:9097/  (paste the token)
 ```
 
-PostgreSQL is an overlay; use it for production-like testing or when the
-database must live outside the container:
-
-```bash
-docker compose -f deployments/scenarios/03-control-plane/compose.yml \
-               -f deployments/scenarios/03-control-plane/compose.postgres.yml up -d --build
-```
-
 The complete local stack (control plane + one data plane + nginx backend) is in
-[`01-local-demo`](../../deployments/scenarios/01-local-demo/). It uses SQLite by
-default and the same PostgreSQL overlay.
+[`01-local-demo`](../../deployments/scenarios/01-local-demo/).
 
-In the PostgreSQL path, migrations are applied by the init directory on first
-start. For an existing database run them in order:
+For a consistent database copy while the CP runs:
 
 ```bash
-for f in control-plane/migrations/00*.sql; do
-  psql "$WASMGATE_CP_POSTGRES" -v ON_ERROR_STOP=1 -f "$f"
-done
+wasmgate-control --backup /var/backups/wasmgate/control.db
 ```
 
 Without Docker, see [control plane](control-plane.md) for the environment
@@ -155,12 +143,11 @@ and Grafana stack lives in
   SNI passthrough and `splice`. Use an NLB/TCP balancer or a direct public IP.
 - **Probes.** Data plane: `GET /healthz` on the admin address (keep it on
   loopback and scrape locally). Control plane: `/healthz` (liveness) and `/readyz`
-  (selected store + schema).
-- **Secrets.** `WASMGATE_CP_ADMIN_TOKEN`, the database password and the release
-  signing key belong in orchestrator secrets, never in the image.
-- **State.** Back up the SQLite database (inside `/data`) or PostgreSQL, plus the
-  agent CA, signing key and artifacts. Losing the CA invalidates every agent
-  certificate.
+  (SQLite + schema).
+- **Secrets.** `WASMGATE_CP_ADMIN_TOKEN` and the release signing key belong in
+  orchestrator secrets, never in the image.
+- **State.** Back up the SQLite database (inside `/data`), the agent CA, signing
+  key and artifacts. Losing the CA invalidates every agent certificate.
 - **Addressing.** A dynamic public IP changes after a stop/start; reserve a static
   one for a permanent endpoint. Preemptible VMs are fine for labs, not for a
   production edge.

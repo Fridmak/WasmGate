@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using Npgsql;
 using WasmGate.Control.Api.Observability;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
@@ -50,15 +49,9 @@ public static class StartUp
         /// </remarks>
         public static ControlPlaneOptions GetCpOptions()
         {
-            var postgres = Env("WASMGATE_CP_POSTGRES");
-            var sqlitePath = Env("WASMGATE_CP_SQLITE_PATH");
-            var storage = ParseStorage(Env("WASMGATE_CP_STORAGE"), postgres, sqlitePath);
-
             return new ControlPlaneOptions
             {
-                Storage = storage,
-                SqlitePath = sqlitePath ?? "data/control.db",
-                PostgresConnectionString = postgres ?? ControlPlaneOptions.DefaultPostgresConnectionString,
+                SqlitePath = Env("WASMGATE_CP_SQLITE_PATH") ?? "data/control.db",
                 GrpcListen = Env("WASMGATE_CP_GRPC_LISTEN") ?? "http://127.0.0.1:9096",
                 HttpListen = Env("WASMGATE_CP_HTTP_LISTEN") ?? "http://127.0.0.1:9097",
                 ArtifactRoot = Env("WASMGATE_CP_ARTIFACT_ROOT") ?? "data/artifacts",
@@ -87,58 +80,36 @@ public static class StartUp
         /// Registers persistence, security and release-workflow services.
         /// </summary>
         /// <remarks>
-        /// Every repository is backed by PostgreSQL. The connection string comes
-        /// from <see cref="ControlPlaneOptions.PostgresConnectionString"/>, and
-        /// the schema from <c>control-plane/migrations</c> must be applied before
-        /// the first request (see <c>control-plane/README.md</c>).
-        /// The session registry is the only in-memory registration here: it holds
-        /// live connections, not data.
+        /// Every repository is backed by SQLite. The database file comes from
+        /// <see cref="ControlPlaneOptions.SqlitePath"/> and its schema is created
+        /// on startup. The session registry is the only in-memory registration
+        /// here: it holds live connections, not data.
         /// </remarks>
         public void RegisterServices(ControlPlaneOptions options)
         {
-            if (options.Storage == StorageProvider.Sqlite)
+            var connectionString = new SqliteConnectionStringBuilder
             {
-                var connectionString = new SqliteConnectionStringBuilder
-                {
-                    DataSource = Path.GetFullPath(options.SqlitePath),
-                    Mode = SqliteOpenMode.ReadWriteCreate,
-                    Pooling = true,
-                    ForeignKeys = true,
-                    DefaultTimeout = 5,
-                }.ToString();
+                DataSource = Path.GetFullPath(options.SqlitePath),
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = true,
+                ForeignKeys = true,
+                DefaultTimeout = 5,
+            }.ToString();
 
-                builder.Services.AddSingleton(new SqliteConnectionFactory(connectionString));
-                builder.Services.AddSingleton<SqliteInstanceLock>();
-                builder.Services.AddSingleton<IStorageInitializer, SqliteStorageInitializer>();
-                builder.Services.AddSingleton<IStorageProbe, SqliteStorageProbe>();
-                builder.Services.AddSingleton<IEnvironmentOperationLock, SqliteEnvironmentOperationLock>();
-                builder.Services.AddSingleton<IAgentRepository, SqliteAgentRepository>();
-                builder.Services.AddSingleton<IEnvironmentRepository, SqliteEnvironmentRepository>();
-                builder.Services.AddSingleton<IConfigVersionRepository, SqliteConfigVersionRepository>();
-                builder.Services.AddSingleton<IArtifactRepository, SqliteArtifactRepository>();
-                builder.Services.AddSingleton<IReleaseRepository, SqliteReleaseRepository>();
-                builder.Services.AddSingleton<IDeploymentRepository, SqliteDeploymentRepository>();
-                builder.Services.AddSingleton<IAuditLog, SqliteAuditLog>();
-                builder.Services.AddSingleton<IEnrollmentTokenRepository, SqliteEnrollmentTokenRepository>();
-                builder.Services.AddSingleton<IAgentCertificateRepository, SqliteAgentCertificateRepository>();
-            }
-            else
-            {
-                builder.Services.AddSingleton(_ =>
-                    new NpgsqlDataSourceBuilder(options.PostgresConnectionString).Build());
-                builder.Services.AddSingleton<IStorageInitializer, PostgresStorageInitializer>();
-                builder.Services.AddSingleton<IStorageProbe, PostgresStorageProbe>();
-                builder.Services.AddSingleton<IEnvironmentOperationLock, PostgresEnvironmentOperationLock>();
-                builder.Services.AddSingleton<IAgentRepository, PostgresAgentRepository>();
-                builder.Services.AddSingleton<IEnvironmentRepository, PostgresEnvironmentRepository>();
-                builder.Services.AddSingleton<IConfigVersionRepository, PostgresConfigVersionRepository>();
-                builder.Services.AddSingleton<IArtifactRepository, PostgresArtifactRepository>();
-                builder.Services.AddSingleton<IReleaseRepository, PostgresReleaseRepository>();
-                builder.Services.AddSingleton<IDeploymentRepository, PostgresDeploymentRepository>();
-                builder.Services.AddSingleton<IAuditLog, PostgresAuditLog>();
-                builder.Services.AddSingleton<IEnrollmentTokenRepository, PostgresEnrollmentTokenRepository>();
-                builder.Services.AddSingleton<IAgentCertificateRepository, PostgresAgentCertificateRepository>();
-            }
+            builder.Services.AddSingleton(new SqliteConnectionFactory(connectionString));
+            builder.Services.AddSingleton<SqliteInstanceLock>();
+            builder.Services.AddSingleton<SqliteStorageInitializer>();
+            builder.Services.AddSingleton<SqliteStorageProbe>();
+            builder.Services.AddSingleton<IEnvironmentOperationLock, SqliteEnvironmentOperationLock>();
+            builder.Services.AddSingleton<IAgentRepository, SqliteAgentRepository>();
+            builder.Services.AddSingleton<IEnvironmentRepository, SqliteEnvironmentRepository>();
+            builder.Services.AddSingleton<IConfigVersionRepository, SqliteConfigVersionRepository>();
+            builder.Services.AddSingleton<IArtifactRepository, SqliteArtifactRepository>();
+            builder.Services.AddSingleton<IReleaseRepository, SqliteReleaseRepository>();
+            builder.Services.AddSingleton<IDeploymentRepository, SqliteDeploymentRepository>();
+            builder.Services.AddSingleton<IAuditLog, SqliteAuditLog>();
+            builder.Services.AddSingleton<IEnrollmentTokenRepository, SqliteEnrollmentTokenRepository>();
+            builder.Services.AddSingleton<IAgentCertificateRepository, SqliteAgentCertificateRepository>();
 
             builder.Services.AddSingleton<ControlMetrics>();
             builder.Services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
@@ -148,48 +119,6 @@ public static class StartUp
             builder.Services.AddSingleton<ICertificateAuthority>(new PkiCertificateAuthority(options));
             builder.Services.AddSingleton<IAgentProvisioningService, AgentProvisioningService>();
             builder.Services.AddSingleton<IReleaseService, ReleaseService>();
-        }
-    }
-
-    /// <summary>Selects the storage provider from the environment.</summary>
-    /// <param name="raw">Value of <c>WASMGATE_CP_STORAGE</c>, or null.</param>
-    /// <param name="postgres">Value of <c>WASMGATE_CP_POSTGRES</c>, or null.</param>
-    /// <param name="sqlitePath">Value of <c>WASMGATE_CP_SQLITE_PATH</c>, or null.</param>
-    /// <returns>The selected provider.</returns>
-    /// <remarks>
-    /// An unset <c>WASMGATE_CP_STORAGE</c> keeps the previous behaviour:
-    /// PostgreSQL when a connection string is present, SQLite when only a
-    /// SQLite path is present, and PostgreSQL by default. SQLite plus an
-    /// explicit PostgreSQL connection string is rejected as ambiguous.
-    /// </remarks>
-    internal static StorageProvider ParseStorage(string? raw, string? postgres, string? sqlitePath)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            if (postgres is not null)
-            {
-                return StorageProvider.Postgres;
-            }
-
-            return sqlitePath is not null ? StorageProvider.Sqlite : StorageProvider.Postgres;
-        }
-
-        switch (raw.Trim().ToLowerInvariant())
-        {
-            case "postgres":
-                return StorageProvider.Postgres;
-            case "sqlite":
-                if (postgres is not null)
-                {
-                    throw new InvalidOperationException(
-                        "WASMGATE_CP_STORAGE=sqlite cannot be combined with WASMGATE_CP_POSTGRES. " +
-                        "Unset the PostgreSQL connection string or select storage=postgres.");
-                }
-
-                return StorageProvider.Sqlite;
-            default:
-                throw new InvalidOperationException(
-                    $"Unknown WASMGATE_CP_STORAGE value '{raw}'. Accepted values: postgres, sqlite.");
         }
     }
 

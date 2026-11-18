@@ -39,8 +39,6 @@ fleet wiring.
 - The control plane rewrites the managed `wasmgate.yaml` and installs artifacts
   relative to the configuration directory. That directory must be writable for
   a managed agent; a standalone agent can keep it read-only.
-- PostgreSQL migrations live in `control-plane/migrations/` and are applied in
-  filename order (`001` … `006`).
 - The CP admin API is HTTP with a bearer token. Keep it on loopback/private
   networks; use an SSH tunnel or a TLS reverse proxy for remote operators.
 

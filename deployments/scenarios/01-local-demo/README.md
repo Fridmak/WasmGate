@@ -2,7 +2,7 @@
 
 Everything on one machine:
 
-- SQLite storage by default (PostgreSQL is available as an overlay);
+- SQLite storage (built in, no database service);
 - control plane and admin UI;
 - one data plane;
 - nginx demo backend.
@@ -24,12 +24,6 @@ curl -fsS http://127.0.0.1:9097/readyz
 Open `http://127.0.0.1:9097/` and paste the token.
 
 The control-plane database lives in the `cpdata` volume at `/data/control.db`.
-To use PostgreSQL instead:
-
-```bash
-docker compose -f deployments/scenarios/01-local-demo/compose.yml \
-               -f deployments/scenarios/01-local-demo/compose.postgres.yml up -d --build
-```
 
 ## Create an agent
 
