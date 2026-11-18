@@ -2,7 +2,7 @@
 
 Status: implemented; PostgreSQL removed
 Branch: `feat/cp-sqlite-storage-impl`
-Date: 2026-11-18  
+Date: 2026-11-18
 Spike: [`control-plane/spikes/DapperSqliteSpike`](spikes/DapperSqliteSpike)
 
 ## 1. Decision
@@ -88,8 +88,11 @@ wasmgate-control --backup /var/backups/wasmgate/control.db
 `VACUUM INTO` creates a consistent, compact copy while the CP is running. The
 destination must not exist. The admin UI also exposes this as
 **Dashboard → Maintenance → Download SQLite backup**, which calls
-`POST /api/v1/backup` and streams the snapshot. Back up the database together
-with the CA, signing key and artifacts.
+`POST /api/v1/backup` and streams the snapshot. The snapshot lives in a private
+workspace below `WASMGATE_CP_BACKUP_TMP` (the system temporary directory by
+default); the workspace is deleted when the response stream is disposed, and a
+second concurrent request receives `429`. Back up the database together with
+the CA, signing key and artifacts.
 
 ## 7. Local mode
 
@@ -105,7 +108,9 @@ Local mode disables enrollment and renewal, creates no agent CA, and the data
 plane persists only `agent.id` plus applied-release state. Release manifests are
 still parsed and matched, but not signature-verified because no release key is
 configured on the data plane; the control plane may still keep its own signing
-key for normal release creation. This is a single-host development/demo mode, not a fleet mode.
+key for normal release creation. Local mode trusts every process that can reach
+the loopback listeners, so it is limited to a single-user development/demo host,
+not a shared machine or a fleet.
 
 ## 8. Verification
 
@@ -115,12 +120,14 @@ SQLite 3.53.3.
 ```text
 dotnet build -c Release                          pass, 0 warnings
 dotnet format --verify-no-changes                pass
-dotnet test                                      106 pass
+dotnet test                                      133 pass
 Go tests                                        all pass
 Native AOT container + SQLite                    /readyz, agent create, restart
 local mode CP + DP + all 9 example plugins      routes and guards verified, no cert/token/release-key
 compose TLS: enroll, plugin deploy, restart     mTLS session and policy survive
-backup CLI + POST /api/v1/backup                snapshot readable
+backup CLI + POST /api/v1/backup                snapshot readable, workspace removed
+backup endpoint auth/concurrency               401 without token, 429 while busy
+mTLS startup matrix                             network endpoint requires client certificates
 second CP on same database                      fails with the lock message
 ```
 
@@ -131,6 +138,9 @@ Native AOT and in a distroless image.
 
 - Exactly one control-plane process per database file.
 - The database must live on local disk, not NFS.
+- Schema version 1 is created for a fresh database. A future schema change needs
+  an explicit migration step; the current initializer intentionally refuses a
+  database written by a newer version instead of guessing.
 - No built-in replication, PITR or HA. Use SQLite backups and the on-disk
   artifact/CA backup.
 - If the deployment requires an external managed database, this is a deliberate
@@ -144,6 +154,12 @@ Native AOT and in a distroless image.
 - [x] SQLite integration tests, concurrency tests, backup test.
 - [x] Local mode: no TLS, agent certificates, enrollment tokens or release key.
 - [x] Backup CLI and the admin UI download endpoint.
+- [x] Backup private workspace, single-flight gate, 401/429 and cleanup tests.
+- [x] Network gRPC endpoints require client certificates; local mode rejects
+      partial/secure TLS settings and documents its trust boundary.
+- [x] Unsigned release verification is explicit: only local mode without a key
+      skips the signature.
+- [x] WAL/SHM and lock files are restricted to the owner on Unix.
 - [x] Local demo, control-plane-only and single-node systemd scenarios use
       SQLite only.
 - [x] EN/RU documentation and CI AOT smoke.

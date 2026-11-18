@@ -83,12 +83,16 @@ func Apply(
 	// The signature is checked before the document is parsed: an unsigned or
 	// altered release must not even reach the configuration parser. Local mode
 	// has no release key; it trusts the loopback control plane and validates the
-	// manifest fields only.
+	// manifest fields only. A non-local release without a key is a wiring error
+	// and must fail closed, even if a caller passed nil by mistake.
 	var manifest releaseManifest
 	var err error
-	if key == nil {
+	switch {
+	case opts.Local && key == nil:
 		manifest, err = parseUnsignedRelease(release)
-	} else {
+	case key == nil:
+		return fail(errors.New("release verification failed: no release public key is configured"))
+	default:
 		manifest, err = verifyRelease(key, release)
 	}
 	if err != nil {

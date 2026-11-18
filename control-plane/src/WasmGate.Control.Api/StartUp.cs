@@ -56,6 +56,7 @@ public static class StartUp
                 GrpcListen = Env("WASMGATE_CP_GRPC_LISTEN") ?? "http://127.0.0.1:9096",
                 HttpListen = Env("WASMGATE_CP_HTTP_LISTEN") ?? "http://127.0.0.1:9097",
                 ArtifactRoot = Env("WASMGATE_CP_ARTIFACT_ROOT") ?? "data/artifacts",
+                BackupTempDirectory = Env("WASMGATE_CP_BACKUP_TMP"),
                 WasmgateBinary = Env("WASMGATE_CP_WASMGATE_BIN") ?? "wasmgate",
                 SigningKeyPath = Env("WASMGATE_CP_SIGNING_KEY"),
                 ValidationTimeout = EnvDuration("WASMGATE_CP_VALIDATE_TIMEOUT", TimeSpan.FromSeconds(60)),
@@ -120,6 +121,8 @@ public static class StartUp
             builder.Services.AddSingleton<ICertificateAuthority>(new PkiCertificateAuthority(options));
             builder.Services.AddSingleton<IAgentProvisioningService, AgentProvisioningService>();
             builder.Services.AddSingleton<IReleaseService, ReleaseService>();
+            builder.Services.AddSingleton<SqliteBackupCoordinator>();
+            builder.Services.AddSingleton<SqliteBackupService>();
         }
     }
 

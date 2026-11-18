@@ -63,6 +63,20 @@ internal static class ListenEndpoint
                 "TLS settings are configured but the address uses http://; use https://");
         }
 
+        // Keep the Kestrel boundary safe even if a caller bypasses
+        // StartupSecurity: a network agent endpoint must authenticate callers
+        // with client certificates. The admin endpoint is HTTP/1.1 and does not
+        // use this branch.
+        if (address.IsSecure &&
+            (protocols & HttpProtocols.Http2) != 0 &&
+            !address.IsLocal &&
+            !tls!.RequireClientCertificate)
+        {
+            throw ListenAddress.Invalid(
+                value,
+                "a network agent endpoint must require client certificates; set WASMGATE_CP_GRPC_REQUIRE_CLIENT_CERT=true");
+        }
+
         void Configure(ListenOptions listen)
         {
             listen.Protocols = protocols;

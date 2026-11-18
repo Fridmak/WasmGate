@@ -28,7 +28,9 @@ public sealed class ControlPlaneOptions
     /// <remarks>
     /// Local mode requires plaintext loopback listeners and never issues agent
     /// certificates. A data plane connects with <c>-cp-local</c> and no enrollment
-    /// token. Use it for a single-host demo or development, not for a fleet.
+    /// token. It trusts every process that can reach the loopback listeners, so
+    /// use it only on a single-user host; for a shared host or a fleet use
+    /// TLS/mTLS and enrollment tokens.
     /// </remarks>
     public bool Local { get; init; }
 
@@ -62,6 +64,17 @@ public sealed class ControlPlaneOptions
     /// The directory must be writable by the control-plane process.
     /// </remarks>
     public string ArtifactRoot { get; init; } = "data/artifacts";
+
+    /// <summary>
+    /// Root directory for short-lived SQLite backup workspaces.
+    /// </summary>
+    /// <remarks>
+    /// Each download creates a private subdirectory below this root and removes
+    /// it when the response completes. Null means the system temporary
+    /// directory. Point it at a private volume in production so snapshots never
+    /// land in a world-readable location.
+    /// </remarks>
+    public string? BackupTempDirectory { get; init; }
 
     /// <summary>Path or command name of the Go data-plane binary used for validation.</summary>
     /// <remarks>

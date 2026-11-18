@@ -96,21 +96,28 @@ Local mode is deliberately narrow:
   `agent.key`, `agent.crt` or CA file;
 - the admin token remains optional on loopback, as usual.
 
-Use it for a single-host demo or development. A fleet that crosses machine
-boundaries must use TLS/mTLS and enrollment tokens.
+Local mode is a trust boundary, not an authentication mechanism: **every process
+that can reach the loopback listeners is trusted**. A different local user or a
+compromised process can impersonate an agent and, when no admin token is set,
+call the admin API. Use local mode only on a single-user development or demo
+host. For a shared host or a fleet, use TLS/mTLS, enrollment tokens and a
+non-loopback listener with an admin token.
 
 ## Backup
 
 The dashboard's **Maintenance** panel has **Download SQLite backup**, which calls
 `POST /api/v1/backup`. The control plane runs `VACUUM INTO`, streams the snapshot
-and deletes the temporary file. The same operation is available from a shell:
+and deletes its private temporary workspace when the response completes. A
+second concurrent request returns `429` while a backup is running. The same
+operation is available from a shell:
 
 ```bash
 wasmgate-control --backup /var/backups/wasmgate/control.db
 ```
 
 The snapshot contains token hashes, certificates and configuration documents;
-protect it like the live database.
+protect it like the live database. Set `WASMGATE_CP_BACKUP_TMP` to a private
+directory so snapshots never land in a shared `/tmp`.
 
 ## Environments
 
@@ -213,6 +220,12 @@ Certificate lifetime defaults to 30 days (`WASMGATE_CP_AGENT_CERT_TTL`), renewal
 happens 7 days before expiry (`-cp-renew-before` on the agent). The CA files are
 created on first start; losing them invalidates every agent certificate.
 
+Revocation is enforced after the TLS handshake: the control plane looks up the
+certificate fingerprint in SQLite before a session or artifact download. There
+is no CRL/OCSP endpoint, so a revoked certificate can still complete a TLS
+handshake; it cannot use any gRPC method. Use short lifetimes and the agent
+limits if that partial connection is a concern.
+
 Operator labels are authoritative: labels reported in `Hello` only fill gaps, so
 an agent cannot move itself into another wave.
 
@@ -277,6 +290,7 @@ reconnect with exponential backoff (1→30 s).
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |
 | `WASMGATE_CP_ADMIN_TOKEN` | unset; required when the admin endpoint is not loopback |
 | `WASMGATE_CP_ARTIFACT_ROOT` | `data/artifacts` |
+| `WASMGATE_CP_BACKUP_TMP` | system temporary directory; private snapshot workspace |
 | `WASMGATE_CP_AGENT_CA_CERT` / `_KEY` | `data/ca/agents-ca.crt` / `.key` |
 | `WASMGATE_CP_SIGNING_KEY` | `data/keys/release-signing.key` |
 | `WASMGATE_CP_WASMGATE_BIN` | `wasmgate` from `PATH` |
@@ -289,6 +303,10 @@ reconnect with exponential backoff (1→30 s).
 | `WASMGATE_CP_GRPC_TLS_CERT` / `_KEY` | unset; enables `https://` |
 | `WASMGATE_CP_GRPC_CLIENT_CA` | `data/ca/agents-ca.crt` |
 | `WASMGATE_CP_GRPC_REQUIRE_CLIENT_CERT` | `true` |
+
+`WASMGATE_CP_GRPC_REQUIRE_CLIENT_CERT=false` is accepted only on loopback or a
+Unix socket. A network gRPC endpoint refuses to start without client
+certificates.
 
 Durations use the invariant `TimeSpan` format.
 

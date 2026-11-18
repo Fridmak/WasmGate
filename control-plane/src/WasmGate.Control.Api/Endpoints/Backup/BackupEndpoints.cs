@@ -1,4 +1,3 @@
-using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Infrastructure.Storage;
 
 namespace WasmGate.Control.Api.Endpoints.Backup;
@@ -7,9 +6,12 @@ namespace WasmGate.Control.Api.Endpoints.Backup;
 /// Downloads a consistent SQLite snapshot through the admin API.
 /// </summary>
 /// <remarks>
-/// The snapshot is produced by <c>VACUUM INTO</c> and streamed from a temporary
-/// file. The file is deleted when the response completes, so no backup data is
-/// retained in the control-plane container.
+/// The snapshot is produced by <c>VACUUM INTO</c> in a private temporary
+/// workspace and streamed directly to the caller. The workspace is removed when
+/// the response stream is disposed, so a completed download, a client
+/// disconnect and a cancelled request all clean up the snapshot. A second
+/// concurrent request receives 429 instead of starting another
+/// <c>VACUUM INTO</c>.
 /// </remarks>
 internal static class BackupEndpoints
 {
@@ -23,26 +25,23 @@ internal static class BackupEndpoints
     }
 
     /// <summary>Creates and streams a snapshot of the live database.</summary>
-    /// <param name="options">Control-plane options with the database path.</param>
-    /// <param name="cancellationToken">Cancels the backup.</param>
-    /// <returns>A downloadable SQLite file.</returns>
+    /// <param name="backups">Snapshot service with the database path and gate.</param>
+    /// <param name="cancellationToken">Cancels the snapshot creation.</param>
+    /// <returns>A downloadable SQLite file, or 429 when a backup is already running.</returns>
     private static async Task<IResult> DownloadAsync(
-        ControlPlaneOptions options,
+        SqliteBackupService backups,
         CancellationToken cancellationToken)
     {
-        var temporary = Path.Combine(
-            Path.GetTempPath(),
-            $"wasmgate-control-{Guid.NewGuid():N}.db");
+        var download = await backups.TryCreateAsync(cancellationToken);
+        if (download is null)
+        {
+            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+        }
+
+        Stream? stream = null;
         try
         {
-            await SqliteBackup.BackupAsync(options.SqlitePath, temporary, cancellationToken);
-            var stream = new FileStream(
-                temporary,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+            stream = download.OpenRead();
             return Results.Stream(
                 stream,
                 "application/octet-stream",
@@ -50,20 +49,9 @@ internal static class BackupEndpoints
         }
         catch
         {
-            TryDelete(temporary);
+            stream?.Dispose();
+            download.Dispose();
             throw;
-        }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            // The response path owns cleanup once the stream is opened.
         }
     }
 }

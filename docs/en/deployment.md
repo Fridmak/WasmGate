@@ -125,7 +125,8 @@ export WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:9097
 
 There are no TLS certificates, no CA files, no enrollment token and no release
 key. The data plane keeps only `agent.id` and applied-release state. Local mode
-is loopback-only and intended for a single host, not for a fleet.
+is loopback-only and trusts every local process, so use it only on a single-user
+host, not on a shared machine or a fleet.
 
 ## Deployment scenarios
 

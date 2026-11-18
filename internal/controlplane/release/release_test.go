@@ -360,3 +360,92 @@ func TestParseUnsignedReleaseForLocalMode(t *testing.T) {
 		t.Fatal("parseUnsignedRelease accepted a missing manifest")
 	}
 }
+
+func unsignedRelease(releaseID, environment string) *wasmgatepb.ApplyRelease {
+	sum := sha256.Sum256([]byte(validConfig))
+	digest := hex.EncodeToString(sum[:])
+	manifest := fmt.Sprintf(
+		"%s\n%s\n%s\ncfg-1\n%s\n",
+		manifestMarker,
+		releaseID,
+		environment,
+		digest)
+	return &wasmgatepb.ApplyRelease{
+		ReleaseId:    releaseID,
+		ConfigSha256: digest,
+		ConfigYaml:   []byte(validConfig),
+		Manifest:     []byte(manifest),
+	}
+}
+
+func TestApplyRejectsNilKeyOutsideLocalMode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wasmgate.yaml")
+	state := &testState{}
+
+	result := Apply(
+		context.Background(), nil,
+		unsignedRelease("release-nil-key", "prod"),
+		options.Options{ConfigPath: configPath, Environment: "prod"},
+		nil, testReloader{version: 1}, state, slog.Default(),
+	)
+
+	if result.GetOk() {
+		t.Fatal("non-local release without a verification key was applied")
+	}
+	if !strings.Contains(result.GetError(), "release public key") {
+		t.Fatalf("error = %q, want a missing-key error", result.GetError())
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("configuration was written despite the missing key: %v", err)
+	}
+	if state.saved {
+		t.Fatal("failed apply persisted state")
+	}
+}
+
+func TestApplyLocalModeAcceptsUnsignedRelease(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wasmgate.yaml")
+	state := &testState{}
+
+	result := Apply(
+		context.Background(), nil,
+		unsignedRelease("release-local", "prod"),
+		options.Options{ConfigPath: configPath, Environment: "prod", Local: true},
+		nil, testReloader{version: 3}, state, slog.Default(),
+	)
+
+	if !result.GetOk() {
+		t.Fatalf("local unsigned release failed: %s", result.GetError())
+	}
+	if state.st.ReleaseID != "release-local" || state.st.Version != 3 || !state.saved {
+		t.Fatalf("state = %+v, saved=%v", state.st, state.saved)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil || string(content) != validConfig {
+		t.Fatalf("config = %q, err=%v", content, err)
+	}
+}
+
+func TestApplyLocalModeStillVerifiesWhenKeyConfigured(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wasmgate.yaml")
+	release := signedRelease(t, key, "release-local-key", "prod")
+	release.ManifestSignature[0] ^= 0xff
+
+	result := Apply(
+		context.Background(), nil,
+		release,
+		options.Options{ConfigPath: configPath, Environment: "prod", Local: true},
+		&key.PublicKey, testReloader{version: 1}, &testState{}, slog.Default(),
+	)
+
+	if result.GetOk() || !strings.Contains(result.GetError(), "signature") {
+		t.Fatalf("tampered local release = %+v", result)
+	}
+}

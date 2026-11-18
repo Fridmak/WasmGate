@@ -105,7 +105,8 @@ waves. A built-in admin UI is served on the admin port.
 
 On one machine, `WASMGATE_CP_LOCAL=true` and `wasmgate -cp-local` skip TLS,
 agent certificates and enrollment tokens entirely; the control plane and data
-plane talk over loopback.
+plane talk over loopback. This mode trusts every local process, so use it only
+on a single-user host.
 
 ```bash
 cd control-plane

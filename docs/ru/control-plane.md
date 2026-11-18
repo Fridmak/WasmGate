@@ -95,21 +95,28 @@ wasmgate -config /etc/wasmgate/wasmgate.yaml \
   и CA нет;
 - admin-токен на loopback по-прежнему опционален.
 
-Это режим для локального стенда и разработки. Для парка машин используйте
-TLS/mTLS и enrollment-токены.
+Локальный режим — это граница доверия, а не аутентификация: **любой процесс,
+который может достучаться до loopback-портов, считается доверенным**. Другой
+локальный пользователь или скомпрометированный процесс может выдать себя за
+агента, а при пустом admin-токене — вызвать admin API. Используйте локальный
+режим только на однопользовательской машине для разработки или демо. На общем
+хосте и в парке нужны TLS/mTLS, enrollment-токены и non-loopback listener с
+admin-токеном.
 
 ## Backup
 
 В панели на Dashboard есть **Maintenance → Download SQLite backup**. Кнопка
 вызывает `POST /api/v1/backup`: CP выполняет `VACUUM INTO`, отдаёт файл и
-удаляет временную копию. То же самое из shell:
+удаляет приватный временный каталог после завершения ответа. Второй
+одновременный запрос получает `429`, пока идёт backup. То же самое из shell:
 
 ```bash
 wasmgate-control --backup /var/backups/wasmgate/control.db
 ```
 
 Снимок содержит хеши токенов, сертификаты и конфигурации; храните его так же
-защищённо, как рабочую базу.
+защищённо, как рабочую базу. Задайте `WASMGATE_CP_BACKUP_TMP` — приватный
+каталог, чтобы снимки не попадали в общий `/tmp`.
 
 ## Среды
 
@@ -211,6 +218,12 @@ Prometheus + Grafana.
 продление — за 7 дней до истечения (`-cp-renew-before` на агенте). Файлы CA
 создаются при первом старте; их потеря инвалидирует все сертификаты.
 
+Отзыв проверяется после TLS handshake: CP ищет отпечаток сертификата в SQLite
+перед сессией или скачиванием артефакта. Отдельного CRL/OCSP endpoint нет,
+поэтому отозванный сертификат ещё может завершить TLS handshake, но не может
+вызвать ни один gRPC-метод. Если это важно, используйте короткие сроки жизни и
+лимиты агентов.
+
 Операторские метки главнее: метки из `Hello` только дополняют их, поэтому агент
 не может сам перейти в другую волну.
 
@@ -274,6 +287,7 @@ Prometheus + Grafana.
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |
 | `WASMGATE_CP_ADMIN_TOKEN` | не задан; обязателен, если admin endpoint не loopback |
 | `WASMGATE_CP_ARTIFACT_ROOT` | `data/artifacts` |
+| `WASMGATE_CP_BACKUP_TMP` | системный temp; приватный каталог для снимков |
 | `WASMGATE_CP_AGENT_CA_CERT` / `_KEY` | `data/ca/agents-ca.crt` / `.key` |
 | `WASMGATE_CP_SIGNING_KEY` | `data/keys/release-signing.key` |
 | `WASMGATE_CP_WASMGATE_BIN` | `wasmgate` из `PATH` |
@@ -286,6 +300,9 @@ Prometheus + Grafana.
 | `WASMGATE_CP_GRPC_TLS_CERT` / `_KEY` | не заданы; включают `https://` |
 | `WASMGATE_CP_GRPC_CLIENT_CA` | `data/ca/agents-ca.crt` |
 | `WASMGATE_CP_GRPC_REQUIRE_CLIENT_CERT` | `true` |
+
+`WASMGATE_CP_GRPC_REQUIRE_CLIENT_CERT=false` допускается только на loopback или
+Unix-socket. Сетевой gRPC endpoint без клиентских сертификатов не запускается.
 
 Длительности — в инвариантном формате `TimeSpan`.
 

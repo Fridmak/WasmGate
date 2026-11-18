@@ -68,6 +68,18 @@ builder.Services.AddHostedService<DeploymentReaper>();
 
 var app = builder.Build();
 
+if (options.Local)
+{
+    app.Logger.LogWarning(
+        "WASMGATE_CP_LOCAL is enabled: every process that can reach the loopback listeners is trusted. " +
+        "Use this mode only on a single-user host; for a shared host or a fleet use TLS/mTLS.");
+}
+
+SqliteBackupWorkspace.CleanStale(
+    options.BackupTempDirectory,
+    TimeSpan.FromHours(24),
+    app.Logger);
+
 // Prepare the SQLite store before serving: create its directory, take the
 // single-process lock, enable WAL and apply the embedded schema.
 await app.Services.GetRequiredService<SqliteStorageInitializer>().InitializeAsync(CancellationToken.None);
@@ -102,3 +114,6 @@ app.MapGrpcService<ArtifactDownloadService>();
 app.MapAdminEndpoints();
 
 await app.RunAsync();
+
+/// <summary>Entry point type used by the HTTP integration tests.</summary>
+public partial class Program;

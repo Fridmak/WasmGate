@@ -33,4 +33,17 @@ public sealed class ControlPlaneTlsOptions
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(CertificatePath) &&
         !string.IsNullOrWhiteSpace(PrivateKeyPath);
+
+    /// <summary>
+    /// True when any certificate material is configured, even if the pair is
+    /// incomplete.
+    /// </summary>
+    /// <remarks>
+    /// Startup validation uses this to reject a partial TLS configuration in
+    /// local mode. <see cref="IsConfigured"/> alone would accept a lone
+    /// certificate path and defer the failure to Kestrel.
+    /// </remarks>
+    public bool HasCertificateMaterial =>
+        !string.IsNullOrWhiteSpace(CertificatePath) ||
+        !string.IsNullOrWhiteSpace(PrivateKeyPath);
 }

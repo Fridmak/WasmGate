@@ -106,7 +106,8 @@ pools:
 
 На одной машине `WASMGATE_CP_LOCAL=true` и `wasmgate -cp-local` полностью
 убирают TLS, сертификаты агентов и enrollment-токены: CP и DP общаются по
-loopback.
+loopback. Этот режим доверяет любому локальному процессу, поэтому подходит
+только для однопользовательской машины.
 
 ```bash
 cd control-plane

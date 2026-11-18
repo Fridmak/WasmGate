@@ -16,10 +16,11 @@ namespace WasmGate.Control.Api.Endpoints.Admin;
 /// and the audit trail.
 /// </summary>
 /// <remarks>
-/// The API has no authentication yet. It is meant to stay on a loopback or
-/// private address and must not be exposed to the internet. Because there is no
-/// authenticated principal, every audit event written from these endpoints uses
-/// the fixed actor <c>admin-api</c>.
+/// Health probes stay public. The rest of the API is protected by the bearer
+/// token when <c>WASMGATE_CP_ADMIN_TOKEN</c> is set; on a loopback or Unix
+/// socket listener the token may be omitted. Because there is no authenticated
+/// principal inside the handlers, every audit event written from these
+/// endpoints uses the fixed actor <c>admin-api</c>.
 /// </remarks>
 internal static class AdminEndpoints
 {

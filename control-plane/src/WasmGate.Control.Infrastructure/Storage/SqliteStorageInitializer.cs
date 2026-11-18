@@ -42,15 +42,16 @@ public sealed class SqliteStorageInitializer(
         await using var connection = await connections.OpenAsync(cancellationToken);
         await SqliteSchema.EnsureAsync(connection, cancellationToken);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(
-                databasePath,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            File.SetUnixFileMode(
-                SqliteInstanceLock.PathFor(databasePath),
-                UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
+        SqliteFilePermissions.RestrictToOwner(databasePath, logger);
+        SqliteFilePermissions.RestrictToOwner(
+            SqliteInstanceLock.PathFor(databasePath),
+            logger);
+        SqliteFilePermissions.RestrictToOwner(
+            databasePath + "-wal",
+            logger);
+        SqliteFilePermissions.RestrictToOwner(
+            databasePath + "-shm",
+            logger);
 
         logger.LogInformation(
             "SQLite storage ready at {DatabasePath} (schema version {SchemaVersion})",
