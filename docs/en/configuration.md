@@ -62,7 +62,7 @@ duplicate addresses and references to missing pools fail validation.
 | Key | Default | Meaning |
 |---|---|---|
 | `path` | — | `.wasm` file; empty disables the plugin |
-| `max_memory_pages` | `17` | Linear-memory cap per instance (17 × 64 KiB = 1.06 MiB; Rust guests need the linker-aligned page) |
+| `max_memory_pages` | `17` | Linear-memory cap per instance (17 × 64 KiB = 1.06 MiB; a ceiling, not an initial size) |
 | `max_instances` | `64` | Maximum concurrent guest instances per listener (hard cap `1024`); requests beyond it wait for a slot or fail on their deadline |
 | `timeout` | `1s` | Per-hook timeout; omitted or `0` selects the safe 1s default. Required (`> 0`) for `data_mode: headers` |
 | `data_mode` | required | `once` inspects the first client packet and keeps `splice`; `headers` gathers one complete HTTP/1 request header block and keeps `splice` for the body; `stream` inspects every chunk. All three are ABI v4 `on_event` paths. Required when the module exports an L7 hook |

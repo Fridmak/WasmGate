@@ -70,8 +70,10 @@ keeps its socket open. Headers are not rewritten to advertise the close.
 ## Sandbox and migration
 
 The guests have no WASI, sockets, filesystem, clocks, or randomness. The
-default memory limit is 17 pages (1.06 MiB) per instance. The extra page is
-needed by linker-aligned Rust wasm guests. The engine bounds idle instances
+default memory cap is 17 pages (1.06 MiB) per instance: a ceiling, not an
+initial size. The reference guests built with the repository's
+`.cargo/config.toml` request 1–2 pages; the same cap still fits modules built
+with Rust's default 1 MiB stack. The engine bounds idle instances
 and `max_instances` (default 64, hard cap 1024) caps concurrent guest
 instances per listener; requests beyond the limit wait for a slot or fail on
 their deadline. `max_conns` bounds listener concurrency when configured. Load
