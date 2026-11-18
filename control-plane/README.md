@@ -12,8 +12,8 @@ dotnet build WasmGate.Control.sln
 dotnet test  WasmGate.Control.sln
 ```
 
-SQLite is built in and needs no service. Storage design, backup and migration
-notes: [`SQLITE-STORAGE-PLAN.md`](SQLITE-STORAGE-PLAN.md).
+SQLite is built in and needs no service. Storage, backup and local-mode behavior
+are described in the control-plane guide linked above.
 
 Agent protocol, admin API, certificates and the admin UI are described in the
 guide linked above.
