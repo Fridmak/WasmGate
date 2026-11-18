@@ -1,8 +1,9 @@
 -- WasmGate control plane: initial PostgreSQL schema.
 --
--- PostgreSQL is the only supported store. There is deliberately no SQLite
--- variant: the control plane is a multi-agent service and needs real
--- transactions, JSONB and concurrent writers.
+-- PostgreSQL is the production/shared store. Single-node installations use the
+-- embedded SQLite schema in
+-- control-plane/src/WasmGate.Control.Infrastructure/Storage/SqliteSchema.cs;
+-- the logical tables and constraints are kept in sync by the storage tests.
 
 CREATE TABLE IF NOT EXISTS config_versions (
     id              UUID PRIMARY KEY,

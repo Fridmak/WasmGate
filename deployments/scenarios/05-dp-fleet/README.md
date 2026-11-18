@@ -4,6 +4,11 @@ One control plane manages many independent data planes. The DPs do **not** form
 a cluster: they never talk to each other, keep their own certificate and state,
 and only connect outbound to the CP.
 
+The control plane can use SQLite (the default for single-node installs) or
+PostgreSQL. Fleet size does not require PostgreSQL: the CP is a single process
+either way. Use PostgreSQL when the database must be external or backed up by
+existing database tooling.
+
 ```text
                     ┌── dp-01 ── clients
                     ├── dp-02 ── clients

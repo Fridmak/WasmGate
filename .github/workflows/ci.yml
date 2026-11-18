@@ -151,12 +151,36 @@ jobs:
     name: .NET (build + format + tests)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: wasmgate
+          POSTGRES_PASSWORD: wasmgate
+          POSTGRES_DB: wasmgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wasmgate -d wasmgate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WASMGATE_TEST_POSTGRES: "Host=127.0.0.1;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate"
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x # global.json pins 10.0.404 with rollForward latestFeature
+
+      - name: Apply PostgreSQL migrations
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          for f in control-plane/migrations/00*.sql; do
+            PGPASSWORD=wasmgate psql -h 127.0.0.1 -U wasmgate -d wasmgate \
+              -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: build
         run: dotnet build control-plane/WasmGate.Control.sln -c Release
@@ -166,3 +190,60 @@ jobs:
 
       - name: test
         run: dotnet test control-plane/WasmGate.Control.sln -c Release --no-build --no-restore
+
+  cp-aot-smoke:
+    name: Control plane AOT + SQLite smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Native AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT
+        run: >
+          dotnet publish control-plane/src/WasmGate.Control.Api
+          -c Release -r linux-x64 -p:PublishAot=true
+          -p:StripSymbols=true -p:DebugType=None -o /tmp/cp
+
+      - name: Start with SQLite and exercise the admin API
+        run: |
+          set -euo pipefail
+          data=/tmp/cpdata
+          mkdir -p "$data"
+
+          WASMGATE_CP_STORAGE=sqlite \
+          WASMGATE_CP_SQLITE_PATH="$data/control.db" \
+          WASMGATE_CP_HTTP_LISTEN=http://127.0.0.1:19097 \
+          WASMGATE_CP_GRPC_LISTEN=http://127.0.0.1:19096 \
+          WASMGATE_CP_ADMIN_TOKEN=test-token \
+          WASMGATE_CP_ARTIFACT_ROOT="$data/artifacts" \
+          WASMGATE_CP_AGENT_CA_CERT="$data/ca/agents-ca.crt" \
+          WASMGATE_CP_AGENT_CA_KEY="$data/ca/agents-ca.key" \
+          WASMGATE_CP_SIGNING_KEY="$data/keys/release-signing.key" \
+          /tmp/cp/wasmgate-control >"$data/cp.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; cat "$data/cp.log"' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19097/readyz; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:19097/readyz
+          curl -fsS -X POST http://127.0.0.1:19097/api/v1/agents \
+            -H 'Authorization: Bearer test-token' \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci-agent","labels":{"role":"ci"},"environment":"prod"}' > /dev/null
+          curl -fsS http://127.0.0.1:19097/api/v1/agents \
+            -H 'Authorization: Bearer test-token' | grep -q 'ci-agent'
+
+          kill "$pid"
+          wait "$pid" || true

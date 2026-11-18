@@ -1,15 +1,16 @@
 # Control plane
 
 The control plane is an optional .NET 10 service that turns a set of WasmGate
-nodes into a managed fleet. It stores desired state in PostgreSQL, issues agent
-certificates, signs releases and pushes them over a bidirectional gRPC session.
+nodes into a managed fleet. It stores desired state in SQLite or PostgreSQL,
+issues agent certificates, signs releases and pushes them over a bidirectional
+gRPC session.
 It is **not on the traffic path**: if it is unavailable, agents keep serving the
 last applied configuration.
 
 ```
 operator ──HTTP──► control plane :9097 (admin API + UI)
                           │
-                          ├── PostgreSQL (state, audit)
+                          ├── SQLite or PostgreSQL (state, audit)
                           └── /data (CA, signing key, artifacts)
 agent ────gRPC :9096──────┘   Session / Enroll / Renew / Download
 ```
@@ -18,7 +19,7 @@ agent ────gRPC :9096──────┘   Session / Enroll / Renew / D
 
 | Storage | Content |
 |---|---|
-| PostgreSQL | agents, certificates, enrollment tokens, configuration versions, artifacts metadata, releases, deployments, waves, audit |
+| SQLite (`/data/control.db`) or PostgreSQL | agents, certificates, enrollment tokens, configuration versions, artifacts metadata, releases, deployments, waves, audit |
 | `/data/artifacts` | artifact bytes, addressed by SHA-256 |
 | `/data/ca` | agent CA certificate and private key |
 | `/data/keys` | release signing key (ECDSA P-256) and public key |
@@ -26,7 +27,7 @@ agent ────gRPC :9096──────┘   Session / Enroll / Renew / D
 
 ## Quick start
 
-With Docker (TLS + admin token + PostgreSQL; see [deployment](deployment.md)):
+With Docker (TLS + admin token; SQLite by default; see [deployment](deployment.md)):
 
 ```bash
 ./deployments/scripts/dev-certs.sh
@@ -36,24 +37,28 @@ cp deployments/scenarios/03-control-plane/.env.example \
 docker compose -f deployments/scenarios/03-control-plane/compose.yml up -d --build
 ```
 
-Manually:
+For PostgreSQL add the overlay:
 
 ```bash
-# PostgreSQL (host port 6767 avoids a local PostgreSQL on 5432)
-docker run --rm -e POSTGRES_USER=wasmgate -e POSTGRES_PASSWORD=wasmgate \
-  -e POSTGRES_DB=wasmgate -p 127.0.0.1:6767:5432 postgres:17
-for f in control-plane/migrations/00*.sql; do
-  psql "postgresql://wasmgate:wasmgate@127.0.0.1:6767/wasmgate" -f "$f"
-done
+docker compose -f deployments/scenarios/03-control-plane/compose.yml \
+               -f deployments/scenarios/03-control-plane/compose.postgres.yml up -d --build
+```
 
+Manually with SQLite (no database service):
+
+```bash
 cd control-plane
 dotnet build WasmGate.Control.sln
-dotnet run --project src/WasmGate.Control.Api
+WASMGATE_CP_STORAGE=sqlite dotnet run --project src/WasmGate.Control.Api
 ```
+
+PostgreSQL remains available by setting `WASMGATE_CP_STORAGE=postgres` and a
+`WASMGATE_CP_POSTGRES` connection string after applying
+`control-plane/migrations/001..006.sql`.
 
 ```bash
 curl -fsS http://127.0.0.1:9097/healthz   # liveness
-curl -fsS http://127.0.0.1:9097/readyz    # PostgreSQL + schema
+curl -fsS http://127.0.0.1:9097/readyz    # selected store + schema
 ```
 
 ## Admin UI
@@ -223,6 +228,8 @@ reconnect with exponential backoff (1→30 s).
 
 | Variable | Default |
 |---|---|
+| `WASMGATE_CP_STORAGE` | unset; PostgreSQL unless only `WASMGATE_CP_SQLITE_PATH` is set |
+| `WASMGATE_CP_SQLITE_PATH` | `data/control.db` when SQLite is selected |
 | `WASMGATE_CP_POSTGRES` | `Host=127.0.0.1;Port=6767;Database=wasmgate;Username=wasmgate;Password=wasmgate` |
 | `WASMGATE_CP_GRPC_LISTEN` | `http://127.0.0.1:9096` |
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |
@@ -243,6 +250,11 @@ reconnect with exponential backoff (1→30 s).
 
 Durations use the invariant `TimeSpan` format.
 
+`WASMGATE_CP_STORAGE` accepts `postgres` or `sqlite`. Selecting SQLite while a
+PostgreSQL connection string is present is rejected as ambiguous. SQLite
+supports exactly one control-plane process per database file; it creates the
+schema and the single-process lock automatically.
+
 ## Security model
 
 - Plaintext gRPC is refused on a non-loopback address: without TLS there is no
@@ -260,7 +272,8 @@ Durations use the invariant `TimeSpan` format.
 
 ## Known limitations
 
-- One control-plane process: the session registry is in memory.
+- One control-plane process: the session registry is in memory. SQLite storage
+  enforces this with a lock file; PostgreSQL still assumes one process too.
 - Release commands are replayable. An `ApplyRelease` for an older signed release
   is indistinguishable from an operator rollback; a fix needs a deployment-level
   signed envelope with a monotonic sequence and expiry (DPCP-1), not a

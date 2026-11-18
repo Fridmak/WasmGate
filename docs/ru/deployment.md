@@ -2,7 +2,7 @@
 
 Data plane WasmGate — статический бинарник без CGO. Для production-узла нужны
 бинарник, один YAML-файл, `.wasm`-плагины и TLS-материалы. Control plane
-опционален и работает отдельным сервисом с PostgreSQL.
+опционален и работает отдельным сервисом с SQLite или PostgreSQL.
 
 ## Сборка
 
@@ -77,11 +77,12 @@ docker run -d --name wasmgate --restart unless-stopped --network host \
 `--network host` сохраняет `splice(2)` и реальные IP клиентов; user-space NAT
 перед контейнером скрывает часть выигрыша zero-copy.
 
-## Control plane + PostgreSQL
+## Control plane (по умолчанию SQLite)
 
 [`deployments/scenarios/03-control-plane/compose.yml`](../../deployments/scenarios/03-control-plane/compose.yml)
-поднимает PostgreSQL и control plane, публикует оба порта только на loopback,
-требует `WASMGATE_CP_ADMIN_TOKEN` и отдаёт gRPC агентов по TLS.
+поднимает control plane с SQLite-базой в томе `cpdata`, публикует оба порта
+только на loopback, требует `WASMGATE_CP_ADMIN_TOKEN` и отдаёт gRPC агентов по
+TLS.
 
 ```bash
 ./deployments/scripts/dev-certs.sh         # один раз, локальный самоподписанный сертификат
@@ -94,11 +95,19 @@ curl -fsS http://127.0.0.1:9097/readyz
 # админ-панель: http://127.0.0.1:9097/  (вставьте токен)
 ```
 
-Полный локальный стенд (control plane + один data plane + nginx-бэкенд) —
-в [`01-local-demo`](../../deployments/scenarios/01-local-demo/).
+PostgreSQL — отдельный overlay для production-like проверки или внешней БД:
 
-Миграции применяются init-каталогом PostgreSQL при первом старте. Для уже
-существующей базы выполните их по порядку:
+```bash
+docker compose -f deployments/scenarios/03-control-plane/compose.yml \
+               -f deployments/scenarios/03-control-plane/compose.postgres.yml up -d --build
+```
+
+Полный локальный стенд (control plane + один data plane + nginx-бэкенд) —
+в [`01-local-demo`](../../deployments/scenarios/01-local-demo/). Он тоже по
+умолчанию использует SQLite и тот же PostgreSQL overlay.
+
+В варианте с PostgreSQL миграции применяются init-каталогом при первом старте.
+Для уже существующей базы выполните их по порядку:
 
 ```bash
 for f in control-plane/migrations/00*.sql; do
@@ -144,11 +153,12 @@ done
   SNI passthrough и `splice`. Нужен NLB/TCP-балансировщик или прямой публичный IP.
 - **Пробы.** Data plane: `GET /healthz` на admin-адресе (держите loopback и
   скрейпьте локально). Control plane: `/healthz` (liveness) и `/readyz`
-  (PostgreSQL + схема).
+  (выбранное хранилище + схема).
 - **Секреты.** `WASMGATE_CP_ADMIN_TOKEN`, пароль БД и ключ подписи релизов — в
   секретах оркестратора, не в образе.
-- **Состояние.** Бэкапьте PostgreSQL и `/data` (CA агентов, signing key,
-  артефакты). Потеря CA инвалидирует все сертификаты агентов.
+- **Состояние.** Бэкапьте SQLite-базу (внутри `/data`) или PostgreSQL, а также
+  CA агентов, signing key и артефакты. Потеря CA инвалидирует все сертификаты
+  агентов.
 - **Адреса.** Динамический публичный IP меняется после stop/start; для постоянной
   точки входа зарезервируйте статический. Прерываемые VM годятся для стенда, но
   не для production-edge.

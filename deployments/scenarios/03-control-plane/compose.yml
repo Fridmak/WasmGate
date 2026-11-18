@@ -1,6 +1,9 @@
-# Control plane + PostgreSQL, no data plane.
+# Control plane with SQLite, no data plane.
 #
 # Use this when agents run elsewhere (VMs, Kubernetes, another compose project).
+# SQLite is the default single-node store. For PostgreSQL use the overlay:
+#
+#   docker compose -f compose.yml -f compose.postgres.yml up -d --build
 #
 #   ./deployments/scripts/dev-certs.sh
 #   cp deployments/scenarios/03-control-plane/.env.example \
@@ -23,30 +26,14 @@
 name: wasmgate-control
 
 services:
-  postgres:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: wasmgate
-      POSTGRES_PASSWORD: wasmgate
-      POSTGRES_DB: wasmgate
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      # 001 → 006, applied once when the volume is initialized.
-      - ../../../control-plane/migrations:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wasmgate -d wasmgate"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-
   control-plane:
     build:
       context: ../../..
       dockerfile: deployments/docker/control-plane.Dockerfile
     restart: unless-stopped
     environment:
-      WASMGATE_CP_POSTGRES: "Host=postgres;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate"
+      WASMGATE_CP_STORAGE: "sqlite"
+      WASMGATE_CP_SQLITE_PATH: "/data/control.db"
       WASMGATE_CP_AGENT_CA_KEY: "/data/ca/agents-ca.key"
       WASMGATE_CP_SIGNING_KEY: "/data/keys/release-signing.key"
       WASMGATE_CP_GRPC_LISTEN: "https://0.0.0.0:9096"
@@ -60,10 +47,6 @@ services:
     volumes:
       - cpdata:/data
       - ../../certs:/certs:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
-  pgdata:
   cpdata:

@@ -1,15 +1,15 @@
 # Control plane
 
 Control plane — опциональный сервис на .NET 10, который превращает набор
-WasmGate-узлов в управляемый парк. Он хранит желаемое состояние в PostgreSQL,
-выпускает сертификаты агентам, подписывает релизы и присылает их по
+WasmGate-узлов в управляемый парк. Он хранит желаемое состояние в SQLite или
+PostgreSQL, выпускает сертификаты агентам, подписывает релизы и присылает их по
 двунаправленной gRPC-сессии. Он **не на пути трафика**: если control plane
 недоступен, агенты продолжают работать с последней применённой конфигурацией.
 
 ```
 оператор ──HTTP──► control plane :9097 (admin API + UI)
                           │
-                          ├── PostgreSQL (состояние, аудит)
+                          ├── SQLite или PostgreSQL (состояние, аудит)
                           └── /data (CA, signing key, артефакты)
 агент ─────gRPC :9096─────┘   Session / Enroll / Renew / Download
 ```
@@ -18,7 +18,7 @@ WasmGate-узлов в управляемый парк. Он хранит жел
 
 | Хранилище | Содержимое |
 |---|---|
-| PostgreSQL | агенты, сертификаты, токены enrollment, версии конфигурации, метаданные артефактов, релизы, деплойменты, волны, аудит |
+| SQLite (`/data/control.db`) или PostgreSQL | агенты, сертификаты, токены enrollment, версии конфигурации, метаданные артефактов, релизы, деплойменты, волны, аудит |
 | `/data/artifacts` | байты артефактов по SHA-256 |
 | `/data/ca` | сертификат и ключ CA агентов |
 | `/data/keys` | ключ подписи релизов (ECDSA P-256) и публичный ключ |
@@ -26,7 +26,7 @@ WasmGate-узлов в управляемый парк. Он хранит жел
 
 ## Быстрый старт
 
-С Docker (TLS + admin token + PostgreSQL; см. [развёртывание](deployment.md)):
+С Docker (TLS + admin token; по умолчанию SQLite; см. [развёртывание](deployment.md)):
 
 ```bash
 ./deployments/scripts/dev-certs.sh
@@ -36,24 +36,27 @@ cp deployments/scenarios/03-control-plane/.env.example \
 docker compose -f deployments/scenarios/03-control-plane/compose.yml up -d --build
 ```
 
-Вручную:
+С PostgreSQL добавьте overlay:
 
 ```bash
-# PostgreSQL (порт 6767 на хосте, чтобы не пересечься с локальным 5432)
-docker run --rm -e POSTGRES_USER=wasmgate -e POSTGRES_PASSWORD=wasmgate \
-  -e POSTGRES_DB=wasmgate -p 127.0.0.1:6767:5432 postgres:17
-for f in control-plane/migrations/00*.sql; do
-  psql "postgresql://wasmgate:wasmgate@127.0.0.1:6767/wasmgate" -f "$f"
-done
+docker compose -f deployments/scenarios/03-control-plane/compose.yml \
+               -f deployments/scenarios/03-control-plane/compose.postgres.yml up -d --build
+```
 
+Вручную с SQLite (внешняя БД не нужна):
+
+```bash
 cd control-plane
 dotnet build WasmGate.Control.sln
-dotnet run --project src/WasmGate.Control.Api
+WASMGATE_CP_STORAGE=sqlite dotnet run --project src/WasmGate.Control.Api
 ```
+
+PostgreSQL остаётся доступен: задайте `WASMGATE_CP_STORAGE=postgres` и
+`WASMGATE_CP_POSTGRES`, применив `control-plane/migrations/001..006.sql`.
 
 ```bash
 curl -fsS http://127.0.0.1:9097/healthz   # liveness
-curl -fsS http://127.0.0.1:9097/readyz    # PostgreSQL + схема
+curl -fsS http://127.0.0.1:9097/readyz    # выбранное хранилище + схема
 ```
 
 ## Админ-панель
@@ -221,6 +224,8 @@ Prometheus + Grafana.
 
 | Переменная | По умолчанию |
 |---|---|
+| `WASMGATE_CP_STORAGE` | не задана; PostgreSQL, если задан только `WASMGATE_CP_SQLITE_PATH` — SQLite |
+| `WASMGATE_CP_SQLITE_PATH` | `data/control.db`, когда выбран SQLite |
 | `WASMGATE_CP_POSTGRES` | `Host=127.0.0.1;Port=6767;Database=wasmgate;Username=wasmgate;Password=wasmgate` |
 | `WASMGATE_CP_GRPC_LISTEN` | `http://127.0.0.1:9096` |
 | `WASMGATE_CP_HTTP_LISTEN` | `http://127.0.0.1:9097` |
@@ -241,6 +246,11 @@ Prometheus + Grafana.
 
 Длительности — в инвариантном формате `TimeSpan`.
 
+`WASMGATE_CP_STORAGE` принимает `postgres` или `sqlite`. Выбор SQLite вместе с
+заданной строкой PostgreSQL отклоняется как неоднозначный. SQLite поддерживает
+ровно один процесс control plane на файл БД; схема и lock-файл создаются
+автоматически.
+
 ## Модель безопасности
 
 - Plaintext gRPC запрещён на не-loopback адресе: без TLS нет identity, и любой
@@ -258,7 +268,8 @@ Prometheus + Grafana.
 
 ## Известные ограничения
 
-- Один процесс control plane: реестр сессий в памяти.
+- Один процесс control plane: реестр сессий в памяти. SQLite дополнительно
+  закрепляет это lock-файлом; PostgreSQL тоже рассчитан на один процесс.
 - Команды релиза можно воспроизвести. `ApplyRelease` для старого подписанного
   релиза неотличим от отката оператора; исправление требует deployment-level
   подписанного envelope с монотонной последовательностью и сроком действия

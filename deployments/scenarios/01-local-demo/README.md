@@ -2,7 +2,7 @@
 
 Everything on one machine:
 
-- PostgreSQL;
+- SQLite storage by default (PostgreSQL is available as an overlay);
 - control plane and admin UI;
 - one data plane;
 - nginx demo backend.
@@ -22,6 +22,14 @@ curl -fsS http://127.0.0.1:9097/readyz
 ```
 
 Open `http://127.0.0.1:9097/` and paste the token.
+
+The control-plane database lives in the `cpdata` volume at `/data/control.db`.
+To use PostgreSQL instead:
+
+```bash
+docker compose -f deployments/scenarios/01-local-demo/compose.yml \
+               -f deployments/scenarios/01-local-demo/compose.postgres.yml up -d --build
+```
 
 ## Create an agent
 
@@ -102,8 +110,9 @@ version reported by `wasmgate_build_info` (the default is `dev`).
 
 - The data plane is under the `dp` profile because it needs a token created
   after the control plane starts.
-- The control plane data volume `cpdata` is mounted read-only into the data
-  plane to read `release-signing.key.pub`.
+- The control plane data volume `cpdata` holds the SQLite database, CA, signing
+  key and artifacts. Back it up as one unit. The data plane mounts it read-only
+  to read `release-signing.key.pub`.
 - `dpdata` is a writable volume; the control plane rewrites the configuration
   there.
 - For a CP-only deployment see [`../03-control-plane`](../03-control-plane). For

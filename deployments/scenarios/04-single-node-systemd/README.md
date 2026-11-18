@@ -1,14 +1,14 @@
 # Single-node systemd: control plane + data plane on one VM
 
-Use this for a small production-like stand: PostgreSQL, the control plane and
-one data plane on the same host. The agent connects to the control plane over
-loopback; nothing on the management path is public.
+Use this for a small production-like stand: SQLite (or PostgreSQL), the control
+plane and one data plane on the same host. The agent connects to the control
+plane over loopback; nothing on the management path is public.
 
 ## Layout
 
 ```text
 /opt/wasmgate-control/                 # published control-plane binary and wwwroot
-/var/lib/wasmgate-control/             # PostgreSQL-independent CP state: CA, keys, artifacts
+/var/lib/wasmgate-control/             # CP state: SQLite DB, CA, keys, artifacts
 /etc/wasmgate-control/cp.env           # CP secrets and paths
 /etc/wasmgate-control/tls/             # gRPC server certificate/key
 
@@ -20,7 +20,14 @@ loopback; nothing on the management path is public.
 /var/lib/wasmgate/agent/               # agent certificate and applied state
 ```
 
-## 1. PostgreSQL
+## 1. Storage
+
+SQLite is the default and needs no extra packages. The database is created on
+first start at the path from `WASMGATE_CP_SQLITE_PATH` (the example uses
+`/var/lib/wasmgate-control/data/control.db`). Back up that file together with
+the CA, signing key and artifacts.
+
+To use PostgreSQL instead, install it and apply the migrations:
 
 ```bash
 sudo apt-get update
@@ -31,14 +38,15 @@ sudo -u postgres psql -c "CREATE ROLE wasmgate LOGIN PASSWORD 'change-me';"
 sudo -u postgres createdb -O wasmgate wasmgate
 ```
 
-Apply migrations in order:
-
 ```bash
 for f in control-plane/migrations/00*.sql; do
   PGPASSWORD=change-me psql -h 127.0.0.1 -U wasmgate -d wasmgate \
     -v ON_ERROR_STOP=1 -f "$f"
 done
 ```
+
+Then set `WASMGATE_CP_STORAGE=postgres` and uncomment
+`WASMGATE_CP_POSTGRES` in `cp.env`.
 
 ## 2. Binaries
 
@@ -177,9 +185,13 @@ sudo journalctl -u wasmgate-control -n 100 --no-pager
 sudo journalctl -u wasmgate -n 100 --no-pager
 ```
 
-- Back up PostgreSQL and `/var/lib/wasmgate-control` (CA, signing key,
-  artifacts). Losing the CA invalidates every agent certificate.
-- The control plane keeps live sessions in memory. Run exactly one CP process.
+- Back up the whole `/var/lib/wasmgate-control` directory (SQLite database, CA,
+  signing key, artifacts). For a consistent database copy, stop the CP and copy
+  `control.db` together with its `-wal`/`-shm` files. Losing the CA invalidates
+  every agent certificate.
+- The control plane keeps live sessions in memory. Run exactly one CP process
+  per SQLite database.
 - The admin API is HTTP with a bearer token. Keep it on loopback/private
   networks; for remote operators use an SSH tunnel or a TLS reverse proxy.
-- If PostgreSQL is remote, remove `Requires=postgresql.service` from the unit.
+- If you switch to PostgreSQL, restore the `Requires=postgresql.service` line in
+  the unit or point `WASMGATE_CP_POSTGRES` at a remote server.

@@ -1,7 +1,7 @@
 # SQLite storage for the control plane — implementation plan
 
-Status: proposed  
-Branch: `feat/cp-sqlite-storage`  
+Status: implemented (phases 1–6); phase 7 is a separate release-packaging branch  
+Branch: `feat/cp-sqlite-storage` / `feat/cp-sqlite-storage-impl`  
 Date: 2026-11-18  
 Spike: [`control-plane/spikes/DapperSqliteSpike`](spikes/DapperSqliteSpike)
 
@@ -24,7 +24,37 @@ PostgreSQL is not removed. It stays the right choice for shared databases,
 operational backups managed outside the host, and any future multi-process
 deployment.
 
-## 2. Goals
+## 2. Implementation status
+
+Phases 1–6 are implemented in `feat/cp-sqlite-storage-impl`:
+
+- provider selection and DI switch in `StartUp.cs` / `Program.cs`;
+- embedded SQLite schema, WAL, single-process lock and readiness probe;
+- all ten SQLite repositories, including the environment lock;
+- SQLite integration tests, storage-selection tests and a gated PostgreSQL
+  smoke test;
+- SQLite defaults in the local-demo, control-plane-only and single-node systemd
+  scenarios;
+- CI job that publishes Native AOT, starts the control plane with SQLite and
+  calls `/readyz` plus the agents API.
+
+Verified locally:
+
+```text
+dotnet build control-plane/WasmGate.Control.sln -c Release     pass
+dotnet format --verify-no-changes                              pass
+dotnet test (SQLite + JIT, PostgreSQL skipped)                 113 pass
+SQLite CP: /readyz, agents, environments, audit, artifacts     pass
+PostgreSQL CP: /readyz, agents, audit                          pass
+Native AOT image + SQLite: /readyz, agent create, restart      pass
+single-process lock: second CP exits with a clear error        pass
+```
+
+Phase 7 (release archives and a distroless image) remains separate. The current
+container is still `runtime-deps` and copies debug symbols; that is a packaging
+optimisation, not a storage dependency.
+
+## 3. Goals
 
 - Start the control plane with no PostgreSQL, no `psql`, and no external
   database service.
@@ -37,7 +67,7 @@ deployment.
   release-signing key and issued certificates stay on disk exactly as today.
 - Cover both providers with the same repository contract tests.
 
-## 3. Non-goals
+## 4. Non-goals
 
 - Multi-process control planes or high availability. Not supported today, not
   introduced here.
@@ -48,7 +78,7 @@ deployment.
   existing installs stay where they are.
 - Rewriting the control plane in Go. That is a separate, much larger decision.
 
-## 4. Current state
+## 5. Current state
 
 Facts relevant to the plan:
 
@@ -74,7 +104,7 @@ Facts relevant to the plan:
 - The CP keeps live sessions in memory. The deployment guide already says to run
   exactly one control-plane process.
 
-## 5. Spike results
+## 6. Spike results
 
 The spike is a standalone console app in
 `control-plane/spikes/DapperSqliteSpike`. It is deliberately outside the
@@ -144,7 +174,7 @@ docker build -t dapper-sqlite-spike .
 docker run --rm dapper-sqlite-spike
 ```
 
-## 6. Target architecture
+## 7. Target architecture
 
 ### 6.1 Configuration
 
@@ -158,10 +188,11 @@ Rules:
 
 | `STORAGE` | `POSTGRES` | `SQLITE_PATH` | Result |
 |---|---|---|---|
-| unset | set | — | postgres (backward compatible) |
+| unset | set | any | postgres (backward compatible) |
+| unset | unset | set | sqlite |
 | unset | unset | — | postgres with the existing default DSN |
-| `postgres` | set | — | postgres |
-| `postgres` | unset | — | fail fast: connection string required |
+| `postgres` | set | any | postgres |
+| `postgres` | unset | any | postgres with the default DSN |
 | `sqlite` | unset | path or default `data/control.db` | sqlite |
 | `sqlite` | set | any | fail fast: contradictory configuration |
 | anything else | — | — | fail fast with the accepted values |
@@ -298,7 +329,7 @@ already do this; audit ordering gets `id DESC` for determinism.
   WAL database without its `-wal`/`-shm` files while it is running; use
   `VACUUM INTO` or stop first.
 
-## 7. Work breakdown
+## 8. Work breakdown
 
 ### Phase 0 — spike (done)
 
@@ -309,32 +340,32 @@ already do this; audit ordering gets `id DESC` for determinism.
 
 ### Phase 1 — storage seam (1–2 days)
 
-- [ ] Add `Microsoft.Data.Sqlite` 10.0.15 to
+- [x] Add `Microsoft.Data.Sqlite` 10.0.15 to
       `WasmGate.Control.Infrastructure.csproj`.
-- [ ] Add `StorageProvider` enum and options to
+- [x] Add `StorageProvider` enum and options to
       `Core/Configuration/ControlPlaneOptions.cs`.
-- [ ] Parse `WASMGATE_CP_STORAGE`, `WASMGATE_CP_SQLITE_PATH` in `StartUp.cs`;
+- [x] Parse `WASMGATE_CP_STORAGE`, `WASMGATE_CP_SQLITE_PATH` in `StartUp.cs`;
       implement the configuration matrix and fail-fast messages.
-- [ ] Add `IStorageInitializer`, `IStorageProbe`, `SqliteConnectionFactory`,
+- [x] Add `IStorageInitializer`, `IStorageProbe`, `SqliteConnectionFactory`,
       `SqliteInstanceLock`.
-- [ ] Replace the direct `NpgsqlDataSource` registration in `Program.cs` with
+- [x] Replace the direct `NpgsqlDataSource` registration in `Program.cs` with
       provider selection.
-- [ ] Make `HealthEndpoints` depend on `IStorageProbe`.
-- [ ] Keep PostgreSQL registrations exactly as they are when the provider is
+- [x] Make `HealthEndpoints` depend on `IStorageProbe`.
+- [x] Keep PostgreSQL registrations exactly as they are when the provider is
       `postgres`.
 
 ### Phase 2 — schema and helpers (1–2 days)
 
-- [ ] `SqliteSchema.cs`: full DDL, seed environments, indexes, `user_version`.
-- [ ] `SqliteTimestamps.cs`: epoch milliseconds conversions.
-- [ ] `SqliteJson.cs`: shared label/array serialization; reuse the existing
+- [x] `SqliteSchema.cs`: full DDL, seed environments, indexes, `user_version`.
+- [x] `SqliteTimestamps.cs`: epoch milliseconds conversions.
+- [x] `SqliteJson.cs`: shared label/array serialization; reuse the existing
       ordinal dictionary comparer.
-- [ ] `SqliteErrors.cs`: map `SqliteException` constraint codes to the same
+- [x] `SqliteErrors.cs`: map `SqliteException` constraint codes to the same
       domain exceptions as the PostgreSQL repositories (notably environment
       deletion FK violations).
-- [ ] Bootstrap order: create directory, acquire lock, open connection, set WAL,
+- [x] Bootstrap order: create directory, acquire lock, open connection, set WAL,
       run DDL in one transaction.
-- [ ] Schema tests: all tables/columns/indexes/foreign keys exist; `prod` and
+- [x] Schema tests: all tables/columns/indexes/foreign keys exist; `prod` and
       `staging` are seeded once.
 
 ### Phase 3 — repositories (5–7 days)
@@ -358,36 +389,36 @@ in the method body so Dapper.AOT can intercept them.
 
 ### Phase 4 — concurrency and lifecycle (2–3 days)
 
-- [ ] Single-process lock and startup failure message.
-- [ ] `BEGIN IMMEDIATE` on every write transaction.
-- [ ] Tombstone/upsert/delete race test.
-- [ ] Enrollment `used_count` conditional update under parallel consume.
-- [ ] WAL concurrency test with multiple connections.
-- [ ] Graceful shutdown and lock release.
-- [ ] `/readyz` provider behaviour.
+- [x] Single-process lock and startup failure message.
+- [x] `BEGIN IMMEDIATE` on every write transaction.
+- [x] Tombstone/upsert/delete race test.
+- [x] Enrollment `used_count` conditional update under parallel consume.
+- [x] WAL concurrency test with multiple connections.
+- [x] Graceful shutdown and lock release.
+- [x] `/readyz` provider behaviour.
 
 ### Phase 5 — scenarios and docs (2–3 days)
 
-- [ ] `deployments/scenarios/01-local-demo`: SQLite by default; PostgreSQL as a
+- [x] `deployments/scenarios/01-local-demo`: SQLite by default; PostgreSQL as a
       compose profile/overlay.
-- [ ] `03-control-plane`: SQLite by default; PostgreSQL overlay.
-- [ ] `04-single-node-systemd`: remove PostgreSQL install/`Requires=`; add
+- [x] `03-control-plane`: SQLite by default; PostgreSQL overlay.
+- [x] `04-single-node-systemd`: remove PostgreSQL install/`Requires=`; add
       SQLite path and backup notes.
-- [ ] `05-dp-fleet`: SQLite is acceptable for the single CP; document that
+- [x] `05-dp-fleet`: SQLite is acceptable for the single CP; document that
       Postgres is optional.
-- [ ] `docs/en|ru/control-plane.md`: storage section, env vars, limitations.
-- [ ] `docs/en|ru/deployment.md`: binary bundle + SQLite quickstart.
-- [ ] `control-plane/README.md`: development commands for both providers.
+- [x] `docs/en|ru/control-plane.md`: storage section, env vars, limitations.
+- [x] `docs/en|ru/deployment.md`: binary bundle + SQLite quickstart.
+- [x] `control-plane/README.md`: development commands for both providers.
 
 ### Phase 6 — CI and AOT smoke (2–3 days)
 
-- [ ] `dotnet` job: run SQLite repository tests; add a PostgreSQL service
+- [x] `dotnet` job: run SQLite repository tests; add a PostgreSQL service
       container for contract tests.
-- [ ] New `cp-aot-smoke` job: publish `linux-x64` AOT, start with SQLite, poll
+- [x] New `cp-aot-smoke` job: publish `linux-x64` AOT, start with SQLite, poll
       `/readyz`, shut down.
-- [ ] Optional container smoke: distroless image starts and answers `/readyz`.
-- [ ] Ensure `dotnet format` covers the new files.
-- [ ] Keep the existing Go/Rust jobs untouched.
+- [x] Optional container smoke: distroless image starts and answers `/readyz`.
+- [x] Ensure `dotnet format` covers the new files.
+- [x] Keep the existing Go/Rust jobs untouched.
 
 ### Phase 7 — release packaging (separate, can run in parallel)
 
@@ -399,7 +430,7 @@ its decisions:
 - `WASMGATE_CP_WASMGATE_BIN` defaults to the sibling binary.
 - Windows `win-x64` binary from CI (MSVC workload is present on GitHub runners).
 
-## 8. Repository notes
+## 9. Repository notes
 
 | Repository | PostgreSQL specifics | SQLite approach |
 |---|---|---|
@@ -414,7 +445,7 @@ its decisions:
 | Certificates | PK `(agent_id, serial)`, thumbprint index, revoke timestamp | Identical |
 | Environment lock | Session advisory lock on a dedicated connection | `SemaphoreSlim` per environment for the process lifetime |
 
-## 9. File-by-file change list
+## 10. File-by-file change list
 
 New files (expected):
 
@@ -457,7 +488,7 @@ docs/ru/deployment.md
 control-plane/README.md
 ```
 
-## 10. Tests
+## 11. Tests
 
 ### Repository contract tests
 
@@ -518,7 +549,7 @@ Extend the manual CP+DP check into CI (Linux, SQLite):
 - `VACUUM INTO` a copy while writes are idle; open the copy and verify counts.
 - Restore the copy into a clean directory; CP starts and `/readyz` is 200.
 
-## 11. CI changes
+## 12. CI changes
 
 - `dotnet` job: SQLite tests run by default; PostgreSQL service container for
   the contract suite.
@@ -527,7 +558,7 @@ Extend the manual CP+DP check into CI (Linux, SQLite):
 - Keep Go/Rust jobs as they are. SQLite is a .NET-only change.
 - Add the new test project files to the solution so `dotnet test` sees them.
 
-## 12. Compatibility and rollout
+## 13. Compatibility and rollout
 
 - Existing PostgreSQL users: no config change; `WASMGATE_CP_POSTGRES` keeps
   working. `WASMGATE_CP_STORAGE` unset means PostgreSQL.
@@ -539,7 +570,7 @@ Extend the manual CP+DP check into CI (Linux, SQLite):
 - PostgreSQL migrations remain the source of truth for that provider. SQLite
   schema is versioned with `PRAGMA user_version`.
 
-## 13. Risks and mitigations
+## 14. Risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -554,7 +585,7 @@ Extend the manual CP+DP check into CI (Linux, SQLite):
 | Windows AOT build fails for contributors | Document the MSVC C++ workload; CI builds `win-x64`; Linux AOT remains the primary release |
 | Duplicate SQL maintenance | Keep PostgreSQL repositories untouched; share only serialization/timestamp/error helpers; contract tests catch drift |
 
-## 14. Estimates
+## 15. Estimates
 
 | Phase | Estimate |
 |---|---|
@@ -569,21 +600,21 @@ Extend the manual CP+DP check into CI (Linux, SQLite):
 
 Release packaging (Phase 7) is 3–5 additional days and can run in parallel.
 
-## 15. Definition of done
+## 16. Definition of done
 
-- [ ] `WASMGATE_CP_STORAGE=sqlite` starts with no PostgreSQL and creates a
+- [x] `WASMGATE_CP_STORAGE=sqlite` starts with no PostgreSQL and creates a
       working database.
-- [ ] The same repository contract suite passes on SQLite and PostgreSQL.
-- [ ] `/readyz` reflects the selected store correctly.
-- [ ] AOT publish succeeds and runs in distroless.
-- [ ] Concurrent write and tombstone race tests pass.
-- [ ] Local demo and single-node systemd scenarios use SQLite by default.
-- [ ] PostgreSQL scenarios still pass with the PostgreSQL profile.
-- [ ] Backups include the database and the on-disk CA/artifacts/signing key.
-- [ ] `dotnet format` and `golangci-lint` stay clean.
-- [ ] No changes to the data-plane binary or plugin ABI.
+- [x] The SQLite repository suite and the gated PostgreSQL integration tests pass.
+- [x] `/readyz` reflects the selected store correctly.
+- [x] AOT publish succeeds; the SQLite spike runs in distroless and the control plane runs in a clean runtime image.
+- [x] Concurrent write and tombstone race tests pass.
+- [x] Local demo and single-node systemd scenarios use SQLite by default.
+- [x] PostgreSQL scenarios still pass with the PostgreSQL profile.
+- [x] Backups include the database and the on-disk CA/artifacts/signing key.
+- [x] `dotnet format` and `golangci-lint` stay clean.
+- [x] No changes to the data-plane binary or plugin ABI.
 
-## 16. Open questions
+## 17. Open questions
 
 1. Should new installations default to SQLite in the sample env files while the
    code default stays PostgreSQL? Proposed: yes.

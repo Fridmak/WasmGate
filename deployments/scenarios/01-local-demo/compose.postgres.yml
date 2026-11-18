@@ -1,0 +1,36 @@
+# PostgreSQL overlay for the local demo.
+#
+# The base compose file uses SQLite. Use this overlay to exercise the
+# PostgreSQL provider instead:
+#
+#   docker compose -f compose.yml -f compose.postgres.yml up -d --build
+name: wasmgate-demo
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wasmgate
+      POSTGRES_PASSWORD: wasmgate
+      POSTGRES_DB: wasmgate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 001 -> 006, applied once when the volume is initialized.
+      - ../../../control-plane/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wasmgate -d wasmgate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  control-plane:
+    environment:
+      WASMGATE_CP_STORAGE: "postgres"
+      WASMGATE_CP_POSTGRES: "Host=postgres;Port=5432;Database=wasmgate;Username=wasmgate;Password=wasmgate"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
