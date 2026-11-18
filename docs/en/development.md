@@ -13,12 +13,27 @@
 ```
 cmd/wasmgate/          flags and process wiring
 internal/config/       YAML schema, defaults, validation, reload
-internal/proxy/        listeners, pools, relay, snapshot
-internal/plugin/abi4/  ABI v4 runtime (envelope, plan, engine, lifecycle)
+internal/proxy/        compatibility facade and cross-package tests
+internal/proxy/runtime/ immutable snapshots, registry and limits
+internal/proxy/conn/    per-connection pipeline and dialing
+internal/proxy/server/  listener lifecycle and probes
+internal/proxy/backend/ pools, balancing, health and breakers
+internal/proxy/relay/  bidirectional relay and idle/splice paths
+internal/proxy/httpinspect/ HTTP/1 framing and body policy
+internal/plugin/abi4/engine/ ABI v4 runtime and hooks
+internal/plugin/abi4/envelope/ IN envelope and HTTP indexing
+internal/plugin/abi4/output/ OUT envelope
+internal/plugin/abi4/plan/ phases, capabilities and verdicts
+internal/plugin/abi4/state/ host-owned bounded state
+internal/plugin/abi4/wire/ section-table codec
 internal/tlspeek/      ClientHello/SNI parser
 internal/ratelimit/    sliding window and concurrency guard
 internal/observe/      logs, metrics, admin endpoint
-internal/controlplane/ control-plane client
+internal/controlplane/ public Agent facade
+internal/controlplane/options/ shared options
+internal/controlplane/identity/ enrollment and certificate files
+internal/controlplane/release/ signed release application
+internal/controlplane/session/ gRPC session and dispatch
 plugins/examples/      Rust workspace with reference plugins
 control-plane/         C# solution and xunit tests
 configs/               example and showcase configuration
