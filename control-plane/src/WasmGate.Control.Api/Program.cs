@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Npgsql;
 using WasmGate.Control.Api;
 using WasmGate.Control.Api.Endpoints;
 using WasmGate.Control.Api.Endpoints.Admin;
@@ -8,12 +7,8 @@ using WasmGate.Control.Api.Hosting;
 using WasmGate.Control.Api.Infrastructure.Networking;
 using WasmGate.Control.Api.Infrastructure.Security;
 using WasmGate.Control.Api.Observability;
-using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Releases;
-using WasmGate.Control.Core.Abstractions.Repositories;
-using WasmGate.Control.Infrastructure.Agents;
-using WasmGate.Control.Infrastructure.Repositories;
-using WasmGate.Control.Infrastructure.Security;
+using WasmGate.Control.Infrastructure.Storage;
 using AdminJsonContext = WasmGate.Control.Api.Contracts.AdminJsonContext;
 
 // Composition root of the control plane: options, logging, persistence, gRPC
@@ -38,7 +33,6 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var options = IHostApplicationBuilder.GetCpOptions();
 StartupSecurity.Validate(options);
-builder.RegisterServices();
 builder.WebHost.ConfigureKestrel(kestrel =>
 {
     // Artifacts travel base64-encoded inside JSON, so the request body limit is
@@ -49,13 +43,7 @@ builder.WebHost.ConfigureKestrel(kestrel =>
 });
 
 builder.Services.AddSingleton(options);
-builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(options.PostgresConnectionString).Build());
-
-builder.Services.AddSingleton<ICertificateAuthority>(new PkiCertificateAuthority(options));
-builder.Services.AddSingleton<IEnrollmentTokenRepository, PostgresEnrollmentTokenRepository>();
-builder.Services.AddSingleton<IAgentCertificateRepository, PostgresAgentCertificateRepository>();
-builder.Services.AddSingleton<IAgentProvisioningService, AgentProvisioningService>();
-builder.Services.AddSingleton<IReleaseService, ReleaseService>();
+builder.RegisterServices(options);
 
 builder.Services.AddGrpc();
 builder.Services.AddSingleton<AgentControlService>();
@@ -63,6 +51,11 @@ builder.Services.AddSingleton<AgentEnrollmentService>();
 builder.Services.AddHostedService<DeploymentReaper>();
 
 var app = builder.Build();
+
+// Prepare the selected store before serving. SQLite creates its directory,
+// takes the single-process lock and applies the embedded schema; PostgreSQL is
+// a no-op and keeps its explicit migration workflow.
+await app.Services.GetRequiredService<IStorageInitializer>().InitializeAsync(CancellationToken.None);
 
 // Create the release-signing key before serving: agents read the matching
 // public key when they start, and enrollment can precede the first release.
@@ -93,4 +86,4 @@ app.MapGrpcService<AgentEnrollmentService>();
 app.MapGrpcService<ArtifactDownloadService>();
 app.MapAdminEndpoints();
 
-app.Run();
+await app.RunAsync();

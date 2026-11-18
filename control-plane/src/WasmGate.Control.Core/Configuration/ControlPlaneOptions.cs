@@ -25,6 +25,20 @@ public sealed class ControlPlaneOptions
     /// </summary>
     public string PostgresConnectionString { get; init; } = DefaultPostgresConnectionString;
 
+    /// <summary>Storage backend selected for this process.</summary>
+    public StorageProvider Storage { get; init; } = StorageProvider.Postgres;
+
+    /// <summary>
+    /// SQLite database file used when <see cref="Storage"/> is
+    /// <see cref="StorageProvider.Sqlite"/>.
+    /// </summary>
+    /// <remarks>
+    /// A relative path is resolved against the control-plane process working
+    /// directory, matching the other path options. The parent directory is
+    /// created on startup.
+    /// </remarks>
+    public string SqlitePath { get; init; } = "data/control.db";
+
     /// <summary>
     /// Agent gRPC endpoint. HTTP/2 only.
     /// </summary>
@@ -133,4 +147,14 @@ public sealed class ControlPlaneOptions
 
     /// <summary>Largest configuration document accepted by the admin API, in bytes.</summary>
     public int MaxConfigBytes { get; init; } = 1024 * 1024;
+}
+
+/// <summary>Durable store used by the control plane.</summary>
+public enum StorageProvider
+{
+    /// <summary>PostgreSQL through Npgsql. The default for existing deployments.</summary>
+    Postgres = 0,
+
+    /// <summary>Single-file SQLite database for single-node installations.</summary>
+    Sqlite = 1,
 }
