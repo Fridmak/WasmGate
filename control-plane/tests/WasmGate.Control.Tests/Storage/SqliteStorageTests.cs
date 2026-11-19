@@ -184,9 +184,70 @@ public sealed class SqliteStorageTests
         Assert.Single(await repository.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
         Assert.True(await repository.IsActiveAsync(agent.Id, certificate.Thumbprint, CancellationToken.None));
 
-        await repository.RevokeAsync(agent.Id, certificate.SerialNumber, CancellationToken.None);
+        Assert.True(await repository.RevokeAsync(
+            agent.Id,
+            certificate.SerialNumber,
+            CancellationToken.None));
+        Assert.False(await repository.RevokeAsync(
+            agent.Id,
+            certificate.SerialNumber,
+            CancellationToken.None));
+        Assert.False(await repository.RevokeAsync(
+            agent.Id,
+            "missing",
+            CancellationToken.None));
         Assert.Empty(await repository.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
         Assert.False(await repository.IsActiveAsync(agent.Id, certificate.Thumbprint, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CertificateRepositoryRotatesActiveCertificateAtomically()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var agent = NewAgent("rotation-agent", "prod");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+
+        var repository = new SqliteAgentCertificateRepository(db.Connections);
+        var oldCertificate = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "old",
+            Thumbprint = new string('d', 64),
+            Pem = "old-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        };
+        await repository.AddAsync(oldCertificate, CancellationToken.None);
+
+        var replacement = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "new",
+            Thumbprint = new string('e', 64),
+            Pem = "new-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(2),
+        };
+        var retired = await repository.AddAndRevokeActiveAsync(
+            replacement,
+            CancellationToken.None);
+
+        Assert.Single(retired);
+        Assert.Equal("old", retired[0].SerialNumber);
+        Assert.False(await repository.IsActiveAsync(
+            agent.Id,
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+        Assert.True(await repository.IsActiveAsync(
+            agent.Id,
+            replacement.Thumbprint,
+            CancellationToken.None));
+        Assert.Equal(
+            ["new"],
+            (await repository.ListActiveByAgentAsync(agent.Id, CancellationToken.None))
+                .Select(certificate => certificate.SerialNumber)
+                .ToArray());
     }
 
     [Fact]

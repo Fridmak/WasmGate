@@ -186,17 +186,28 @@ internal static class AgentEndpoints
     /// <param name="id">Agent identifier.</param>
     /// <param name="serial">Certificate serial number.</param>
     /// <param name="certificates">Certificate repository.</param>
+    /// <param name="sessions">Live agent session registry.</param>
     /// <param name="audit">Audit log.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    /// <returns>204; the revocation is checked at the next session start.</returns>
+    /// <returns>204 on success; 404 when the certificate is unknown or already revoked.</returns>
     private static async Task<IResult> RevokeCertificate(
         Guid id,
         string serial,
         IAgentCertificateRepository certificates,
+        IAgentSessionRegistry sessions,
         IAuditLog audit,
         CancellationToken cancellationToken)
     {
-        await certificates.RevokeAsync(id, serial, cancellationToken);
+        if (!await certificates.RevokeAsync(id, serial, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        if (sessions.TryGet(id, out var session))
+        {
+            await session.CloseAsync(CancellationToken.None);
+        }
+
         await audit.AppendAsync(
             new AuditEvent
             {

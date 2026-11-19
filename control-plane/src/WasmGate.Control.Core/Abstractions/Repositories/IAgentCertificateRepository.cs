@@ -37,9 +37,23 @@ public interface IAgentCertificateRepository
     /// <param name="agentId">Agent identifier.</param>
     /// <param name="serialNumber">Certificate serial number.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>True when an active certificate was found and revoked.</returns>
+    /// <remarks>The record is kept for audit.</remarks>
+    Task<bool> RevokeAsync(Guid agentId, string serialNumber, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Revokes every other active certificate of an agent and stores a new one
+    /// in the same transaction.
+    /// </summary>
+    /// <param name="certificate">Replacement certificate to store.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>The certificates retired by the rotation, for auditing.</returns>
     /// <remarks>
-    /// The record is kept for audit. Revocation is not yet enforced during the
-    /// TLS handshake, so a revoked certificate keeps working until it expires.
+    /// Immediate rotation is deliberate: once the new certificate is issued,
+    /// the old identity must no longer be accepted. The caller closes any live
+    /// session using one of the retired certificates after the transaction.
     /// </remarks>
-    Task RevokeAsync(Guid agentId, string serialNumber, CancellationToken cancellationToken);
+    Task<IReadOnlyList<AgentCertificate>> AddAndRevokeActiveAsync(
+        AgentCertificate certificate,
+        CancellationToken cancellationToken);
 }

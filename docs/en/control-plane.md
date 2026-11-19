@@ -212,19 +212,22 @@ Prometheus + Grafana stack.
 3. **Session**: the agent opens `AgentControl.Session`; the CN must match
    `Hello.agent_id`, and the certificate fingerprint must still be active.
 4. **Renew**: before expiry the agent calls `AgentEnrollment.Renew` over mTLS; a
-   new key and certificate replace the old one. No token is needed, and a revoked
-   certificate cannot renew.
-5. **Revoke** a certificate; the next session is rejected.
+   new key and certificate replace the old one immediately. No token is needed,
+   the old live session is closed, and a revoked certificate cannot renew.
+5. **Revoke** a certificate; the live session is closed and future sessions are
+   rejected.
 
 Certificate lifetime defaults to 30 days (`WASMGATE_CP_AGENT_CERT_TTL`), renewal
 happens 7 days before expiry (`-cp-renew-before` on the agent). The CA files are
 created on first start; losing them invalidates every agent certificate.
 
 Revocation is enforced after the TLS handshake: the control plane looks up the
-certificate fingerprint in SQLite before a session or artifact download. There
-is no CRL/OCSP endpoint, so a revoked certificate can still complete a TLS
-handshake; it cannot use any gRPC method. Use short lifetimes and the agent
-limits if that partial connection is a concern.
+certificate fingerprint in SQLite before a session or artifact download. An
+explicit revoke or certificate rotation also closes the matching live session;
+the session performs a periodic revocation check as a backstop. There is no
+CRL/OCSP endpoint, so a revoked certificate can still complete a TLS handshake;
+it cannot use any gRPC method. Use short lifetimes and the agent limits if that
+partial connection is a concern.
 
 Operator labels are authoritative: labels reported in `Hello` only fill gaps, so
 an agent cannot move itself into another wave.

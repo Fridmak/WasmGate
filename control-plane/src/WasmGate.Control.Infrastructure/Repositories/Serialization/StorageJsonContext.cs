@@ -11,4 +11,17 @@ namespace WasmGate.Control.Infrastructure.Repositories.Serialization;
 /// </remarks>
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(CertificateRotationAudit))]
 internal sealed partial class StorageJsonContext : JsonSerializerContext;
+
+/// <summary>Audit details written when a certificate is replaced.</summary>
+internal sealed class CertificateRotationAudit
+{
+    /// <summary>Reason for retiring the old certificate.</summary>
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = string.Empty;
+
+    /// <summary>Serial number of the replacement certificate.</summary>
+    [JsonPropertyName("replacedBy")]
+    public string ReplacedBy { get; init; } = string.Empty;
+}

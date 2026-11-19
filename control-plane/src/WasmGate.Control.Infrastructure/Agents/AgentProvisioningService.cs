@@ -1,11 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
+using WasmGate.Control.Infrastructure.Repositories.Serialization;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
@@ -354,7 +356,7 @@ public sealed class AgentProvisioningService(
             notAfter,
             cancellationToken);
 
-        await certificates.AddAsync(
+        await RotateCertificateAsync(
             new AgentCertificate
             {
                 AgentId = agentGuid,
@@ -481,7 +483,7 @@ public sealed class AgentProvisioningService(
             notAfter,
             cancellationToken);
 
-        await certificates.AddAsync(
+        await RotateCertificateAsync(
             new AgentCertificate
             {
                 AgentId = agentId,
@@ -592,18 +594,62 @@ public sealed class AgentProvisioningService(
         return copy;
     }
 
+    /// <summary>
+    /// Stores a replacement certificate, retires the previous active identity
+    /// atomically and closes any session that still uses that identity.
+    /// </summary>
+    /// <param name="certificate">New certificate issued by the agent CA.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    private async Task RotateCertificateAsync(
+        AgentCertificate certificate,
+        CancellationToken cancellationToken)
+    {
+        var retired = await certificates.AddAndRevokeActiveAsync(
+            certificate,
+            cancellationToken);
+
+        if (retired.Count > 0 && sessions.TryGet(certificate.AgentId, out var session))
+        {
+            await session.CloseAsync(CancellationToken.None);
+        }
+
+        var details = JsonSerializer.Serialize(
+            new CertificateRotationAudit
+            {
+                Reason = "rotation",
+                ReplacedBy = certificate.SerialNumber,
+            },
+            StorageJsonContext.Default.CertificateRotationAudit);
+        foreach (var oldCertificate in retired)
+        {
+            await AuditAsync(
+                AgentNaming.CertificateCommonName(certificate.AgentId),
+                "certificate.revoke",
+                $"{certificate.AgentId:D}/{oldCertificate.SerialNumber}",
+                cancellationToken,
+                details);
+        }
+    }
+
     /// <summary>Appends one audit event for a provisioning operation.</summary>
     /// <param name="actor">Principal that performed the operation.</param>
     /// <param name="action">Stable action name.</param>
     /// <param name="target">Entity the action applies to.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    private Task AuditAsync(string actor, string action, string target, CancellationToken cancellationToken) =>
+    /// <param name="detailsJson">Optional JSON details for the audit event.</param>
+    private Task AuditAsync(
+        string actor,
+        string action,
+        string target,
+        CancellationToken cancellationToken,
+        string? detailsJson = null) =>
         audit.AppendAsync(
             new AuditEvent
             {
                 Actor = actor,
                 Action = action,
                 Target = target,
+                DetailsJson = detailsJson,
             },
             cancellationToken);
 

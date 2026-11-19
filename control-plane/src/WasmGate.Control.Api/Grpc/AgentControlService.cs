@@ -36,6 +36,9 @@ public sealed class AgentControlService(
     ControlPlaneOptions options,
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
+    /// <summary>Backstop interval for detecting a missed revocation close.</summary>
+    private static readonly TimeSpan CertificateRecheckInterval = TimeSpan.FromSeconds(60);
+
     /// <summary>
     /// Runs one agent control session until the stream ends.
     /// </summary>
@@ -72,7 +75,10 @@ public sealed class AgentControlService(
                 "The first message must be a Hello with a valid agent_id GUID."));
         }
 
-        await EnsureCertificateMatchesAsync(context, agentId, callCancellation);
+        var certificateThumbprint = await EnsureCertificateMatchesAsync(
+            context,
+            agentId,
+            callCancellation);
         await PersistHelloAsync(hello!, agentId, callCancellation);
 
         var session = new GrpcAgentSession(agentId, responseStream, context);
@@ -90,8 +96,28 @@ public sealed class AgentControlService(
                 await displaced.CloseAsync(CancellationToken.None);
             }
 
+            var nextCertificateCheck = DateTimeOffset.UtcNow + CertificateRecheckInterval;
             while (await requestStream.MoveNext(session.Token))
             {
+                if (certificateThumbprint is not null &&
+                    DateTimeOffset.UtcNow >= nextCertificateCheck)
+                {
+                    if (!await certificates.IsActiveAsync(
+                            agentId,
+                            certificateThumbprint,
+                            session.Token))
+                    {
+                        logger.LogWarning(
+                            "closing agent session after certificate revocation: agent={AgentId}",
+                            agentId);
+                        throw new RpcException(new Status(
+                            StatusCode.Unauthenticated,
+                            "The client certificate was revoked or has expired."));
+                    }
+
+                    nextCertificateCheck = DateTimeOffset.UtcNow + CertificateRecheckInterval;
+                }
+
                 await DispatchAsync(agentId, requestStream.Current, session.Token);
             }
         }
@@ -172,14 +198,14 @@ public sealed class AgentControlService(
     /// <exception cref="RpcException">
     /// The certificate is missing, names another agent, or was revoked or expired.
     /// </exception>
-    private async Task EnsureCertificateMatchesAsync(
+    private async Task<string?> EnsureCertificateMatchesAsync(
         ServerCallContext context,
         Guid agentId,
         CancellationToken cancellationToken)
     {
         if (options.GrpcTls.CertificatePath is null)
         {
-            return;
+            return null;
         }
 
         var certificate = AgentCertificateIdentity.GetCertificate(context);
@@ -187,7 +213,7 @@ public sealed class AgentControlService(
         {
             if (!options.GrpcTls.RequireClientCertificate)
             {
-                return;
+                return null;
             }
 
             throw new RpcException(new Status(
@@ -212,6 +238,8 @@ public sealed class AgentControlService(
                 StatusCode.Unauthenticated,
                 "The client certificate was revoked or has expired."));
         }
+
+        return thumbprint;
     }
 
     /// <summary>
