@@ -1,0 +1,153 @@
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/proxy
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkHeadersBody/once-4      	    7567	    146653 ns/op	 446.88 MB/s	       0 B/op	       0 allocs/op
+BenchmarkHeadersBody/once-4      	    9962	    164831 ns/op	 397.59 MB/s	       0 B/op	       0 allocs/op
+BenchmarkHeadersBody/once-4      	    7965	    146270 ns/op	 448.05 MB/s	       8 B/op	       0 allocs/op
+BenchmarkHeadersBody/headers-4   	    9549	    155154 ns/op	 422.39 MB/s	       0 B/op	       0 allocs/op
+BenchmarkHeadersBody/headers-4   	    9800	    157985 ns/op	 414.82 MB/s	       6 B/op	       0 allocs/op
+BenchmarkHeadersBody/headers-4   	   10000	    144117 ns/op	 454.74 MB/s	       0 B/op	       0 allocs/op
+BenchmarkHeadersBody/stream-4    	    3703	    330037 ns/op	 198.57 MB/s	    3836 B/op	      52 allocs/op
+BenchmarkHeadersBody/stream-4    	    4000	    328353 ns/op	 199.59 MB/s	    3839 B/op	      52 allocs/op
+BenchmarkHeadersBody/stream-4    	    3322	    363457 ns/op	 180.31 MB/s	    3824 B/op	      52 allocs/op
+BenchmarkThroughput/direct/4KiB-4         	   44168	     24099 ns/op	 169.97 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/direct/4KiB-4         	   43329	     29333 ns/op	 139.64 MB/s	       2 B/op	       0 allocs/op
+BenchmarkThroughput/direct/4KiB-4         	   59947	     26518 ns/op	 154.46 MB/s	       1 B/op	       0 allocs/op
+BenchmarkThroughput/direct/64KiB-4        	    9954	    109025 ns/op	 601.11 MB/s	       9 B/op	       0 allocs/op
+BenchmarkThroughput/direct/64KiB-4        	    8700	    120673 ns/op	 543.09 MB/s	      11 B/op	       0 allocs/op
+BenchmarkThroughput/direct/64KiB-4        	   10430	    112768 ns/op	 581.16 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/direct/1MiB-4         	     890	   1193375 ns/op	 878.66 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/direct/1MiB-4         	     932	   1351030 ns/op	 776.13 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/direct/1MiB-4         	     884	   1274321 ns/op	 822.85 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/4KiB-4      	   54260	     18785 ns/op	 218.04 MB/s	       1 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/4KiB-4      	   75572	     23455 ns/op	 174.63 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/4KiB-4      	   73094	     19414 ns/op	 210.98 MB/s	       1 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/64KiB-4     	    8306	    142437 ns/op	 460.11 MB/s	      12 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/64KiB-4     	    8535	    134448 ns/op	 487.44 MB/s	      11 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/64KiB-4     	   10597	    161816 ns/op	 405.00 MB/s	       0 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/1MiB-4      	     700	   1733925 ns/op	 604.74 MB/s	      49 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/1MiB-4      	     643	   1719075 ns/op	 609.97 MB/s	      54 B/op	       0 allocs/op
+BenchmarkThroughput/zero_copy/1MiB-4      	     702	   1776146 ns/op	 590.37 MB/s	      49 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/4KiB-4  	   75554	     15829 ns/op	 258.76 MB/s	       1 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/4KiB-4  	   72752	     18243 ns/op	 224.52 MB/s	       1 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/4KiB-4  	   63436	     16543 ns/op	 247.60 MB/s	       2 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/64KiB-4 	    3882	    273051 ns/op	 240.01 MB/s	      26 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/64KiB-4 	    3235	    313895 ns/op	 208.78 MB/s	      41 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/64KiB-4 	    3966	    258666 ns/op	 253.36 MB/s	       9 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/1MiB-4  	     240	   5008409 ns/op	 209.36 MB/s	     145 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/1MiB-4  	     279	   4265279 ns/op	 245.84 MB/s	     241 B/op	       0 allocs/op
+BenchmarkThroughput/idle_watchdog/1MiB-4  	     249	   4509057 ns/op	 232.55 MB/s	     137 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=1-4      	   11438	    157379 ns/op	 416.42 MB/s	       8 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=1-4      	    9280	    151222 ns/op	 433.37 MB/s	      10 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=1-4      	    8114	    125225 ns/op	 523.35 MB/s	      12 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=4-4      	   20128	     58133 ns/op	1127.34 MB/s	      19 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=4-4      	   19987	     61440 ns/op	1066.66 MB/s	      16 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=4-4      	   21282	     64775 ns/op	1011.75 MB/s	      15 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=16-4     	   20422	     49876 ns/op	1313.97 MB/s	      54 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=16-4     	   25960	     59417 ns/op	1102.98 MB/s	      45 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=16-4     	   23185	     62186 ns/op	1053.87 MB/s	      51 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=64-4     	   16560	     79001 ns/op	 829.55 MB/s	     257 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=64-4     	   16860	     68967 ns/op	 950.26 MB/s	     257 B/op	       0 allocs/op
+BenchmarkThroughputScaling/conns=64-4     	   16893	     66618 ns/op	 983.75 MB/s	     248 B/op	       0 allocs/op
+BenchmarkRelayLatency/direct-4            	   48219	     25994 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRelayLatency/direct-4            	   47148	     32673 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRelayLatency/direct-4            	   45834	     28103 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRelayLatency/through_proxy-4     	   20762	     55966 ns/op	       1 B/op	       0 allocs/op
+BenchmarkRelayLatency/through_proxy-4     	   21424	     58998 ns/op	       1 B/op	       0 allocs/op
+BenchmarkRelayLatency/through_proxy-4     	   23427	     51570 ns/op	       1 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/direct-4         	    9589	    112884 ns/op	 580.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/direct-4         	   10000	    109518 ns/op	 598.40 MB/s	       6 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/direct-4         	   10000	    120321 ns/op	 544.68 MB/s	       9 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_l4-4    	   10629	    144899 ns/op	 452.29 MB/s	       3 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_l4-4    	   10088	    146618 ns/op	 446.98 MB/s	       3 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_l4-4    	   10000	    121570 ns/op	 539.08 MB/s	      10 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_full-4  	   10000	    147884 ns/op	 443.16 MB/s	       3 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_full-4  	   10000	    156212 ns/op	 419.53 MB/s	       3 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/wasmgate_full-4  	    7406	    158335 ns/op	 413.91 MB/s	       5 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/nginx_stream-4   	    4888	    241229 ns/op	 271.68 MB/s	      26 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/nginx_stream-4   	    5713	    236127 ns/op	 277.55 MB/s	      22 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/nginx_stream-4   	    5049	    217519 ns/op	 301.29 MB/s	      26 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/haproxy_tcp-4    	    4057	    265960 ns/op	 246.41 MB/s	      24 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/haproxy_tcp-4    	    4354	    281294 ns/op	 232.98 MB/s	       7 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/64KiB/haproxy_tcp-4    	    5196	    284281 ns/op	 230.53 MB/s	      25 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/direct-4          	     956	   1234480 ns/op	 849.41 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/direct-4          	    1147	   1321386 ns/op	 793.54 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/direct-4          	    1017	   1331717 ns/op	 787.39 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_l4-4     	     632	   1844218 ns/op	 568.57 MB/s	      55 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_l4-4     	     778	   1779388 ns/op	 589.29 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_l4-4     	     668	   1773548 ns/op	 591.23 MB/s	      51 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_full-4   	     686	   1509124 ns/op	 694.82 MB/s	      50 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_full-4   	     666	   2131830 ns/op	 491.87 MB/s	      54 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/wasmgate_full-4   	     594	   1907301 ns/op	 549.77 MB/s	      63 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/nginx_stream-4    	     344	   4211279 ns/op	 248.99 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/nginx_stream-4    	     328	   3892255 ns/op	 269.40 MB/s	     299 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/nginx_stream-4    	     360	   3484529 ns/op	 300.92 MB/s	      91 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/haproxy_tcp-4     	     266	   4257883 ns/op	 246.27 MB/s	     124 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/haproxy_tcp-4     	     375	   4638880 ns/op	 226.04 MB/s	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/Throughput/1MiB/haproxy_tcp-4     	     286	   4550425 ns/op	 230.43 MB/s	     460 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/direct-4             	   50390	     30038 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/direct-4             	   50239	     25162 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/direct-4             	   52524	     28878 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_l4-4        	   20220	     54651 ns/op	       1 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_l4-4        	   24445	     51398 ns/op	       1 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_l4-4        	   17412	     64647 ns/op	       2 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_full-4      	   17749	     69892 ns/op	       2 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_full-4      	   22344	     59489 ns/op	       1 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/wasmgate_full-4      	   22272	     51969 ns/op	       1 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/nginx_stream-4       	    2833	    485182 ns/op	      23 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/nginx_stream-4       	    3058	    560388 ns/op	      21 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/nginx_stream-4       	    2161	    527285 ns/op	      30 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/haproxy_tcp-4        	    2355	    505319 ns/op	      28 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/haproxy_tcp-4        	    2977	    506665 ns/op	      22 B/op	       0 allocs/op
+BenchmarkProxyComparison/RelayLatency/haproxy_tcp-4        	    2433	    520746 ns/op	      27 B/op	       0 allocs/op
+BenchmarkConnHotPath-4                                     	 8288542	       191.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConnHotPath-4                                     	 8057991	       200.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConnHotPath-4                                     	 9578120	       180.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConnHotPathParallel-4                             	 9848809	       146.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConnHotPathParallel-4                             	 8417659	       143.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConnHotPathParallel-4                             	 8476293	       137.5 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/proxy	182.336s
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/plugin/abi4/engine
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkSplitHeaders-4       	 3726958	       271.5 ns/op	 349.89 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSplitHeaders-4       	 4849404	       290.5 ns/op	 326.99 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSplitHeaders-4       	 4293146	       338.9 ns/op	 280.31 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteEnvelope-4      	 8131118	       186.8 ns/op	 508.46 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteEnvelope-4      	 7980369	       175.6 ns/op	 541.11 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteEnvelope-4      	 7706220	       165.4 ns/op	 574.20 MB/s	       0 B/op	       0 allocs/op
+BenchmarkOnRequestHeaders-4   	  194490	      5495 ns/op	  17.29 MB/s	     944 B/op	      13 allocs/op
+BenchmarkOnRequestHeaders-4   	  225778	      4432 ns/op	  21.43 MB/s	     944 B/op	      13 allocs/op
+BenchmarkOnRequestHeaders-4   	  247153	      5267 ns/op	  18.04 MB/s	     945 B/op	      13 allocs/op
+PASS
+ok  	wasmgate/internal/plugin/abi4/engine	14.743s
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/ratelimit
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkGuardAcquireRelease-4   	 4284699	       260.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGuardAcquireRelease-4   	 4633413	       263.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGuardAcquireRelease-4   	 4559648	       285.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllow-4                 	21741847	        70.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllow-4                 	15930238	        95.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllow-4                 	14824866	        80.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowParallel-4         	40565486	        33.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowParallel-4         	38055424	        28.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowParallel-4         	45318730	        33.96 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/ratelimit	13.847s
+goos: linux
+goarch: amd64
+pkg: wasmgate/internal/tlspeek
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+BenchmarkParseClientHelloSNI-4   	33742556	        33.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseClientHelloSNI-4   	35242554	        43.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseClientHelloSNI-4   	37106456	        38.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchRouteWildcard-4    	12767676	       120.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchRouteWildcard-4    	 9334966	       110.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchRouteWildcard-4    	 9174178	       132.9 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	wasmgate/internal/tlspeek	9.911s

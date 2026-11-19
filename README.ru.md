@@ -38,24 +38,27 @@
 
 ## Производительность
 
-Linux (WSL2, ядро 6.6.87, 4 vCPU, `-benchtime=1s -benchmem`), один и тот же
-TCP echo-бэкенд для всех строк:
+Linux, контейнер на 4 vCPU в Docker Desktop/WSL2 (AMD Ryzen 5 3550H, Go 1.27.4),
+один и тот же TCP echo-бэкенд для всех строк. Медиана трёх прогонов; full —
+`max_conns` + `rate_limit` + ABI v4 lifecycle WASM hook:
 
-| Сценарий / метрика | direct | WasmGate L4 | nginx stream | HAProxy TCP |
-|---|---:|---:|---:|---:|
-| Throughput, 64 KiB | 644.6 MB/s | **588.8 MB/s** | 272.5 MB/s | 268.9 MB/s |
-| Throughput, 1 MiB | 865.6 MB/s | **688.3 MB/s** | 230.9 MB/s | 248.3 MB/s |
-| Задержка релея (RTT 1 байт) | 29.2 µs | **62.0 µs** | 394.0 µs | 439.2 µs |
-| Установка соединения | 402.9 µs | **917.7 µs** | 1076.9 µs | 1163.8 µs |
+| Сценарий / метрика | direct | WasmGate L4 | WasmGate full* | nginx stream | HAProxy TCP |
+|---|---:|---:|---:|---:|---:|
+| Throughput, 64 KiB | 580.6 MB/s | 452.3 MB/s | 419.5 MB/s | 277.6 MB/s | 233.0 MB/s |
+| Throughput, 1 MiB | 793.5 MB/s | 589.3 MB/s | 549.8 MB/s | 269.4 MB/s | 230.4 MB/s |
+| Задержка релея (RTT 1 байт) | 28.9 µs | 54.7 µs | 59.5 µs | 527.3 µs | 506.7 µs |
 
-Числа сняты 2026-11-05 (коммит `18d4249`), до перехода на ABI v4. Перед
-использованием перезапустите `make bench` или Benchmarks workflow на текущем
-дереве: путь хуков v4 отличается.
+\* full = `max_conns` + `rate_limit` + ABI v4 lifecycle WASM; без TLS
+termination, L7 body policy, circuit breaker и dial retries.
 
-WSL2 — это настоящее ядро Linux, поэтому `splice(2)` и относительные числа
-корректны; абсолютные MB/s нельзя сравнивать с bare metal. Воспроизведение:
-`make bench`; методика, сырой вывод и сравнение с Windows — в
-[бенчмарках](docs/ru/benchmarks.md).
+Это актуальные результаты v4 от 2026-11-19 (stable `2ff37ac`), снятые в
+Linux-контейнере. WSL2 — настоящее ядро Linux, поэтому `splice(2)` и
+относительные числа корректны; абсолютные MB/s нельзя сравнивать с bare metal.
+В [руководстве по бенчмаркам](docs/ru/benchmarks.md) есть таблица Windows,
+пути 4 KiB / 1 MiB, режимы ABI v4 `once`/`headers`/`stream`, масштабирование и
+микробенчмарки hot path. Сырой вывод:
+[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt)
+и [`benchmarks/windows-current-results.txt`](benchmarks/windows-current-results.txt).
 
 ## Релизы
 

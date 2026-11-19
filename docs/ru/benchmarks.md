@@ -1,11 +1,17 @@
 # Бенчмарки
 
-> **Исторические числа.** Результаты ниже сняты 2026-11-05 на коммите
-> `18d4249`, до перехода на ABI v4. У движка v4 другой путь хуков и другая
-> стоимость dispatch. Перед решением перезапустите бенчмарки на текущем дереве.
+> **Актуальный прогон.** Таблицы ниже — от 2026-11-19, stable `2ff37ac`.
+> Linux — контейнер на 4 vCPU в Docker Desktop/WSL2 (AMD Ryzen 5 3550H,
+> Go 1.27.4); Windows — тот же хост с 8 логическими CPU (Go 1.27.1). Каждая
+> строка — медиана трёх прогонов `go test -bench` с `-benchtime=1s -benchmem`.
+> Абсолютные MB/s включают накладные расходы контейнера/WSL2 и не являются
+> обещанием bare-metal; полезны относительные цифры. Исторический pre-v4 вывод
+> остаётся в [`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt),
+> актуальный — в [`linux-current-results.txt`](../../benchmarks/linux-current-results.txt)
+> и [`windows-current-results.txt`](../../benchmarks/windows-current-results.txt).
 
-Все бенчмарки лежат рядом с кодом, который покрывают (`X.go` → `X_test.go`), и
-компилируются только `go test`; в бинарник они не попадают.
+Все бенчмарки лежат рядом с кодом (`X.go` → `X_test.go`) и собираются только
+`go test`; в бинарник они не входят.
 
 ```bash
 make bench                                            # всё
@@ -13,7 +19,7 @@ go test -run '^$' -bench . -benchmem ./...            # то же вручную
 go test -run '^$' -bench BenchmarkThroughput -benchmem ./internal/proxy
 ```
 
-Сравнение прогонов через `benchstat`:
+Сравнить два прогона через `benchstat`:
 
 ```bash
 go install golang.org/x/perf/cmd/benchstat@latest
@@ -24,76 +30,125 @@ benchstat old.txt new.txt
 ## Платформы
 
 `splice(2)` есть только на Linux. На Windows/macOS тот же `io.Copy` уходит в
-копирование в user space; WasmGate даёт этому пути по одному буферу на
-направление из пула вместо 32 KiB на направление на каждое соединение.
-Абсолютные числа из WSL2 нельзя сравнивать с bare metal (4 vCPU, виртуальный NIC,
-ФС через 9p), но относительные корректны: WSL2 — настоящее ядро Linux.
+user-space copy; WasmGate даёт этому пути один буфер на направление из пула,
+а не выделяет 32 KiB на направление на каждое соединение. Linux- и
+Windows-таблицы ниже используют один и тот же echo-бэкенд и один и тот же код
+бенчмарков.
 
-## Пропускная способность и задержка
+## Пути relay в WasmGate
 
-Linux (WSL2, ядро 6.6.87, 4 vCPU, `-benchtime=1s -benchmem`), один и тот же
-TCP echo-бэкенд:
+Linux, MB/s в зависимости от размера чанка; все пути — 0 аллокаций на
+операцию:
 
-| Бенчмарк | Linux | Windows |
-|---|---|---|
-| `Throughput/zero_copy/64KiB` | **557–725 MB/s**, 0 allocs | 222–253 MB/s |
-| `Throughput/idle_watchdog/64KiB` | 257–286 MB/s | 208–314 MB/s |
-| `Throughput/zero_copy/1MiB` | **862–977 MB/s** | 262–336 MB/s |
-| `Throughput/idle_watchdog/1MiB` | 248–265 MB/s | 282–310 MB/s |
-| `Throughput/direct/1MiB` (без прокси) | 902–1092 MB/s | 620–627 MB/s |
-| `ConnectionSetup/through_proxy` | 36.0 KB/op, 65 allocs | 37.8–38.5 KB/op, 80 allocs |
-| `RelayLatency/through_proxy` | 56–60 µs | 109–120 µs |
+| Путь | 4 KiB | 64 KiB | 1 MiB |
+|---|---:|---:|---:|
+| direct (без прокси) | 154.5 | 581.2 | 822.9 |
+| zero-copy (`splice(2)`) | **211.0** | **460.1** | **604.7** |
+| idle watchdog (buffered) | 247.6 | 240.0 | 232.6 |
 
-На Linux zero-copy быстрее буферизованного пути в **2.1–2.7×** на 64 KiB и
-**3.3–3.7×** на 1 MiB — это сигнатура работающего `splice(2)`. На Windows
-варианты сходятся, потому что оба копируют в user space.
+Windows использует user-space copy для обоих путей WasmGate:
+
+| Путь | 4 KiB | 64 KiB | 1 MiB |
+|---|---:|---:|---:|
+| direct (без прокси) | 128.4 | 318.8 | 322.1 |
+| WasmGate relay | 119.0 | 214.7 | 179.4 |
+| idle watchdog | 105.3 | 213.8 | 248.6 |
+
+На 4 KiB доминируют syscall’ы и планировщик; на 64 KiB и 1 MiB видно
+преимущество Linux `splice(2)` над user-space copy.
 
 ## Сравнение с nginx и HAProxy
 
-Ubuntu 24.04 (WSL2), `nginx/1.24.0`, `HAProxy 2.8.30`, тот же echo-бэкенд:
+Linux-контейнер, nginx с stream-модулем и HAProxy в TCP-режиме, тот же
+echo-бэкенд. Каждая колонка — медиана трёх прогонов:
 
 | Метрика | direct | WasmGate L4 | WasmGate full* | nginx stream | HAProxy TCP |
 |---|---:|---:|---:|---:|---:|
-| Throughput 64 KiB | 644.6 MB/s | **588.8 MB/s** | **734.1 MB/s** | 272.5 MB/s | 268.9 MB/s |
-| Throughput 1 MiB | 865.6 MB/s | **688.3 MB/s** | **794.9 MB/s** | 230.9 MB/s | 248.3 MB/s |
-| Задержка релея (RTT 1B) | 29.2 µs | **62.0 µs** | **61.1 µs** | 394.0 µs | 439.2 µs |
-| Установка соединения | 402.9 µs | **917.7 µs** | **1420.9 µs** | 1076.9 µs | 1163.8 µs |
+| Throughput 64 KiB | **580.6 MB/s** | 452.3 MB/s | 419.5 MB/s | 277.6 MB/s | 233.0 MB/s |
+| Throughput 1 MiB | **793.5 MB/s** | 589.3 MB/s | 549.8 MB/s | 269.4 MB/s | 230.4 MB/s |
+| Relay latency (1B RTT) | **28.9 µs** | 54.7 µs | 59.5 µs | 527.3 µs | 506.7 µs |
 
-\* full = `max_conns` + `rate_limit` + `ipguard.wasm`; терминации TLS,
-`data_mode: stream`, circuit breaker и dial retries в этом прогоне нет.
+\* full = `max_conns` + `rate_limit` + ABI v4 lifecycle WASM hook; без TLS
+termination, L7 body policy, circuit breaker и dial retries в этом прогоне.
 
-nginx stream и HAProxy в этой конфигурации копируют через user space — поэтому
-они попадают в ту же пропускную способность, что и буферизованный путь WasmGate.
-Проверки WasmGate выполняются один раз на соединение, не аллоцируют и не уводят
-основной поток с `splice`.
+nginx stream и HAProxy в этой конфигурации копируют через user space, поэтому
+на bulk-трафике отстают от Linux-пути `splice(2)`. Проверки WasmGate
+выполняются один раз на соединение и не аллоцируют на relay-пути.
 
-## Исторические микробенчмарки горячего пути (pre-v4)
+Windows, где nginx/HAProxy не устанавливались, а оба пути WasmGate копируют в
+user space:
 
-Linux, `0 B/op, 0 allocs/op` в том прогоне:
+| Метрика | direct | WasmGate L4 | WasmGate full* |
+|---|---:|---:|---:|
+| Throughput 64 KiB | **274.5 MB/s** | 218.4 MB/s | 168.3 MB/s |
+| Throughput 1 MiB | **274.3 MB/s** | 182.1 MB/s | 157.5 MB/s |
+| Relay latency (1B RTT) | **132.8 µs** | 229.0 µs | 204.6 µs |
 
-| Бенчмарк | Результат |
-|---|---|
-| `ratelimit/BenchmarkAllow` | 65.4 ns/op (параллельно: 20.4 ns/op) |
-| `plugin/BenchmarkOnAccept` | 81.3 ns/op (параллельно: 24.7 ns/op) |
-| `plugin/BenchmarkOnData` (L7) | 76.0 ns/op |
-| `plugin/BenchmarkOnDataState` (исторический ABI v3 fixture) | 111–122 ns/op |
-| `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
+## Режимы данных ABI v4
 
-Строки `plugin/Benchmark*` относятся к удалённому пакету v3 и не
-воспроизводятся текущим деревом. Бенчмарки движка v4 —
-`BenchmarkOnRequestHeaders`, `BenchmarkSplitHeaders`, `BenchmarkWriteEnvelope`
-и `BenchmarkHeadersBody`; для них нужен новый прогон на Linux. Полная HTTP body
-policy дороже старого opaque-пути из-за разбора фрейминга и typed-фаз.
+HTTP body relay на 64 KiB, тот же бэкенд и тот же v4 verdict-плагин. `once` и
+`headers` инспектируют opening-часть и затем переходят на splice; `stream`
+вызывает hook на каждом чанке.
 
-## Как читать числа
+| Режим | Linux | Windows | Аллокации/op |
+|---|---:|---:|---:|
+| `once` | **446.9 MB/s** | 192.4 MB/s | 0 |
+| `headers` | 422.4 MB/s | **220.5 MB/s** | 0 |
+| `stream` | 198.6 MB/s | 188.6 MB/s | 52 (≈3.8 KiB/op) |
 
-- `ConnLimiter/at_limit` дешевле `below_limit`: отказ — это load и сравнение,
-  приём требует двух CAS.
-- `least_conn` сканирует пул (O(n)); на 64 серверах это десятки наносекунд.
-  `round_robin` плоский: цена — один атомарный инкремент.
-- Установка соединения аллоцирует ~36–38 KB/op — это сокеты и эхо-бэкенд, а не
-  буферы релея.
-- `Load` — это разбор YAML, он происходит на `SIGHUP`, а не на запрос.
-- Reload под живым трафиком покрыт тестом: 12 reload, 0 потерянных соединений.
+`stream` дорогой по дизайну: каждый чанк заново собирает event-envelope и
+вызывает guest.
 
-Сырой вывод: [`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt).
+## Масштабирование throughput
+
+Чанки 64 KiB, суммарные MB/s при росте числа одновременных проксируемых
+соединений:
+
+| Соединений | Linux | Windows |
+|---:|---:|---:|
+| 1 | 433.4 MB/s | 206.5 MB/s |
+| 4 | 1066.7 MB/s | 477.3 MB/s |
+| 16 | **1103.0 MB/s** | **493.1 MB/s** |
+| 64 | 950.3 MB/s | 445.5 MB/s |
+
+Суммарный throughput растёт, пока не насыщается loopback/CPU, затем
+выравнивается, а не падает.
+
+## Hot path и микробенчмарки
+
+Медиана ns/op; все строки без аллокаций, если не указано иное:
+
+| Бенчмарк | Linux | Windows |
+|---|---:|---:|
+| `proxy/ConnHotPath` | 191.8 ns | 166.4 ns |
+| `proxy/ConnHotPathParallel` | 143.4 ns | 123.1 ns |
+| `ratelimit/GuardAcquireRelease` | 263.6 ns | 301.7 ns |
+| `ratelimit/Allow` | 80.3 ns | 95.7 ns |
+| `ratelimit/AllowParallel` | 33.2 ns | 22.7 ns |
+| `abi4/SplitHeaders` | 290.5 ns (327 MB/s) | 362.6 ns (262 MB/s) |
+| `abi4/WriteEnvelope` | 175.6 ns (541 MB/s) | 144.9 ns (656 MB/s) |
+| `abi4/OnRequestHeaders` | 5267 ns (18.0 MB/s), 944 B/13 allocs | 5237 ns (18.1 MB/s), 944 B/13 allocs |
+| `tlspeek/ParseClientHelloSNI` | 38.0 ns | 40.3 ns |
+| `tlspeek/MatchRouteWildcard` | 120.1 ns | 116.5 ns |
+
+`OnRequestHeaders` включает разбор envelope, метаданные инициализации guest и
+typed OUT response; это не стоимость на каждый байт. Сам relay-путь остаётся
+без аллокаций.
+
+## Что означают цифры
+
+- `ConnHotPath` — CPU на соединение до того, как relay коснётся сокета:
+  snapshot, listener, слот соединения, выбор пула и release.
+- `round_robin` — один atomic increment; `least_conn` сканирует пул (O(n)) и
+  остаётся в десятках наносекунд на 64 серверах.
+- `Load` — разбор YAML на `SIGHUP`, не на каждый запрос. Reload под живым
+  трафиком покрыт тестом с 12 reload и нулём потерянных соединений.
+- Linux держит bulk-путь на `splice(2)`; проверки фич и ABI envelope не гоняют
+  payload через user space, если только TLS termination или body policy не
+  требуют обратного.
+
+Сырой вывод: актуальный
+[`linux-current-results.txt`](../../benchmarks/linux-current-results.txt) и
+[`windows-current-results.txt`](../../benchmarks/windows-current-results.txt);
+исторический pre-v4
+[`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt).

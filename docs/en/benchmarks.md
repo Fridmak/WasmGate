@@ -1,9 +1,17 @@
 # Benchmarks
 
-> **Historical numbers.** The results below were captured on 2026-11-05 at
-> commit `18d4249`, before the ABI v4 cutover. The v4 engine has a different
-> hook path and dispatch cost. Re-run the benchmarks on the current tree before
-> using these numbers for a decision.
+> **Current run.** The tables below are from 2026-11-19, stable `2ff37ac`.
+> Linux was a 4-vCPU container on Docker Desktop/WSL2 (AMD Ryzen 5 3550H,
+> Go 1.27.4); Windows was the same host with 8 logical CPUs (Go 1.27.1). Each
+> row is the median of three `go test -bench` runs with `-benchtime=1s
+> -benchmem`. Absolute MB/s includes container/WSL2 overhead and is not a
+> bare-metal claim; relative numbers are the useful part.
+>
+> The historical pre-v4 raw output remains in
+> [`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt). The
+> current raw output is
+> [`linux-current-results.txt`](../../benchmarks/linux-current-results.txt) and
+> [`windows-current-results.txt`](../../benchmarks/windows-current-results.txt).
 
 All benchmarks live next to the code they cover (`X.go` → `X_test.go`) and are
 compiled only by `go test`; they are not part of the binary.
@@ -26,77 +34,121 @@ benchstat old.txt new.txt
 
 `splice(2)` exists only on Linux. On Windows/macOS the same `io.Copy` falls back
 to a user-space copy; WasmGate gives that path one buffer per direction from a
-pool instead of allocating 32 KiB per direction per connection. Absolute numbers
-from WSL2 are not comparable with bare metal (4 vCPU, virtual NIC, 9p
-filesystem), but relative results are: WSL2 runs a real Linux kernel.
+pool instead of allocating 32 KiB per direction per connection. The Linux and
+Windows tables below use the same echo backend and the same benchmark code.
 
-## Throughput and latency
+## WasmGate relay paths
 
-Linux (WSL2, kernel 6.6.87, 4 vCPU, `-benchtime=1s -benchmem`) against the same
-TCP echo backend:
+Linux, MB/s by chunk size; every path reports 0 allocations per operation:
 
-| Benchmark | Linux | Windows |
-|---|---|---|
-| `Throughput/zero_copy/64KiB` | **557–725 MB/s**, 0 allocs | 222–253 MB/s |
-| `Throughput/idle_watchdog/64KiB` | 257–286 MB/s | 208–314 MB/s |
-| `Throughput/zero_copy/1MiB` | **862–977 MB/s** | 262–336 MB/s |
-| `Throughput/idle_watchdog/1MiB` | 248–265 MB/s | 282–310 MB/s |
-| `Throughput/direct/1MiB` (no proxy) | 902–1092 MB/s | 620–627 MB/s |
-| `ConnectionSetup/through_proxy` | 36.0 KB/op, 65 allocs | 37.8–38.5 KB/op, 80 allocs |
-| `RelayLatency/through_proxy` | 56–60 µs | 109–120 µs |
+| Path | 4 KiB | 64 KiB | 1 MiB |
+|---|---:|---:|---:|
+| direct (no proxy) | 154.5 | 581.2 | 822.9 |
+| zero-copy (`splice(2)`) | **211.0** | **460.1** | **604.7** |
+| idle watchdog (buffered) | 247.6 | 240.0 | 232.6 |
 
-On Linux zero-copy is **2.1–2.7×** faster than the buffered path at 64 KiB and
-**3.3–3.7×** at 1 MiB — the signature of a working `splice(2)`. On Windows both
-variants converge because both copy in user space.
+Windows uses a user-space copy for both WasmGate paths:
+
+| Path | 4 KiB | 64 KiB | 1 MiB |
+|---|---:|---:|---:|
+| direct (no proxy) | 128.4 | 318.8 | 322.1 |
+| WasmGate relay | 119.0 | 214.7 | 179.4 |
+| idle watchdog | 105.3 | 213.8 | 248.6 |
+
+The 4 KiB case is dominated by syscalls and scheduling; the 64 KiB and 1 MiB
+cases show the Linux `splice(2)` advantage over a user-space copy.
 
 ## Comparison with nginx and HAProxy
 
-Ubuntu 24.04 (WSL2), `nginx/1.24.0`, `HAProxy 2.8.30`, same echo backend:
+Linux container, `nginx` stream module and HAProxy in TCP mode, same echo
+backend. Every column is the median of three runs:
 
 | Metric | direct | WasmGate L4 | WasmGate full* | nginx stream | HAProxy TCP |
 |---|---:|---:|---:|---:|---:|
-| Throughput 64 KiB | 644.6 MB/s | **588.8 MB/s** | **734.1 MB/s** | 272.5 MB/s | 268.9 MB/s |
-| Throughput 1 MiB | 865.6 MB/s | **688.3 MB/s** | **794.9 MB/s** | 230.9 MB/s | 248.3 MB/s |
-| Relay latency (1B RTT) | 29.2 µs | **62.0 µs** | **61.1 µs** | 394.0 µs | 439.2 µs |
-| Connection setup | 402.9 µs | **917.7 µs** | **1420.9 µs** | 1076.9 µs | 1163.8 µs |
+| Throughput 64 KiB | **580.6 MB/s** | 452.3 MB/s | 419.5 MB/s | 277.6 MB/s | 233.0 MB/s |
+| Throughput 1 MiB | **793.5 MB/s** | 589.3 MB/s | 549.8 MB/s | 269.4 MB/s | 230.4 MB/s |
+| Relay latency (1B RTT) | **28.9 µs** | 54.7 µs | 59.5 µs | 527.3 µs | 506.7 µs |
 
-\* full = `max_conns` + `rate_limit` + `ipguard.wasm`; no TLS termination,
-`data_mode: stream`, circuit breaker or dial retries in this run.
+\* full = `max_conns` + `rate_limit` + an ABI v4 lifecycle WASM hook; no TLS
+termination, L7 body policy, circuit breaker or dial retries in this run.
 
 nginx stream and HAProxy copy through user space on this configuration, which is
-why they land at the same throughput as WasmGate's buffered path. WasmGate's
-feature checks run once per connection, allocate nothing, and do not move the
-bulk path off `splice`.
+why they trail the Linux `splice(2)` path on bulk traffic. WasmGate's feature
+checks run once per connection and allocate nothing on the relay path.
 
-## Historical hot-path microbenchmarks (pre-v4)
+Windows, where nginx/HAProxy were not installed and both WasmGate paths copy in
+user space:
 
-Linux, `0 B/op, 0 allocs/op` in that run:
+| Metric | direct | WasmGate L4 | WasmGate full* |
+|---|---:|---:|---:|
+| Throughput 64 KiB | **274.5 MB/s** | 218.4 MB/s | 168.3 MB/s |
+| Throughput 1 MiB | **274.3 MB/s** | 182.1 MB/s | 157.5 MB/s |
+| Relay latency (1B RTT) | **132.8 µs** | 229.0 µs | 204.6 µs |
 
-| Benchmark | Result |
-|---|---|
-| `ratelimit/BenchmarkAllow` | 65.4 ns/op (parallel: 20.4 ns/op) |
-| `plugin/BenchmarkOnAccept` | 81.3 ns/op (parallel: 24.7 ns/op) |
-| `plugin/BenchmarkOnData` (L7) | 76.0 ns/op |
-| `plugin/BenchmarkOnDataState` (historical ABI v3 fixture) | 111–122 ns/op |
-| `tlspeek/BenchmarkParseClientHelloSNI` | 26.0 ns/op |
+## ABI v4 data modes
 
-The `plugin/Benchmark*` rows refer to the removed v3 package and are not
-reproduced by the current tree. The v4 engine benchmarks are
-`BenchmarkOnRequestHeaders`, `BenchmarkSplitHeaders`, `BenchmarkWriteEnvelope`
-and `BenchmarkHeadersBody`; they need a fresh Linux run. A complete HTTP body
-policy costs more than the old opaque path because it parses framing and
-dispatches typed phases.
+HTTP body relay at 64 KiB, same backend and the same v4 verdict plugin. `once`
+and `headers` inspect the opening section and then splice; `stream` invokes the
+event hook for every chunk.
+
+| Mode | Linux | Windows | Allocs/op |
+|---|---:|---:|---:|
+| `once` | **446.9 MB/s** | 192.4 MB/s | 0 |
+| `headers` | 422.4 MB/s | **220.5 MB/s** | 0 |
+| `stream` | 198.6 MB/s | 188.6 MB/s | 52 (≈3.8 KiB/op) |
+
+`stream` is the expensive mode by design: every chunk rebuilds an event
+envelope and calls the guest.
+
+## Throughput scaling
+
+64 KiB chunks, aggregate MB/s as concurrent proxied connections grow:
+
+| Connections | Linux | Windows |
+|---:|---:|---:|
+| 1 | 433.4 MB/s | 206.5 MB/s |
+| 4 | 1066.7 MB/s | 477.3 MB/s |
+| 16 | **1103.0 MB/s** | **493.1 MB/s** |
+| 64 | 950.3 MB/s | 445.5 MB/s |
+
+Aggregate throughput rises until loopback/CPU saturates, then flattens rather
+than collapsing.
+
+## Hot path and microbenchmarks
+
+Median ns/op; all rows are allocation-free unless noted:
+
+| Benchmark | Linux | Windows |
+|---|---:|---:|
+| `proxy/ConnHotPath` | 191.8 ns | 166.4 ns |
+| `proxy/ConnHotPathParallel` | 143.4 ns | 123.1 ns |
+| `ratelimit/GuardAcquireRelease` | 263.6 ns | 301.7 ns |
+| `ratelimit/Allow` | 80.3 ns | 95.7 ns |
+| `ratelimit/AllowParallel` | 33.2 ns | 22.7 ns |
+| `abi4/SplitHeaders` | 290.5 ns (327 MB/s) | 362.6 ns (262 MB/s) |
+| `abi4/WriteEnvelope` | 175.6 ns (541 MB/s) | 144.9 ns (656 MB/s) |
+| `abi4/OnRequestHeaders` | 5267 ns (18.0 MB/s), 944 B/13 allocs | 5237 ns (18.1 MB/s), 944 B/13 allocs |
+| `tlspeek/ParseClientHelloSNI` | 38.0 ns | 40.3 ns |
+| `tlspeek/MatchRouteWildcard` | 120.1 ns | 116.5 ns |
+
+`OnRequestHeaders` includes envelope parsing, guest initialization metadata and
+the typed OUT response; it is not a per-byte cost. The relay path itself stays
+allocation-free.
 
 ## What the numbers mean
 
-- `ConnLimiter/at_limit` is cheaper than `below_limit`: rejection is a load and a
-  compare, acceptance needs two CAS operations.
-- `least_conn` scans the pool (O(n)); at 64 servers it stays in tens of
-  nanoseconds. `round_robin` is flat because the cost is one atomic increment.
-- Connection setup allocates ~36–38 KB/op, mostly sockets and the echo backend,
-  not relay buffers.
-- `Load` is a YAML decode and happens on `SIGHUP`, not per request.
-- Reload under live traffic is covered by a test with 12 reloads and zero dropped
-  connections.
+- `ConnHotPath` is the per-connection CPU before the relay touches a socket:
+  snapshot lookup, listener resolution, connection slot, pool pick and release.
+- `round_robin` is one atomic increment; `least_conn` scans the pool (O(n)) and
+  stays in tens of nanoseconds at 64 servers.
+- `Load` is a YAML decode on `SIGHUP`, not per request. Reload under live traffic
+  is covered by a test with 12 reloads and zero dropped connections.
+- Linux keeps the bulk path on `splice(2)`; feature checks and the ABI envelope
+  do not move payload through user space unless TLS termination or a body policy
+  requires it.
 
-Raw output: [`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt).
+Raw output: current
+[`linux-current-results.txt`](../../benchmarks/linux-current-results.txt) and
+[`windows-current-results.txt`](../../benchmarks/windows-current-results.txt);
+historical pre-v4
+[`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt).

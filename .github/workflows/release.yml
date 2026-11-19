@@ -353,6 +353,9 @@ jobs:
           `WASMGATE_CP_ADMIN_TOKEN`; the image is built from source in Docker, so
           no local .NET SDK is needed.
 
+          Full deployment guide:
+          https://github.com/__OWNER__/WasmGate/blob/__VERSION__/docs/en/deployment.md
+
           ## Verify
 
           ```bash

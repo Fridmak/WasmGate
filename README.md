@@ -37,24 +37,27 @@ plain relay never copies payload through user space.
 
 ## Performance
 
-Linux (WSL2, kernel 6.6.87, 4 vCPU, `-benchtime=1s -benchmem`), same TCP echo
-backend for every row:
+Linux, 4-vCPU container on Docker Desktop/WSL2 (AMD Ryzen 5 3550H, Go 1.27.4),
+same TCP echo backend for every row. Median of three runs; full WasmGate is
+`max_conns` + `rate_limit` + an ABI v4 lifecycle WASM hook:
 
-| Scenario / Metric | direct | WasmGate L4 | nginx stream | HAProxy TCP |
-|---|---:|---:|---:|---:|
-| Throughput, 64 KiB | 644.6 MB/s | **588.8 MB/s** | 272.5 MB/s | 268.9 MB/s |
-| Throughput, 1 MiB | 865.6 MB/s | **688.3 MB/s** | 230.9 MB/s | 248.3 MB/s |
-| Relay latency (1 byte RTT) | 29.2 µs | **62.0 µs** | 394.0 µs | 439.2 µs |
-| Connection setup | 402.9 µs | **917.7 µs** | 1076.9 µs | 1163.8 µs |
+| Scenario / Metric | direct | WasmGate L4 | WasmGate full* | nginx stream | HAProxy TCP |
+|---|---:|---:|---:|---:|---:|
+| Throughput, 64 KiB | 580.6 MB/s | 452.3 MB/s | 419.5 MB/s | 277.6 MB/s | 233.0 MB/s |
+| Throughput, 1 MiB | 793.5 MB/s | 589.3 MB/s | 549.8 MB/s | 269.4 MB/s | 230.4 MB/s |
+| Relay latency (1 byte RTT) | 28.9 µs | 54.7 µs | 59.5 µs | 527.3 µs | 506.7 µs |
 
-These numbers were captured on 2026-11-05 (commit `18d4249`), before the ABI v4
-cutover. Re-run `make bench` or the Benchmarks workflow on the current tree before
-using them; the v4 hook path differs.
+\* full = `max_conns` + `rate_limit` + ABI v4 lifecycle WASM; no TLS
+termination, L7 body policy, circuit breaker or dial retries.
 
-WSL2 runs a real Linux kernel, so `splice(2)` and the relative numbers are valid;
-absolute MB/s are not comparable with bare metal. Reproduce with `make bench` or
-see [benchmarks](docs/en/benchmarks.md) for methodology, raw output and the
-Windows comparison.
+These are current v4 results from 2026-11-19 (stable `2ff37ac`), measured inside
+a Linux container. WSL2 runs a real Linux kernel, so `splice(2)` and relative
+numbers are valid; absolute MB/s are not comparable with bare metal. The
+[benchmarks guide](docs/en/benchmarks.md) adds the Windows table, 4 KiB / 1 MiB
+paths, ABI v4 `once`/`headers`/`stream` modes, throughput scaling and hot-path
+microbenchmarks. Raw output is in
+[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt)
+and [`benchmarks/windows-current-results.txt`](benchmarks/windows-current-results.txt).
 
 ## Releases
 
