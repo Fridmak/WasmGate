@@ -34,6 +34,17 @@ public interface IAgentSessionRegistry
     void Unregister(Guid agentId, IAgentSession session);
 
     /// <summary>
+    /// Marks a session as no longer restorable and removes it when it is current.
+    /// </summary>
+    /// <param name="session">Session that is about to be closed.</param>
+    /// <remarks>
+    /// Call this immediately before <see cref="IAgentSession.CloseAsync"/>. It
+    /// prevents a concurrent failed registration from restoring a session that
+    /// is already being closed.
+    /// </remarks>
+    void Retire(IAgentSession session);
+
+    /// <summary>
     /// Restores the previously displaced session when a new registration fails
     /// after it replaced the old one.
     /// </summary>
@@ -42,11 +53,12 @@ public interface IAgentSessionRegistry
     /// <param name="displacedSession">Previous session to restore.</param>
     /// <returns>
     /// True when the failed session was still current and the previous session
-    /// was restored; false when another session took over in the meantime.
+    /// was still registered and not retired; false otherwise.
     /// </returns>
     /// <remarks>
-    /// The operation is atomic with <see cref="Register"/> and
-    /// <see cref="Unregister"/>. It must not close either session.
+    /// The operation is atomic with <see cref="Register"/>,
+    /// <see cref="Unregister"/> and <see cref="Retire"/>. It must not close
+    /// either session.
     /// </remarks>
     bool TryRestore(
         Guid agentId,

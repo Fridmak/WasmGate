@@ -242,6 +242,8 @@ public sealed class AgentSessionRevocationTests
             }
         }
 
+        public void Retire(IAgentSession session) => Unregister(session.AgentId, session);
+
         public bool TryRestore(
             Guid agentId,
             IAgentSession failedSession,

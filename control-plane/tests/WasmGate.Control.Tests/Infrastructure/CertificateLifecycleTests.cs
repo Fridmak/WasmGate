@@ -341,6 +341,8 @@ public sealed class CertificateLifecycleTests
 
         public void Unregister(Guid agentId, IAgentSession oldSession) { }
 
+        public void Retire(IAgentSession oldSession) { }
+
         public bool TryRestore(
             Guid agentId,
             IAgentSession failedSession,

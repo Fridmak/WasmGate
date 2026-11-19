@@ -461,6 +461,7 @@ public sealed class AgentProvisioningService(
         // must not be able to re-insert an Offline row for a deleted agent.
         if (sessions.TryGet(agentId, out var session))
         {
+            sessions.Retire(session);
             await session.CloseAsync(CancellationToken.None);
         }
 
@@ -639,6 +640,7 @@ public sealed class AgentProvisioningService(
         {
             try
             {
+                sessions.Retire(session);
                 await session.CloseAsync(CancellationToken.None);
             }
             catch (Exception ex)

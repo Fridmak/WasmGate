@@ -37,7 +37,7 @@ public sealed class AgentControlService(
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
     private readonly CertificateSessionMonitor _sessionMonitor =
-        new(certificates, options, logger);
+        new(certificates, registry, options, logger);
 
     /// <summary>
     /// Runs one agent control session until the stream ends.
@@ -81,11 +81,23 @@ public sealed class AgentControlService(
             callCancellation);
 
         var session = new GrpcAgentSession(agentId, responseStream, context);
-        var displaced = await RegisterSessionAsync(
-            session,
-            hello!,
-            certificateThumbprint,
-            callCancellation);
+        IAgentSession? displaced;
+        try
+        {
+            displaced = await RegisterSessionAsync(
+                session,
+                hello!,
+                certificateThumbprint,
+                callCancellation);
+        }
+        catch
+        {
+            // PersistHello runs before registration. If it fails, no existing
+            // session was displaced; retire only this unregistered session.
+            registry.Retire(session);
+            await session.CloseAsync(CancellationToken.None);
+            throw;
+        }
         logger.LogInformation(
             "agent session opened: agent={AgentId} version={AgentVersion} takeover={Takeover}",
             agentId,
@@ -106,6 +118,7 @@ public sealed class AgentControlService(
         {
             if (displaced is not null)
             {
+                registry.Retire(displaced);
                 await displaced.CloseAsync(CancellationToken.None);
             }
 
@@ -142,7 +155,7 @@ public sealed class AgentControlService(
                     agentId);
             }
 
-            registry.Unregister(agentId, session);
+            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
             await MarkOfflineAsync(agentId);
             logger.LogInformation("agent session closed: agent={AgentId}", agentId);
@@ -202,10 +215,11 @@ public sealed class AgentControlService(
             // The certificate is known to be revoked. Closing any session for
             // the agent is the current policy; matching the exact certificate
             // is a follow-up.
-            registry.Unregister(session.AgentId, session);
+            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
             if (displaced is not null)
             {
+                registry.Retire(displaced);
                 await displaced.CloseAsync(CancellationToken.None);
             }
 
@@ -221,13 +235,15 @@ public sealed class AgentControlService(
                            registry.TryRestore(session.AgentId, session, displaced);
             if (!restored)
             {
-                registry.Unregister(session.AgentId, session);
+                registry.Retire(session);
                 if (displaced is not null)
                 {
+                    registry.Retire(displaced);
                     await displaced.CloseAsync(CancellationToken.None);
                 }
             }
 
+            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
             if (!registry.TryGet(session.AgentId, out _))
             {

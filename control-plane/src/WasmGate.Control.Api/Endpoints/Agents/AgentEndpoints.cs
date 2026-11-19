@@ -213,6 +213,7 @@ internal static class AgentEndpoints
         {
             try
             {
+                sessions.Retire(session);
                 await session.CloseAsync(CancellationToken.None);
             }
             catch (Exception ex)

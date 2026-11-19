@@ -16,6 +16,7 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 internal sealed class CertificateSessionMonitor(
     IAgentCertificateRepository certificates,
+    IAgentSessionRegistry registry,
     ControlPlaneOptions options,
     ILogger logger)
 {
@@ -97,6 +98,7 @@ internal sealed class CertificateSessionMonitor(
     {
         try
         {
+            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
         }
         catch (Exception ex)

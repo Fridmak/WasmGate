@@ -46,6 +46,7 @@ public sealed class CertificateSessionMonitorTests
         };
         var monitor = new CertificateSessionMonitor(
             certificates,
+            new NoopSessionRegistry(),
             options,
             NullLogger.Instance);
         var session = new TestSession(agent.Id);
@@ -72,6 +73,7 @@ public sealed class CertificateSessionMonitorTests
     {
         var monitor = new CertificateSessionMonitor(
             new ThrowingCertificateRepository(),
+            new NoopSessionRegistry(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
         var session = new TestSession(Guid.NewGuid());
@@ -91,6 +93,7 @@ public sealed class CertificateSessionMonitorTests
     {
         var monitor = new CertificateSessionMonitor(
             new CanceledCertificateRepository(),
+            new NoopSessionRegistry(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
         var session = new TestSession(Guid.NewGuid());
@@ -124,6 +127,30 @@ public sealed class CertificateSessionMonitorTests
         {
             _closed.TrySetResult();
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NoopSessionRegistry : IAgentSessionRegistry
+    {
+        public int Count => 0;
+
+        public IAgentSession? Register(Guid agentId, IAgentSession session) => null;
+
+        public void Unregister(Guid agentId, IAgentSession session) { }
+
+        public void Retire(IAgentSession session) { }
+
+        public bool TryRestore(
+            Guid agentId,
+            IAgentSession failedSession,
+            IAgentSession displacedSession) => false;
+
+        public bool TryGet(
+            Guid agentId,
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IAgentSession? session)
+        {
+            session = null;
+            return false;
         }
     }
 
