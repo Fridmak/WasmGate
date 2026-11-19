@@ -77,7 +77,8 @@ public sealed class AgentSessionRevocationTests
         var session = new GrpcAgentSession(
             agentId,
             new TestResponseStream(),
-            new TestServerCallContext());
+            new TestServerCallContext(),
+            registry);
         var error = await Assert.ThrowsAsync<RpcException>(() => service.RegisterSessionAsync(
             session,
             new Hello
@@ -113,7 +114,8 @@ public sealed class AgentSessionRevocationTests
         var session = new GrpcAgentSession(
             agentId,
             new TestResponseStream(),
-            new TestServerCallContext());
+            new TestServerCallContext(),
+            registry);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.RegisterSessionAsync(
             session,
@@ -150,7 +152,8 @@ public sealed class AgentSessionRevocationTests
         var session = new GrpcAgentSession(
             agentId,
             new TestResponseStream(),
-            new TestServerCallContext());
+            new TestServerCallContext(),
+            registry);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => service.RegisterSessionAsync(
             session,

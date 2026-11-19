@@ -80,7 +80,7 @@ public sealed class AgentControlService(
             agentId,
             callCancellation);
 
-        var session = new GrpcAgentSession(agentId, responseStream, context);
+        var session = new GrpcAgentSession(agentId, responseStream, context, registry);
         IAgentSession? displaced;
         try
         {
