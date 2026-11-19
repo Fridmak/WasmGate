@@ -237,6 +237,7 @@ public sealed class CertificateLifecycleTests
         new TestEnvironmentOperationLock(),
         authority,
         sessions,
+        new AgentOperationLock(),
         audit,
         NullLogger<AgentProvisioningService>.Instance,
         new ControlPlaneOptions
@@ -340,13 +341,6 @@ public sealed class CertificateLifecycleTests
         public IAgentSession? Register(Guid agentId, IAgentSession newSession) => null;
 
         public void Unregister(Guid agentId, IAgentSession oldSession) { }
-
-        public void Retire(IAgentSession oldSession) { }
-
-        public bool TryRestore(
-            Guid agentId,
-            IAgentSession failedSession,
-            IAgentSession displacedSession) => false;
 
         public bool TryGet(
             Guid agentId,

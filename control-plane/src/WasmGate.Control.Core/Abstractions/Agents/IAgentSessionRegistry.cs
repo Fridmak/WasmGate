@@ -1,4 +1,3 @@
-using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
 
 namespace WasmGate.Control.Core.Abstractions.Agents;
@@ -32,38 +31,6 @@ public interface IAgentSessionRegistry
     /// <param name="agentId">Agent identifier.</param>
     /// <param name="session">Session being removed; ignored when it was already replaced.</param>
     void Unregister(Guid agentId, IAgentSession session);
-
-    /// <summary>
-    /// Marks a session as no longer restorable and removes it when it is current.
-    /// </summary>
-    /// <param name="session">Session that is about to be closed.</param>
-    /// <remarks>
-    /// Call this immediately before <see cref="IAgentSession.CloseAsync"/>. It
-    /// prevents a concurrent failed registration from restoring a session that
-    /// is already being closed.
-    /// </remarks>
-    void Retire(IAgentSession session);
-
-    /// <summary>
-    /// Restores the previously displaced session when a new registration fails
-    /// after it replaced the old one.
-    /// </summary>
-    /// <param name="agentId">Agent identifier.</param>
-    /// <param name="failedSession">New session whose registration failed.</param>
-    /// <param name="displacedSession">Previous session to restore.</param>
-    /// <returns>
-    /// True when the failed session was still current and the previous session
-    /// was still registered and not retired; false otherwise.
-    /// </returns>
-    /// <remarks>
-    /// The operation is atomic with <see cref="Register"/>,
-    /// <see cref="Unregister"/> and <see cref="Retire"/>. It must not close
-    /// either session.
-    /// </remarks>
-    bool TryRestore(
-        Guid agentId,
-        IAgentSession failedSession,
-        IAgentSession displacedSession);
 
     /// <summary>Looks up the session of an agent.</summary>
     /// <param name="agentId">Agent identifier.</param>

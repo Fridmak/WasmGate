@@ -33,11 +33,12 @@ public sealed class AgentControlService(
     IAgentCertificateRepository certificates,
     IDeploymentRepository deployments,
     IAuditLog audit,
+    IAgentOperationLock agentOperations,
     ControlPlaneOptions options,
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
     private readonly CertificateSessionMonitor _sessionMonitor =
-        new(certificates, registry, options, logger);
+        new(certificates, agentOperations, options, logger);
 
     /// <summary>
     /// Runs one agent control session until the stream ends.
@@ -75,42 +76,44 @@ public sealed class AgentControlService(
                 "The first message must be a Hello with a valid agent_id GUID."));
         }
 
-        var certificateThumbprint = await EnsureCertificateMatchesAsync(
-            context,
-            agentId,
-            callCancellation);
-
-        var session = new GrpcAgentSession(agentId, responseStream, context, registry);
+        var session = new GrpcAgentSession(agentId, responseStream, context);
         IAgentSession? displaced;
+        string? sessionCertificateThumbprint = null;
         try
         {
-            displaced = await RegisterSessionAsync(
-                session,
-                hello!,
-                certificateThumbprint,
+            await using var agentLease = await agentOperations.AcquireAsync(
+                agentId,
                 callCancellation);
+            var certificateThumbprint = await EnsureCertificateMatchesAsync(
+                context,
+                agentId,
+                callCancellation);
+            await PersistHelloAsync(hello!, agentId, callCancellation);
+            displaced = registry.Register(agentId, session);
+
+            logger.LogInformation(
+                "agent session registered: agent={AgentId} version={AgentVersion} takeover={Takeover}",
+                agentId,
+                hello!.Version,
+                displaced is not null);
+
+            // Keep the thumbprint for the monitor after the lifecycle lock is
+            // released. The local is copied into the monitor scope below.
+            sessionCertificateThumbprint = certificateThumbprint;
         }
         catch
         {
-            // PersistHello runs before registration. If it fails, no existing
-            // session was displaced; retire only this unregistered session.
-            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
             throw;
         }
-        logger.LogInformation(
-            "agent session opened: agent={AgentId} version={AgentVersion} takeover={Takeover}",
-            agentId,
-            hello!.Version,
-            displaced is not null);
 
         using var monitorCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(session.Token);
-        var monitorTask = certificateThumbprint is null
+        var monitorTask = sessionCertificateThumbprint is null
             ? Task.CompletedTask
             : _sessionMonitor.MonitorAsync(
                 agentId,
-                certificateThumbprint,
+                sessionCertificateThumbprint,
                 session,
                 monitorCancellation.Token);
 
@@ -118,7 +121,6 @@ public sealed class AgentControlService(
         {
             if (displaced is not null)
             {
-                registry.Retire(displaced);
                 await displaced.CloseAsync(CancellationToken.None);
             }
 
@@ -155,102 +157,13 @@ public sealed class AgentControlService(
                     agentId);
             }
 
-            registry.Retire(session);
+            await using (await agentOperations.AcquireAsync(agentId, CancellationToken.None))
+            {
+                registry.Unregister(agentId, session);
+            }
             await session.CloseAsync(CancellationToken.None);
             await MarkOfflineAsync(agentId);
             logger.LogInformation("agent session closed: agent={AgentId}", agentId);
-        }
-    }
-
-    /// <summary>
-    /// Registers a session and re-checks the certificate after registration.
-    /// </summary>
-    /// <param name="session">Session to register.</param>
-    /// <param name="hello">First message of the session.</param>
-    /// <param name="certificateThumbprint">
-    /// Certificate presented by the agent, or null when the endpoint is not
-    /// using mTLS.
-    /// </param>
-    /// <param name="cancellationToken">Cancels persistence and the certificate lookup.</param>
-    /// <returns>The session displaced by this registration, if any.</returns>
-    /// <remarks>
-    /// The order matters: register first, then re-check. Revocation and rotation
-    /// commit their database change before consulting the registry. Therefore a
-    /// revoke that wins the race makes this re-check fail, while a revoke that
-    /// runs after registration finds the session and closes it.
-    /// </remarks>
-    /// <exception cref="RpcException">
-    /// The certificate is no longer active, or the Hello cannot be persisted.
-    /// </exception>
-    internal async Task<IAgentSession?> RegisterSessionAsync(
-        GrpcAgentSession session,
-        Hello hello,
-        string? certificateThumbprint,
-        CancellationToken cancellationToken)
-    {
-        // Persist before touching the registry: a failing Hello must not
-        // displace or close an already healthy session.
-        await PersistHelloAsync(hello, session.AgentId, cancellationToken);
-
-        var displaced = registry.Register(session.AgentId, session);
-        var certificateRejected = false;
-        try
-        {
-            if (certificateThumbprint is not null &&
-                !await certificates.IsActiveAsync(
-                    session.AgentId,
-                    certificateThumbprint,
-                    cancellationToken))
-            {
-                certificateRejected = true;
-                throw new RpcException(new Status(
-                    StatusCode.Unauthenticated,
-                    "The client certificate was revoked or has expired."));
-            }
-
-            return displaced;
-        }
-        catch (RpcException) when (certificateRejected)
-        {
-            // The certificate is known to be revoked. Closing any session for
-            // the agent is the current policy; matching the exact certificate
-            // is a follow-up.
-            registry.Retire(session);
-            await session.CloseAsync(CancellationToken.None);
-            if (displaced is not null)
-            {
-                registry.Retire(displaced);
-                await displaced.CloseAsync(CancellationToken.None);
-            }
-
-            await MarkOfflineAsync(session.AgentId);
-            throw;
-        }
-        catch
-        {
-            // A transient repository error or cancellation must not tear down
-            // the session that was already serving this agent. Restore it when
-            // it is still the displaced current session.
-            var restored = displaced is not null &&
-                           registry.TryRestore(session.AgentId, session, displaced);
-            if (!restored)
-            {
-                registry.Retire(session);
-                if (displaced is not null)
-                {
-                    registry.Retire(displaced);
-                    await displaced.CloseAsync(CancellationToken.None);
-                }
-            }
-
-            registry.Retire(session);
-            await session.CloseAsync(CancellationToken.None);
-            if (!registry.TryGet(session.AgentId, out _))
-            {
-                await MarkOfflineAsync(session.AgentId);
-            }
-
-            throw;
         }
     }
 

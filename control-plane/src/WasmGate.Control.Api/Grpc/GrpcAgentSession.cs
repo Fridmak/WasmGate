@@ -22,7 +22,6 @@ public sealed class GrpcAgentSession : IAgentSession
     private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(10);
 
     private readonly IServerStreamWriter<ControlMessage> _writer;
-    private readonly IAgentSessionRegistry _registry;
     private readonly CancellationTokenSource _lifetime;
     private readonly SemaphoreSlim _writeSlim = new(1, 1);
     private int _closed;
@@ -31,16 +30,13 @@ public sealed class GrpcAgentSession : IAgentSession
     /// <param name="agentId">Identifier parsed from the agent's Hello.</param>
     /// <param name="writer">Response stream of the gRPC call.</param>
     /// <param name="context">Context of the current gRPC call.</param>
-    /// <param name="registry">Registry that owns this session lifecycle.</param>
     public GrpcAgentSession(
         Guid agentId,
         IServerStreamWriter<ControlMessage> writer,
-        ServerCallContext context,
-        IAgentSessionRegistry registry)
+        ServerCallContext context)
     {
         AgentId = agentId;
         _writer = writer;
-        _registry = registry;
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
     }
 
@@ -87,10 +83,6 @@ public sealed class GrpcAgentSession : IAgentSession
     /// <inheritdoc />
     public ValueTask CloseAsync(CancellationToken cancellationToken)
     {
-        // Retire before cancelling the transport so a concurrent failed
-        // registration cannot restore this session after it starts closing.
-        _registry.Retire(this);
-
         // Cancel the linked token so the session's read loop and any in-flight
         // writes stop.
         if (Interlocked.Exchange(ref _closed, 1) == 0)

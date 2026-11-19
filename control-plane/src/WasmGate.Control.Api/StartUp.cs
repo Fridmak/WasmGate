@@ -121,6 +121,7 @@ public static class StartUp
             builder.Services.AddSingleton<IConfigValidator, GoConfigValidator>();
             builder.Services.AddSingleton<IReleaseSigner, EcdsaReleaseSigner>();
             builder.Services.AddSingleton<IAgentSessionRegistry, InMemoryAgentSessionRegistry>();
+            builder.Services.AddSingleton<IAgentOperationLock, AgentOperationLock>();
             builder.Services.AddSingleton<ICertificateAuthority>(new PkiCertificateAuthority(options));
             builder.Services.AddSingleton<IAgentProvisioningService, AgentProvisioningService>();
             builder.Services.AddSingleton<IReleaseService, ReleaseService>();

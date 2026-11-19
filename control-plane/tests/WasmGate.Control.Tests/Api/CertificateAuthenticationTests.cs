@@ -8,6 +8,7 @@ using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
+using WasmGate.Control.Infrastructure.Agents;
 
 namespace WasmGate.Control.Tests.Api;
 
@@ -87,7 +88,6 @@ public sealed class CertificateAuthenticationTests
     {
         var service = new AgentEnrollmentService(
             provisioning: null!,
-            certificates: null!,
             new ControlPlaneOptions(),
             NullLogger<AgentEnrollmentService>.Instance);
 
@@ -108,6 +108,7 @@ public sealed class CertificateAuthenticationTests
         certificates: certificates,
         deployments: null!,
         audit: null!,
+        agentOperations: new AgentOperationLock(),
         options: MtlsOptions(),
         logger: NullLogger<AgentControlService>.Instance);
 

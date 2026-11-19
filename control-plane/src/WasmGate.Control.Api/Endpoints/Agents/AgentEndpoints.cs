@@ -187,6 +187,7 @@ internal static class AgentEndpoints
     /// <param name="serial">Certificate serial number.</param>
     /// <param name="certificates">Certificate repository.</param>
     /// <param name="sessions">Live agent session registry.</param>
+    /// <param name="agentOperations">Per-agent lifecycle lock.</param>
     /// <param name="audit">Audit log.</param>
     /// <param name="logger">Logger for post-commit cleanup failures.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
@@ -196,24 +197,26 @@ internal static class AgentEndpoints
         string serial,
         IAgentCertificateRepository certificates,
         IAgentSessionRegistry sessions,
+        IAgentOperationLock agentOperations,
         IAuditLog audit,
         ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
-        // The database update must happen before the registry lookup. Together
-        // with the post-register check in AgentControlService, this guarantees
-        // that a concurrent session either sees the revoked certificate or is
-        // found in the registry and closed.
-        if (!await certificates.RevokeAsync(id, serial, cancellationToken))
+        IAgentSession? session;
+        await using (await agentOperations.AcquireAsync(id, cancellationToken))
         {
-            return Results.NotFound();
+            if (!await certificates.RevokeAsync(id, serial, cancellationToken))
+            {
+                return Results.NotFound();
+            }
+
+            sessions.TryGet(id, out session);
         }
 
-        if (sessions.TryGet(id, out var session))
+        if (session is not null)
         {
             try
             {
-                sessions.Retire(session);
                 await session.CloseAsync(CancellationToken.None);
             }
             catch (Exception ex)

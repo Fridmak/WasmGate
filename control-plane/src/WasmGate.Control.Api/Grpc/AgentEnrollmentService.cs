@@ -1,7 +1,6 @@
 using Google.Protobuf;
 using Grpc.Core;
 using WasmGate.Control.Core.Abstractions.Agents;
-using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
 using WasmGate.Control.V1;
@@ -21,7 +20,6 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 public sealed class AgentEnrollmentService(
     IAgentProvisioningService provisioning,
-    IAgentCertificateRepository certificates,
     ControlPlaneOptions options,
     ILogger<AgentEnrollmentService> logger) : AgentEnrollment.AgentEnrollmentBase
 {
@@ -103,15 +101,6 @@ public sealed class AgentEnrollmentService(
 
         var thumbprint = AgentCertificateIdentity.Thumbprint(
             AgentCertificateIdentity.GetCertificate(context))!;
-        if (!await certificates.IsActiveAsync(
-                requestedAgentId,
-                thumbprint,
-                context.CancellationToken))
-        {
-            throw new RpcException(new Status(
-                StatusCode.Unauthenticated,
-                "The client certificate was revoked or has expired."));
-        }
 
         try
         {

@@ -6,6 +6,7 @@ using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
 using WasmGate.Control.Infrastructure.Repositories;
+using WasmGate.Control.Infrastructure.Agents;
 using WasmGate.Control.Tests.Storage;
 
 namespace WasmGate.Control.Tests.Api;
@@ -46,7 +47,7 @@ public sealed class CertificateSessionMonitorTests
         };
         var monitor = new CertificateSessionMonitor(
             certificates,
-            new NoopSessionRegistry(),
+            new AgentOperationLock(),
             options,
             NullLogger.Instance);
         var session = new TestSession(agent.Id);
@@ -73,7 +74,7 @@ public sealed class CertificateSessionMonitorTests
     {
         var monitor = new CertificateSessionMonitor(
             new ThrowingCertificateRepository(),
-            new NoopSessionRegistry(),
+            new AgentOperationLock(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
         var session = new TestSession(Guid.NewGuid());
@@ -93,7 +94,7 @@ public sealed class CertificateSessionMonitorTests
     {
         var monitor = new CertificateSessionMonitor(
             new CanceledCertificateRepository(),
-            new NoopSessionRegistry(),
+            new AgentOperationLock(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
         var session = new TestSession(Guid.NewGuid());
@@ -127,30 +128,6 @@ public sealed class CertificateSessionMonitorTests
         {
             _closed.TrySetResult();
             return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class NoopSessionRegistry : IAgentSessionRegistry
-    {
-        public int Count => 0;
-
-        public IAgentSession? Register(Guid agentId, IAgentSession session) => null;
-
-        public void Unregister(Guid agentId, IAgentSession session) { }
-
-        public void Retire(IAgentSession session) { }
-
-        public bool TryRestore(
-            Guid agentId,
-            IAgentSession failedSession,
-            IAgentSession displacedSession) => false;
-
-        public bool TryGet(
-            Guid agentId,
-            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IAgentSession? session)
-        {
-            session = null;
-            return false;
         }
     }
 

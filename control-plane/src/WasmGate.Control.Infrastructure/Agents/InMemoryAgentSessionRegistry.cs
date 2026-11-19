@@ -24,8 +24,6 @@ namespace WasmGate.Control.Infrastructure.Agents;
 public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
 {
     private readonly ConcurrentDictionary<Guid, IAgentSession> _sessions = new();
-    private readonly HashSet<IAgentSession> _restorable =
-        new(ReferenceEqualityComparer.Instance);
     private readonly Lock _writeLock = new();
 
     /// <inheritdoc />
@@ -40,7 +38,6 @@ public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
         {
             _sessions.TryGetValue(agentId, out var previous);
             _sessions[agentId] = session;
-            _restorable.Add(session);
             return ReferenceEquals(previous, session) ? null : previous;
         }
     }
@@ -54,47 +51,6 @@ public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
             {
                 _sessions.TryRemove(agentId, out _);
             }
-
-            _restorable.Remove(session);
-        }
-    }
-
-    /// <inheritdoc />
-    public void Retire(IAgentSession session)
-    {
-        ArgumentNullException.ThrowIfNull(session);
-
-        lock (_writeLock)
-        {
-            _restorable.Remove(session);
-            if (_sessions.TryGetValue(session.AgentId, out var current) &&
-                ReferenceEquals(current, session))
-            {
-                _sessions.TryRemove(session.AgentId, out _);
-            }
-        }
-    }
-
-    /// <inheritdoc />
-    public bool TryRestore(
-        Guid agentId,
-        IAgentSession failedSession,
-        IAgentSession displacedSession)
-    {
-        ArgumentNullException.ThrowIfNull(failedSession);
-        ArgumentNullException.ThrowIfNull(displacedSession);
-
-        lock (_writeLock)
-        {
-            if (!_sessions.TryGetValue(agentId, out var current) ||
-                !ReferenceEquals(current, failedSession) ||
-                !_restorable.Contains(displacedSession))
-            {
-                return false;
-            }
-
-            _sessions[agentId] = displacedSession;
-            return true;
         }
     }
 

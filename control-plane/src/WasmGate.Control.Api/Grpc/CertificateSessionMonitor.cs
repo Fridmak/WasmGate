@@ -16,7 +16,7 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 internal sealed class CertificateSessionMonitor(
     IAgentCertificateRepository certificates,
-    IAgentSessionRegistry registry,
+    IAgentOperationLock agentOperations,
     ControlPlaneOptions options,
     ILogger logger)
 {
@@ -45,10 +45,13 @@ internal sealed class CertificateSessionMonitor(
                 bool active;
                 try
                 {
-                    active = await certificates.IsActiveAsync(
+                    await using var agentLease = await agentOperations.AcquireAsync(
                         agentId,
-                        thumbprint,
                         cancellationToken);
+                    active = await certificates.IsActiveAsync(
+                            agentId,
+                            thumbprint,
+                            cancellationToken);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -98,7 +101,6 @@ internal sealed class CertificateSessionMonitor(
     {
         try
         {
-            registry.Retire(session);
             await session.CloseAsync(CancellationToken.None);
         }
         catch (Exception ex)
