@@ -175,7 +175,12 @@ public sealed class AgentControlService(
         string? certificateThumbprint,
         CancellationToken cancellationToken)
     {
+        // Persist before touching the registry: a failing Hello must not
+        // displace or close an already healthy session.
+        await PersistHelloAsync(hello, session.AgentId, cancellationToken);
+
         var displaced = registry.Register(session.AgentId, session);
+        var certificateRejected = false;
         try
         {
             if (certificateThumbprint is not null &&
@@ -184,16 +189,19 @@ public sealed class AgentControlService(
                     certificateThumbprint,
                     cancellationToken))
             {
+                certificateRejected = true;
                 throw new RpcException(new Status(
                     StatusCode.Unauthenticated,
                     "The client certificate was revoked or has expired."));
             }
 
-            await PersistHelloAsync(hello, session.AgentId, cancellationToken);
             return displaced;
         }
-        catch
+        catch (RpcException) when (certificateRejected)
         {
+            // The certificate is known to be revoked. Closing any session for
+            // the agent is the current policy; matching the exact certificate
+            // is a follow-up.
             registry.Unregister(session.AgentId, session);
             await session.CloseAsync(CancellationToken.None);
             if (displaced is not null)
@@ -202,6 +210,30 @@ public sealed class AgentControlService(
             }
 
             await MarkOfflineAsync(session.AgentId);
+            throw;
+        }
+        catch
+        {
+            // A transient repository error or cancellation must not tear down
+            // the session that was already serving this agent. Restore it when
+            // it is still the displaced current session.
+            var restored = displaced is not null &&
+                           registry.TryRestore(session.AgentId, session, displaced);
+            if (!restored)
+            {
+                registry.Unregister(session.AgentId, session);
+                if (displaced is not null)
+                {
+                    await displaced.CloseAsync(CancellationToken.None);
+                }
+            }
+
+            await session.CloseAsync(CancellationToken.None);
+            if (!registry.TryGet(session.AgentId, out _))
+            {
+                await MarkOfflineAsync(session.AgentId);
+            }
+
             throw;
         }
     }

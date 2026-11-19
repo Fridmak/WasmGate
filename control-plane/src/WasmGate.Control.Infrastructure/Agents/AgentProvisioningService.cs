@@ -650,21 +650,37 @@ public sealed class AgentProvisioningService(
             }
         }
 
-        var details = JsonSerializer.Serialize(
-            new CertificateRotationAudit
-            {
-                Reason = "rotation",
-                ReplacedBy = certificate.SerialNumber,
-            },
-            StorageJsonContext.Default.CertificateRotationAudit);
-        foreach (var oldCertificate in rotation.Retired)
+        if (rotation.Retired.Count > 0)
         {
-            await TryAuditAsync(
-                AgentNaming.CertificateCommonName(certificate.AgentId),
-                "certificate.revoke",
-                $"{certificate.AgentId:D}/{oldCertificate.SerialNumber}",
-                CancellationToken.None,
-                details);
+            string? details = null;
+            try
+            {
+                details = JsonSerializer.Serialize(
+                    new CertificateRotationAudit
+                    {
+                        Reason = "rotation",
+                        ReplacedBy = certificate.SerialNumber,
+                    },
+                    StorageJsonContext.Default.CertificateRotationAudit);
+            }
+            catch (Exception ex)
+            {
+                // The rotation is already committed; audit details are optional.
+                logger.LogWarning(
+                    ex,
+                    "failed to serialize certificate rotation audit: agent={AgentId}",
+                    certificate.AgentId);
+            }
+
+            foreach (var oldCertificate in rotation.Retired)
+            {
+                await TryAuditAsync(
+                    AgentNaming.CertificateCommonName(certificate.AgentId),
+                    "certificate.revoke",
+                    $"{certificate.AgentId:D}/{oldCertificate.SerialNumber}",
+                    CancellationToken.None,
+                    details);
+            }
         }
     }
 

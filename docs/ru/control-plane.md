@@ -353,6 +353,10 @@ lock-файл создаются автоматически. Для соглас
 - Потерянный ответ `Renew` или падение до сохранения новой identity требует
   нового per-agent enrollment token: окна overlap нет. Re-enrollment и renewal
   при одновременном запуске работают по принципу last-writer-wins.
+- Запись audit после ротации или отзыва сертификата выполняется best-effort:
+  ошибка логируется, но не отменяет security-операцию.
+- Закрытие сессии monitor'ом завершает stream без статуса Unauthenticated;
+  следующая попытка Session получает Unauthenticated.
 - Нет OIDC/RBAC: один статический admin-токен.
 - Нет ретенции старых артефактов, конфигураций и аудита.
 - `Drain` и `SetLogLevel` принимаются, но data plane их только логирует.

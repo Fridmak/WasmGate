@@ -86,6 +86,25 @@ public sealed class CertificateSessionMonitorTests
         Assert.True(session.IsClosed);
     }
 
+    [Fact]
+    public async Task OperationCanceledFromRepositoryWithoutSessionCancellationClosesSession()
+    {
+        var monitor = new CertificateSessionMonitor(
+            new CanceledCertificateRepository(),
+            new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
+            NullLogger.Instance);
+        var session = new TestSession(Guid.NewGuid());
+        using var cancellation = new CancellationTokenSource();
+
+        await monitor.MonitorAsync(
+            session.AgentId,
+            new string('c', 64),
+            session,
+            cancellation.Token);
+
+        Assert.True(session.IsClosed);
+    }
+
     private sealed class TestSession(Guid agentId) : IAgentSession
     {
         private readonly TaskCompletionSource _closed =
@@ -106,6 +125,35 @@ public sealed class CertificateSessionMonitorTests
             _closed.TrySetResult();
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class CanceledCertificateRepository : IAgentCertificateRepository
+    {
+        public Task AddAsync(AgentCertificate certificate, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected AddAsync");
+
+        public Task<IReadOnlyList<AgentCertificate>> ListActiveByAgentAsync(
+            Guid agentId,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected ListActiveByAgentAsync");
+
+        public Task<bool> IsActiveAsync(
+            Guid agentId,
+            string thumbprint,
+            CancellationToken cancellationToken) =>
+            throw new OperationCanceledException("repository timeout");
+
+        public Task<bool> RevokeAsync(
+            Guid agentId,
+            string serialNumber,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected RevokeAsync");
+
+        public Task<CertificateRotationResult> RotateAsync(
+            AgentCertificate certificate,
+            string? callerThumbprint,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected RotateAsync");
     }
 
     private sealed class ThrowingCertificateRepository : IAgentCertificateRepository

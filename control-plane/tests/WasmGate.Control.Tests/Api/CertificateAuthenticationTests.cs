@@ -7,6 +7,7 @@ using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
+using WasmGate.Control.Core.Entities.Agents.Enrollment;
 
 namespace WasmGate.Control.Tests.Api;
 
@@ -77,6 +78,25 @@ public sealed class CertificateAuthenticationTests
                 certificate: null,
                 Guid.NewGuid(),
                 CancellationToken.None));
+
+        Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+    }
+
+    [Fact]
+    public void RevokedCallerFailureMapsToUnauthenticated()
+    {
+        var service = new AgentEnrollmentService(
+            provisioning: null!,
+            certificates: null!,
+            new ControlPlaneOptions(),
+            NullLogger<AgentEnrollmentService>.Instance);
+
+        var error = service.ToRpcException(
+            new EnrollmentException(
+                EnrollmentFailure.InvalidToken,
+                "The client certificate was revoked or has expired."),
+            agentId: Guid.NewGuid().ToString("D"),
+            name: null);
 
         Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
     }

@@ -358,6 +358,10 @@ the schema and the single-process lock automatically. Use
 - A lost `Renew` response or a crash before the new identity is saved requires a
   new per-agent enrollment token; there is no overlap window. Re-enrollment and
   renewal are last-writer-wins if an operator runs them concurrently.
+- Audit writes after certificate rotation or revocation are best-effort: a
+  failure is logged but does not fail the security operation.
+- A monitor-triggered close ends the stream without an Unauthenticated status;
+  the next Session attempt is rejected with Unauthenticated.
 - No OIDC/RBAC: one static admin token.
 - No retention policy for old artifacts, configurations and audit events.
 - `Drain` and `SetLogLevel` are accepted but only logged by the data plane.

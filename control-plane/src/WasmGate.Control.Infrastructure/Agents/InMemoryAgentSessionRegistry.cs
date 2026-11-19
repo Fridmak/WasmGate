@@ -55,6 +55,28 @@ public sealed class InMemoryAgentSessionRegistry : IAgentSessionRegistry
     }
 
     /// <inheritdoc />
+    public bool TryRestore(
+        Guid agentId,
+        IAgentSession failedSession,
+        IAgentSession displacedSession)
+    {
+        ArgumentNullException.ThrowIfNull(failedSession);
+        ArgumentNullException.ThrowIfNull(displacedSession);
+
+        lock (_writeLock)
+        {
+            if (!_sessions.TryGetValue(agentId, out var current) ||
+                !ReferenceEquals(current, failedSession))
+            {
+                return false;
+            }
+
+            _sessions[agentId] = displacedSession;
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
     public bool TryGet(Guid agentId, [NotNullWhen(true)] out IAgentSession? session) =>
         _sessions.TryGetValue(agentId, out session);
 }

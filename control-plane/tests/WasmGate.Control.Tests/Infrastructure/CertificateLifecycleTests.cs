@@ -341,6 +341,11 @@ public sealed class CertificateLifecycleTests
 
         public void Unregister(Guid agentId, IAgentSession oldSession) { }
 
+        public bool TryRestore(
+            Guid agentId,
+            IAgentSession failedSession,
+            IAgentSession displacedSession) => false;
+
         public bool TryGet(
             Guid agentId,
             [NotNullWhen(true)] out IAgentSession? currentSession)

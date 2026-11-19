@@ -94,6 +94,80 @@ public sealed class AgentSessionRevocationTests
         Assert.True(displaced.Closed);
     }
 
+    [Fact]
+    public async Task PersistHelloFailureDoesNotCloseDisplacedSession()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var registry = new TrackingSessionRegistry();
+        var agentId = Guid.NewGuid();
+        var displaced = new TestSession(agentId);
+        Assert.Null(registry.Register(agentId, displaced));
+        var service = new AgentControlService(
+            registry,
+            new FailingAgentRepository(),
+            new SqliteAgentCertificateRepository(db.Connections),
+            new EmptyDeploymentRepository(),
+            new SqliteAuditLog(db.Connections),
+            new ControlPlaneOptions(),
+            NullLogger<AgentControlService>.Instance);
+        var session = new GrpcAgentSession(
+            agentId,
+            new TestResponseStream(),
+            new TestServerCallContext());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RegisterSessionAsync(
+            session,
+            new Hello
+            {
+                AgentId = agentId.ToString("D"),
+                Name = "failing-hello",
+                Version = "test",
+            },
+            certificateThumbprint: null,
+            CancellationToken.None));
+
+        Assert.False(displaced.Closed);
+        Assert.True(registry.TryGet(agentId, out var current));
+        Assert.Same(displaced, current);
+    }
+
+    [Fact]
+    public async Task CancellationAfterRegistrationDoesNotCloseDisplacedSession()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var registry = new TrackingSessionRegistry();
+        var agentId = Guid.NewGuid();
+        var displaced = new TestSession(agentId);
+        Assert.Null(registry.Register(agentId, displaced));
+        var service = new AgentControlService(
+            registry,
+            new SqliteAgentRepository(db.Connections),
+            new CanceledCertificateRepository(),
+            new EmptyDeploymentRepository(),
+            new SqliteAuditLog(db.Connections),
+            new ControlPlaneOptions(),
+            NullLogger<AgentControlService>.Instance);
+        var session = new GrpcAgentSession(
+            agentId,
+            new TestResponseStream(),
+            new TestServerCallContext());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.RegisterSessionAsync(
+            session,
+            new Hello
+            {
+                AgentId = agentId.ToString("D"),
+                Name = "canceled-registration",
+                Version = "test",
+            },
+            certificateThumbprint: new string('a', 64),
+            CancellationToken.None));
+
+        Assert.False(displaced.Closed);
+        Assert.True(registry.TryGet(agentId, out var current));
+        Assert.Same(displaced, current);
+    }
+
     private sealed class TestSession(Guid agentId) : IAgentSession
     {
         public Guid AgentId { get; } = agentId;
@@ -168,6 +242,21 @@ public sealed class AgentSessionRevocationTests
             }
         }
 
+        public bool TryRestore(
+            Guid agentId,
+            IAgentSession failedSession,
+            IAgentSession displacedSession)
+        {
+            if (_sessions.TryGetValue(agentId, out var current) &&
+                ReferenceEquals(current, failedSession))
+            {
+                _sessions[agentId] = displacedSession;
+                return true;
+            }
+
+            return false;
+        }
+
         public bool TryGet(
             Guid agentId,
             [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IAgentSession? session) =>
@@ -179,6 +268,73 @@ public sealed class AgentSessionRevocationTests
             Assert.Equal(agentId, session.AgentId);
             return session;
         }
+    }
+
+    private sealed class FailingAgentRepository : IAgentRepository
+    {
+        public Task<IReadOnlyList<Agent>> ListAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected ListAsync");
+
+        public Task<Agent?> FindAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult<Agent?>(null);
+
+        public Task<Agent?> FindByNameAsync(string name, CancellationToken cancellationToken) =>
+            Task.FromResult<Agent?>(null);
+
+        public Task<bool> UpsertAsync(Agent agent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("database unavailable");
+
+        public Task SetEnvironmentAsync(
+            Guid id,
+            string environment,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected SetEnvironmentAsync");
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected DeleteAsync");
+
+        public Task TouchAsync(
+            Guid id,
+            DateTimeOffset seenAt,
+            string? activeReleaseId,
+            string? activeConfigSha256,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected TouchAsync");
+
+        public Task RecordEnrollmentAsync(
+            Guid id,
+            DateTimeOffset seenAt,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected RecordEnrollmentAsync");
+    }
+
+    private sealed class CanceledCertificateRepository : IAgentCertificateRepository
+    {
+        public Task AddAsync(AgentCertificate certificate, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected AddAsync");
+
+        public Task<IReadOnlyList<AgentCertificate>> ListActiveByAgentAsync(
+            Guid agentId,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected ListActiveByAgentAsync");
+
+        public Task<bool> IsActiveAsync(
+            Guid agentId,
+            string thumbprint,
+            CancellationToken cancellationToken) =>
+            throw new OperationCanceledException("repository timeout");
+
+        public Task<bool> RevokeAsync(
+            Guid agentId,
+            string serialNumber,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected RevokeAsync");
+
+        public Task<CertificateRotationResult> RotateAsync(
+            AgentCertificate certificate,
+            string? callerThumbprint,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected RotateAsync");
     }
 
     private sealed class EmptyDeploymentRepository : IDeploymentRepository

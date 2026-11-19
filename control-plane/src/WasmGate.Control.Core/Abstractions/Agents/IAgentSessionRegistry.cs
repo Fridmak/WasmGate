@@ -33,6 +33,26 @@ public interface IAgentSessionRegistry
     /// <param name="session">Session being removed; ignored when it was already replaced.</param>
     void Unregister(Guid agentId, IAgentSession session);
 
+    /// <summary>
+    /// Restores the previously displaced session when a new registration fails
+    /// after it replaced the old one.
+    /// </summary>
+    /// <param name="agentId">Agent identifier.</param>
+    /// <param name="failedSession">New session whose registration failed.</param>
+    /// <param name="displacedSession">Previous session to restore.</param>
+    /// <returns>
+    /// True when the failed session was still current and the previous session
+    /// was restored; false when another session took over in the meantime.
+    /// </returns>
+    /// <remarks>
+    /// The operation is atomic with <see cref="Register"/> and
+    /// <see cref="Unregister"/>. It must not close either session.
+    /// </remarks>
+    bool TryRestore(
+        Guid agentId,
+        IAgentSession failedSession,
+        IAgentSession displacedSession);
+
     /// <summary>Looks up the session of an agent.</summary>
     /// <param name="agentId">Agent identifier.</param>
     /// <param name="session">The current session, or null when the agent is not connected.</param>

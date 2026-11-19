@@ -77,6 +77,17 @@ internal sealed class CertificateSessionMonitor(
         {
             // The session ended: normal monitor shutdown.
         }
+        catch (Exception ex)
+        {
+            // Fail closed: an unexpected exception, including an
+            // OperationCanceledException not caused by the session token, must
+            // not silently disable the revocation backstop.
+            logger.LogWarning(
+                ex,
+                "certificate monitor failed; closing session: agent={AgentId}",
+                agentId);
+            await CloseAsync(session, agentId);
+        }
     }
 
     /// <summary>Closes the session without letting a transport error escape the monitor.</summary>

@@ -147,7 +147,7 @@ public sealed class AgentEnrollmentService(
     /// <param name="exception">Failure raised by the provisioning service.</param>
     /// <param name="agentId">Agent id from the request, for the log entry.</param>
     /// <param name="name">Agent name from the request, or null for renewal.</param>
-    private RpcException ToRpcException(EnrollmentException exception, string agentId, string? name)
+    internal RpcException ToRpcException(EnrollmentException exception, string agentId, string? name)
     {
         var status = exception.Failure switch
         {
