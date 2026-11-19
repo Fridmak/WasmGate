@@ -55,6 +55,61 @@ public sealed class AgentSessionRevocationTests
                 CancellationToken.None).AsTask());
     }
 
+    [Fact]
+    public async Task RevocationBetweenInitialCheckAndRegistrationRejectsSession()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var registry = new TrackingSessionRegistry();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var service = new AgentControlService(
+            registry,
+            agents,
+            certificates,
+            new EmptyDeploymentRepository(),
+            new SqliteAuditLog(db.Connections),
+            new ControlPlaneOptions(),
+            NullLogger<AgentControlService>.Instance);
+        var agentId = Guid.NewGuid();
+        var displaced = new TestSession(agentId);
+        Assert.Null(registry.Register(agentId, displaced));
+
+        var session = new GrpcAgentSession(
+            agentId,
+            new TestResponseStream(),
+            new TestServerCallContext());
+        var error = await Assert.ThrowsAsync<RpcException>(() => service.RegisterSessionAsync(
+            session,
+            new Hello
+            {
+                AgentId = agentId.ToString("D"),
+                Name = "race-agent",
+                Version = "test",
+            },
+            certificateThumbprint: "missing-certificate",
+            CancellationToken.None));
+
+        Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+        Assert.False(registry.TryGet(agentId, out _));
+        Assert.True(displaced.Closed);
+    }
+
+    private sealed class TestSession(Guid agentId) : IAgentSession
+    {
+        public Guid AgentId { get; } = agentId;
+
+        public bool Closed { get; private set; }
+
+        public ValueTask SendAsync(AgentCommand command, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask CloseAsync(CancellationToken cancellationToken)
+        {
+            Closed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class BlockingAgentStream(Guid agentId) : IAsyncStreamReader<AgentMessage>
     {
         private int _readCount;

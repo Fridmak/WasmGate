@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
@@ -31,6 +32,7 @@ public sealed class AgentProvisioningService(
     ICertificateAuthority authority,
     IAgentSessionRegistry sessions,
     IAuditLog audit,
+    ILogger<AgentProvisioningService> logger,
     ControlPlaneOptions options) : IAgentProvisioningService
 {
     /// <summary>Maximum length of a label key accepted from the admin API.</summary>
@@ -341,14 +343,8 @@ public sealed class AgentProvisioningService(
                 agentGuid.ToString("D"),
                 cancellationToken);
         }
-        else
-        {
-            // Enrollment proves the identity, not that a control session is open:
-            // record only the contact and leave status and release to the session
-            // handler. A single-column update cannot overwrite concurrent state.
-            await agents.RecordEnrollmentAsync(agentGuid, now, cancellationToken);
-        }
 
+        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
         var notAfter = now + options.AgentCertificateLifetime;
         var issued = await authority.IssueAsync(
             csrPem,
@@ -366,15 +362,23 @@ public sealed class AgentProvisioningService(
                 NotBefore = issued.NotBefore,
                 NotAfter = issued.NotAfter,
             },
+            callerThumbprint: null,
             cancellationToken);
 
-        await AuditAsync(
+        if (!isNewAgent)
+        {
+            // Enrollment proves the identity, not that a control session is open.
+            // This is best-effort after the rotation commit so a failed contact
+            // update cannot turn a successful re-enrollment into an error.
+            await TryRecordEnrollmentAsync(agentGuid, now);
+        }
+
+        await TryAuditAsync(
             AgentNaming.CertificateCommonName(agentGuid),
             "agent.enroll",
             agentGuid.ToString("D"),
-            cancellationToken);
+            CancellationToken.None);
 
-        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
         return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
     }
 
@@ -467,6 +471,7 @@ public sealed class AgentProvisioningService(
     public async Task<EnrollmentResult> RenewAsync(
         Guid agentId,
         string csrPem,
+        string callerThumbprint,
         CancellationToken cancellationToken)
     {
         if (await agents.FindAsync(agentId, cancellationToken) is null)
@@ -476,6 +481,7 @@ public sealed class AgentProvisioningService(
                 "Agent is not registered.");
         }
 
+        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
         var notAfter = DateTimeOffset.UtcNow + options.AgentCertificateLifetime;
         var issued = await authority.IssueAsync(
             csrPem,
@@ -493,16 +499,19 @@ public sealed class AgentProvisioningService(
                 NotBefore = issued.NotBefore,
                 NotAfter = issued.NotAfter,
             },
+            callerThumbprint,
             cancellationToken);
 
-        await agents.RecordEnrollmentAsync(agentId, DateTimeOffset.UtcNow, cancellationToken);
-        await AuditAsync(
+        // These updates happen after the irreversible rotation commit. They must
+        // not turn a successful renewal into an error: the agent already has a
+        // new certificate and the old one is revoked.
+        await TryRecordEnrollmentAsync(agentId, DateTimeOffset.UtcNow);
+        await TryAuditAsync(
             AgentNaming.CertificateCommonName(agentId),
             "agent.renew",
             agentId.ToString("D"),
-            cancellationToken);
+            CancellationToken.None);
 
-        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
         return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
     }
 
@@ -599,18 +608,46 @@ public sealed class AgentProvisioningService(
     /// atomically and closes any session that still uses that identity.
     /// </summary>
     /// <param name="certificate">New certificate issued by the agent CA.</param>
+    /// <param name="callerThumbprint">
+    /// Certificate that requested the rotation, or null for enrollment/recovery.
+    /// </param>
     /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <exception cref="EnrollmentException">
+    /// The caller certificate was revoked or expired before the rotation
+    /// transaction committed.
+    /// </exception>
     private async Task RotateCertificateAsync(
         AgentCertificate certificate,
+        string? callerThumbprint,
         CancellationToken cancellationToken)
     {
-        var retired = await certificates.AddAndRevokeActiveAsync(
+        var rotation = await certificates.RotateAsync(
             certificate,
+            callerThumbprint,
             cancellationToken);
-
-        if (retired.Count > 0 && sessions.TryGet(certificate.AgentId, out var session))
+        if (!rotation.CallerActive)
         {
-            await session.CloseAsync(CancellationToken.None);
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidToken,
+                "The client certificate was revoked or has expired.");
+        }
+
+        // The rotation is committed. Closing the session and writing audit
+        // records are best-effort: a failure here must not tell the agent that
+        // renewal failed after its old certificate has already been revoked.
+        if (rotation.Retired.Count > 0 && sessions.TryGet(certificate.AgentId, out var session))
+        {
+            try
+            {
+                await session.CloseAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "failed to close session after certificate rotation: agent={AgentId}",
+                    certificate.AgentId);
+            }
         }
 
         var details = JsonSerializer.Serialize(
@@ -620,14 +657,59 @@ public sealed class AgentProvisioningService(
                 ReplacedBy = certificate.SerialNumber,
             },
             StorageJsonContext.Default.CertificateRotationAudit);
-        foreach (var oldCertificate in retired)
+        foreach (var oldCertificate in rotation.Retired)
         {
-            await AuditAsync(
+            await TryAuditAsync(
                 AgentNaming.CertificateCommonName(certificate.AgentId),
                 "certificate.revoke",
                 $"{certificate.AgentId:D}/{oldCertificate.SerialNumber}",
-                cancellationToken,
+                CancellationToken.None,
                 details);
+        }
+    }
+
+    /// <summary>Records contact after a certificate operation, best-effort.</summary>
+    /// <param name="agentId">Agent identifier.</param>
+    /// <param name="seenAt">Contact time.</param>
+    private async Task TryRecordEnrollmentAsync(Guid agentId, DateTimeOffset seenAt)
+    {
+        try
+        {
+            await agents.RecordEnrollmentAsync(agentId, seenAt, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to record enrollment after certificate operation: agent={AgentId}",
+                agentId);
+        }
+    }
+
+    /// <summary>Appends one audit event, logging but not failing on error.</summary>
+    /// <param name="actor">Principal that performed the operation.</param>
+    /// <param name="action">Stable action name.</param>
+    /// <param name="target">Entity the action applies to.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <param name="detailsJson">Optional JSON details for the audit event.</param>
+    private async Task TryAuditAsync(
+        string actor,
+        string action,
+        string target,
+        CancellationToken cancellationToken,
+        string? detailsJson = null)
+    {
+        try
+        {
+            await AuditAsync(actor, action, target, cancellationToken, detailsJson);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to append audit event after certificate operation: action={Action} target={Target}",
+                action,
+                target);
         }
     }
 

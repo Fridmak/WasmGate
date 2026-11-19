@@ -63,6 +63,9 @@ public static class StartUp
                 AgentCaCertPath = Env("WASMGATE_CP_AGENT_CA_CERT") ?? "data/ca/agents-ca.crt",
                 AgentCaKeyPath = Env("WASMGATE_CP_AGENT_CA_KEY") ?? "data/ca/agents-ca.key",
                 AgentCertificateLifetime = EnvDuration("WASMGATE_CP_AGENT_CERT_TTL", TimeSpan.FromDays(30)),
+                CertificateRecheckInterval = EnvPositiveDuration(
+                    "WASMGATE_CP_CERT_RECHECK_INTERVAL",
+                    TimeSpan.FromSeconds(60)),
                 AdminToken = Env("WASMGATE_CP_ADMIN_TOKEN"),
                 ApplyTimeout = EnvDuration("WASMGATE_CP_APPLY_TIMEOUT", TimeSpan.FromMinutes(5)),
                 DeploymentTimeout = EnvDuration("WASMGATE_CP_DEPLOYMENT_TIMEOUT", TimeSpan.FromMinutes(15)),
@@ -157,6 +160,16 @@ public static class StartUp
     {
         var value = Env(name);
         return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var parsed) ? parsed : defaultValue;
+    }
+
+    /// <summary>Reads a positive duration, falling back for unset, invalid or non-positive values.</summary>
+    /// <param name="name">Environment variable name.</param>
+    /// <param name="defaultValue">Value used when the variable is unset, invalid or not positive.</param>
+    /// <returns>Parsed positive duration or <paramref name="defaultValue"/>.</returns>
+    private static TimeSpan EnvPositiveDuration(string name, TimeSpan defaultValue)
+    {
+        var value = EnvDuration(name, defaultValue);
+        return value > TimeSpan.Zero ? value : defaultValue;
     }
 
     /// <summary>Reads a positive integer environment variable, falling back to a default.</summary>

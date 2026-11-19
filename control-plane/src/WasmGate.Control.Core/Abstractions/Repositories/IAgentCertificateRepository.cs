@@ -46,14 +46,24 @@ public interface IAgentCertificateRepository
     /// in the same transaction.
     /// </summary>
     /// <param name="certificate">Replacement certificate to store.</param>
+    /// <param name="callerThumbprint">
+    /// Fingerprint of the certificate that requested the rotation, or null for
+    /// enrollment and recovery. When set, the certificate must still be active
+    /// inside the transaction; otherwise nothing is written.
+    /// </param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    /// <returns>The certificates retired by the rotation, for auditing.</returns>
+    /// <returns>
+    /// Whether the caller was active and the certificates retired by the rotation.
+    /// </returns>
     /// <remarks>
     /// Immediate rotation is deliberate: once the new certificate is issued,
     /// the old identity must no longer be accepted. The caller closes any live
-    /// session using one of the retired certificates after the transaction.
+    /// session using one of the retired certificates after the transaction. The
+    /// in-transaction caller check closes the TOCTOU window between a session's
+    /// active check and the rotation commit.
     /// </remarks>
-    Task<IReadOnlyList<AgentCertificate>> AddAndRevokeActiveAsync(
+    Task<CertificateRotationResult> RotateAsync(
         AgentCertificate certificate,
+        string? callerThumbprint,
         CancellationToken cancellationToken);
 }

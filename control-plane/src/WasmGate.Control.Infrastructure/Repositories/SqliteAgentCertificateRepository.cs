@@ -84,13 +84,24 @@ public sealed class SqliteAgentCertificateRepository(SqliteConnectionFactory con
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<AgentCertificate>> AddAndRevokeActiveAsync(
+    public async Task<CertificateRotationResult> RotateAsync(
         AgentCertificate certificate,
+        string? callerThumbprint,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(certificate);
 
         var now = DateTimeOffset.UtcNow;
+        const string callerSql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM agent_certificates
+                WHERE agent_id = @agentId
+                  AND thumbprint = @callerThumbprint
+                  AND revoked_at IS NULL
+                  AND not_after > @now
+            )
+            """;
         const string selectSql = """
             SELECT agent_id, serial_number, thumbprint, pem, not_before, not_after,
                    issued_at, revoked_at
@@ -121,11 +132,32 @@ public sealed class SqliteAgentCertificateRepository(SqliteConnectionFactory con
             IsolationLevel.Serializable,
             deferred: false);
 
+        var nowParameter = SqliteTimestamps.ToParameter(now);
+        if (callerThumbprint is not null)
+        {
+            // This check runs under the write lock, so a revoke that commits
+            // first makes the rotation fail; a rotation that commits first makes
+            // the revoke update an already-revoked row.
+            var callerActive = await connection.ExecuteScalarAsync<bool>(
+                callerSql,
+                new
+                {
+                    agentId = certificate.AgentId,
+                    callerThumbprint,
+                    now = nowParameter,
+                },
+                transaction);
+            if (!callerActive)
+            {
+                return new CertificateRotationResult(CallerActive: false, Retired: []);
+            }
+        }
+
         var parameters = new
         {
             agentId = certificate.AgentId,
             newSerialNumber = certificate.SerialNumber,
-            now = SqliteTimestamps.ToParameter(now),
+            now = nowParameter,
         };
         var rows = (await connection.QueryAsync<SqliteAgentCertificateRow>(
             selectSql,
@@ -139,7 +171,7 @@ public sealed class SqliteAgentCertificateRepository(SqliteConnectionFactory con
                 parameters.agentId,
                 parameters.newSerialNumber,
                 parameters.now,
-                revokedAt = SqliteTimestamps.ToParameter(now),
+                revokedAt = nowParameter,
             },
             transaction);
 
@@ -159,7 +191,14 @@ public sealed class SqliteAgentCertificateRepository(SqliteConnectionFactory con
             transaction);
 
         await transaction.CommitAsync(cancellationToken);
-        return rows.Select(ToAgentCertificate).ToList();
+
+        var retired = rows.Select(ToAgentCertificate).ToList();
+        foreach (var oldCertificate in retired)
+        {
+            oldCertificate.RevokedAt = now;
+        }
+
+        return new CertificateRotationResult(CallerActive: true, Retired: retired);
     }
 
     /// <inheritdoc />

@@ -36,8 +36,8 @@ public sealed class AgentControlService(
     ControlPlaneOptions options,
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
-    /// <summary>Backstop interval for detecting a missed revocation close.</summary>
-    private static readonly TimeSpan CertificateRecheckInterval = TimeSpan.FromSeconds(60);
+    private readonly CertificateSessionMonitor _sessionMonitor =
+        new(certificates, options, logger);
 
     /// <summary>
     /// Runs one agent control session until the stream ends.
@@ -79,15 +79,28 @@ public sealed class AgentControlService(
             context,
             agentId,
             callCancellation);
-        await PersistHelloAsync(hello!, agentId, callCancellation);
 
         var session = new GrpcAgentSession(agentId, responseStream, context);
-        var displaced = registry.Register(agentId, session);
+        var displaced = await RegisterSessionAsync(
+            session,
+            hello!,
+            certificateThumbprint,
+            callCancellation);
         logger.LogInformation(
             "agent session opened: agent={AgentId} version={AgentVersion} takeover={Takeover}",
             agentId,
             hello!.Version,
             displaced is not null);
+
+        using var monitorCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(session.Token);
+        var monitorTask = certificateThumbprint is null
+            ? Task.CompletedTask
+            : _sessionMonitor.MonitorAsync(
+                agentId,
+                certificateThumbprint,
+                session,
+                monitorCancellation.Token);
 
         try
         {
@@ -96,28 +109,8 @@ public sealed class AgentControlService(
                 await displaced.CloseAsync(CancellationToken.None);
             }
 
-            var nextCertificateCheck = DateTimeOffset.UtcNow + CertificateRecheckInterval;
             while (await requestStream.MoveNext(session.Token))
             {
-                if (certificateThumbprint is not null &&
-                    DateTimeOffset.UtcNow >= nextCertificateCheck)
-                {
-                    if (!await certificates.IsActiveAsync(
-                            agentId,
-                            certificateThumbprint,
-                            session.Token))
-                    {
-                        logger.LogWarning(
-                            "closing agent session after certificate revocation: agent={AgentId}",
-                            agentId);
-                        throw new RpcException(new Status(
-                            StatusCode.Unauthenticated,
-                            "The client certificate was revoked or has expired."));
-                    }
-
-                    nextCertificateCheck = DateTimeOffset.UtcNow + CertificateRecheckInterval;
-                }
-
                 await DispatchAsync(agentId, requestStream.Current, session.Token);
             }
         }
@@ -132,10 +125,84 @@ public sealed class AgentControlService(
         }
         finally
         {
+            monitorCancellation.Cancel();
+            try
+            {
+                await monitorTask;
+            }
+            catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+            {
+                // Normal shutdown of the periodic certificate monitor.
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "certificate monitor failed: agent={AgentId}",
+                    agentId);
+            }
+
             registry.Unregister(agentId, session);
             await session.CloseAsync(CancellationToken.None);
             await MarkOfflineAsync(agentId);
             logger.LogInformation("agent session closed: agent={AgentId}", agentId);
+        }
+    }
+
+    /// <summary>
+    /// Registers a session and re-checks the certificate after registration.
+    /// </summary>
+    /// <param name="session">Session to register.</param>
+    /// <param name="hello">First message of the session.</param>
+    /// <param name="certificateThumbprint">
+    /// Certificate presented by the agent, or null when the endpoint is not
+    /// using mTLS.
+    /// </param>
+    /// <param name="cancellationToken">Cancels persistence and the certificate lookup.</param>
+    /// <returns>The session displaced by this registration, if any.</returns>
+    /// <remarks>
+    /// The order matters: register first, then re-check. Revocation and rotation
+    /// commit their database change before consulting the registry. Therefore a
+    /// revoke that wins the race makes this re-check fail, while a revoke that
+    /// runs after registration finds the session and closes it.
+    /// </remarks>
+    /// <exception cref="RpcException">
+    /// The certificate is no longer active, or the Hello cannot be persisted.
+    /// </exception>
+    internal async Task<IAgentSession?> RegisterSessionAsync(
+        GrpcAgentSession session,
+        Hello hello,
+        string? certificateThumbprint,
+        CancellationToken cancellationToken)
+    {
+        var displaced = registry.Register(session.AgentId, session);
+        try
+        {
+            if (certificateThumbprint is not null &&
+                !await certificates.IsActiveAsync(
+                    session.AgentId,
+                    certificateThumbprint,
+                    cancellationToken))
+            {
+                throw new RpcException(new Status(
+                    StatusCode.Unauthenticated,
+                    "The client certificate was revoked or has expired."));
+            }
+
+            await PersistHelloAsync(hello, session.AgentId, cancellationToken);
+            return displaced;
+        }
+        catch
+        {
+            registry.Unregister(session.AgentId, session);
+            await session.CloseAsync(CancellationToken.None);
+            if (displaced is not null)
+            {
+                await displaced.CloseAsync(CancellationToken.None);
+            }
+
+            await MarkOfflineAsync(session.AgentId);
+            throw;
         }
     }
 
@@ -198,8 +265,39 @@ public sealed class AgentControlService(
     /// <exception cref="RpcException">
     /// The certificate is missing, names another agent, or was revoked or expired.
     /// </exception>
-    private async Task<string?> EnsureCertificateMatchesAsync(
+    private Task<string?> EnsureCertificateMatchesAsync(
         ServerCallContext context,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        if (options.GrpcTls.CertificatePath is null)
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        return ValidateCertificateAsync(
+            AgentCertificateIdentity.GetCertificate(context),
+            agentId,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Validates a presented certificate against the endpoint policy, the agent
+    /// identity and the certificate repository.
+    /// </summary>
+    /// <param name="certificate">Certificate presented by the agent, or null.</param>
+    /// <param name="agentId">Agent identifier reported in the Hello.</param>
+    /// <param name="cancellationToken">Cancels the certificate lookup.</param>
+    /// <returns>The certificate thumbprint, or null when mTLS is not required.</returns>
+    /// <remarks>
+    /// This is the enforcement point for session start; the same checks are
+    /// repeated after registration to close the revoke/register race.
+    /// </remarks>
+    /// <exception cref="RpcException">
+    /// The certificate is missing, names another agent, or was revoked or expired.
+    /// </exception>
+    internal async Task<string?> ValidateCertificateAsync(
+        X509Certificate2? certificate,
         Guid agentId,
         CancellationToken cancellationToken)
     {
@@ -208,7 +306,6 @@ public sealed class AgentControlService(
             return null;
         }
 
-        var certificate = AgentCertificateIdentity.GetCertificate(context);
         if (certificate is null)
         {
             if (!options.GrpcTls.RequireClientCertificate)

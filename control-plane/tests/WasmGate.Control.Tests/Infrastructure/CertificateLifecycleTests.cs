@@ -1,4 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
@@ -38,7 +41,11 @@ public sealed class CertificateLifecycleTests
             new TestEnrollmentTokenRepository(),
             new TestCertificateAuthority());
 
-        await provisioning.RenewAsync(agent.Id, "csr", CancellationToken.None);
+        await provisioning.RenewAsync(
+            agent.Id,
+            "csr",
+            oldCertificate.Thumbprint,
+            CancellationToken.None);
 
         Assert.True(session.Closed);
         Assert.False(await certificates.IsActiveAsync(
@@ -104,6 +111,118 @@ public sealed class CertificateLifecycleTests
         Assert.Contains(audit.Events, auditEvent => auditEvent.Action == "agent.enroll");
     }
 
+    [Fact]
+    public async Task RevokedCallerCannotRenew()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agent = NewAgent("revoked-caller-agent");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        var oldCertificate = NewCertificate(agent.Id, "old", 'c');
+        await certificates.AddAsync(oldCertificate, CancellationToken.None);
+        Assert.True(await certificates.RevokeAsync(
+            agent.Id,
+            oldCertificate.SerialNumber,
+            CancellationToken.None));
+
+        var provisioning = NewProvisioning(
+            agents,
+            certificates,
+            new TestSessionRegistry(new TestSession(agent.Id)),
+            new TestAuditLog(),
+            new TestEnrollmentTokenRepository(),
+            new TestCertificateAuthority());
+
+        await Assert.ThrowsAsync<EnrollmentException>(() => provisioning.RenewAsync(
+            agent.Id,
+            "csr",
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+        Assert.Empty(await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ConcurrentRenewalsHaveExactlyOneWinner()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agent = NewAgent("concurrent-renew-agent");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        var oldCertificate = NewCertificate(agent.Id, "old", 'd');
+        await certificates.AddAsync(oldCertificate, CancellationToken.None);
+
+        var provisioning = NewProvisioning(
+            agents,
+            certificates,
+            new TestSessionRegistry(new TestSession(agent.Id)),
+            new TestAuditLog(),
+            new TestEnrollmentTokenRepository(),
+            new TestCertificateAuthority());
+
+        async Task<Exception?> RenewAsync()
+        {
+            try
+            {
+                await provisioning.RenewAsync(
+                    agent.Id,
+                    "csr",
+                    oldCertificate.Thumbprint,
+                    CancellationToken.None);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(RenewAsync(), RenewAsync());
+
+        Assert.Single(outcomes, outcome => outcome is null);
+        Assert.IsType<EnrollmentException>(outcomes.Single(outcome => outcome is not null));
+        var active = await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None);
+        Assert.Single(active);
+        Assert.True(await certificates.IsActiveAsync(
+            agent.Id,
+            active[0].Thumbprint,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AuditFailureDoesNotFailRenewal()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agent = NewAgent("audit-failure-agent");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        var oldCertificate = NewCertificate(agent.Id, "old", 'e');
+        await certificates.AddAsync(oldCertificate, CancellationToken.None);
+
+        var provisioning = NewProvisioning(
+            agents,
+            certificates,
+            new TestSessionRegistry(new TestSession(agent.Id)),
+            new TestAuditLog { ThrowOnAction = "agent.renew" },
+            new TestEnrollmentTokenRepository(),
+            new TestCertificateAuthority());
+
+        var result = await provisioning.RenewAsync(
+            agent.Id,
+            "csr",
+            oldCertificate.Thumbprint,
+            CancellationToken.None);
+
+        Assert.NotEmpty(result.CertificatePem);
+        Assert.False(await certificates.IsActiveAsync(
+            agent.Id,
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+        Assert.Single(await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
+    }
+
     private static AgentProvisioningService NewProvisioning(
         IAgentRepository agents,
         IAgentCertificateRepository certificates,
@@ -119,6 +238,7 @@ public sealed class CertificateLifecycleTests
         authority,
         sessions,
         audit,
+        NullLogger<AgentProvisioningService>.Instance,
         new ControlPlaneOptions
         {
             AgentCertificateLifetime = TimeSpan.FromDays(30),
@@ -158,10 +278,12 @@ public sealed class CertificateLifecycleTests
             CancellationToken cancellationToken)
         {
             var serial = $"serial-{Interlocked.Increment(ref _serial)}";
+            var thumbprint = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(serial)));
             return Task.FromResult(new IssuedCertificate(
                 $"pem-{serial}",
                 serial,
-                new string('f', 64),
+                thumbprint,
                 DateTimeOffset.UtcNow.AddMinutes(-1),
                 notAfter));
         }
@@ -248,8 +370,15 @@ public sealed class CertificateLifecycleTests
     {
         public List<AuditEvent> Events { get; } = [];
 
+        public string? ThrowOnAction { get; init; }
+
         public Task AppendAsync(AuditEvent auditEvent, CancellationToken cancellationToken)
         {
+            if (auditEvent.Action == ThrowOnAction)
+            {
+                throw new InvalidOperationException("audit unavailable");
+            }
+
             Events.Add(auditEvent);
             return Task.CompletedTask;
         }

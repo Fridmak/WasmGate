@@ -229,12 +229,14 @@ public sealed class SqliteStorageTests
             NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
             NotAfter = DateTimeOffset.UtcNow.AddHours(2),
         };
-        var retired = await repository.AddAndRevokeActiveAsync(
+        var rotation = await repository.RotateAsync(
             replacement,
+            callerThumbprint: null,
             CancellationToken.None);
 
-        Assert.Single(retired);
-        Assert.Equal("old", retired[0].SerialNumber);
+        Assert.True(rotation.CallerActive);
+        Assert.Single(rotation.Retired);
+        Assert.Equal("old", rotation.Retired[0].SerialNumber);
         Assert.False(await repository.IsActiveAsync(
             agent.Id,
             oldCertificate.Thumbprint,
@@ -248,6 +250,134 @@ public sealed class SqliteStorageTests
             (await repository.ListActiveByAgentAsync(agent.Id, CancellationToken.None))
                 .Select(certificate => certificate.SerialNumber)
                 .ToArray());
+    }
+
+    [Fact]
+    public async Task CertificateRotationKeepsRevokedRowAndRejectsInactiveCaller()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var agent = NewAgent("rotation-retention-agent", "prod");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+
+        var repository = new SqliteAgentCertificateRepository(db.Connections);
+        var oldCertificate = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "old",
+            Thumbprint = new string('d', 64),
+            Pem = "old-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        };
+        await repository.AddAsync(oldCertificate, CancellationToken.None);
+
+        var replacement = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "new",
+            Thumbprint = new string('e', 64),
+            Pem = "new-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(2),
+        };
+        var rotation = await repository.RotateAsync(
+            replacement,
+            oldCertificate.Thumbprint,
+            CancellationToken.None);
+
+        Assert.True(rotation.CallerActive);
+        Assert.Single(rotation.Retired);
+        Assert.NotNull(rotation.Retired[0].RevokedAt);
+        Assert.NotNull(await ReadRevokedAtAsync(db, agent.Id, oldCertificate.SerialNumber));
+
+        await repository.RevokeAsync(agent.Id, replacement.SerialNumber, CancellationToken.None);
+        var rejected = await repository.RotateAsync(
+            new AgentCertificate
+            {
+                AgentId = agent.Id,
+                SerialNumber = "third",
+                Thumbprint = new string('f', 64),
+                Pem = "third-pem",
+                NotBefore = DateTimeOffset.UtcNow,
+                NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+            },
+            replacement.Thumbprint,
+            CancellationToken.None);
+
+        Assert.False(rejected.CallerActive);
+        Assert.Empty(rejected.Retired);
+        Assert.False(await repository.IsActiveAsync(
+            agent.Id,
+            new string('f', 64),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CertificateRotationRollsBackWhenInsertFails()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var agent = NewAgent("rotation-rollback-agent", "prod");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+
+        var repository = new SqliteAgentCertificateRepository(db.Connections);
+        var oldCertificate = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "old",
+            Thumbprint = new string('a', 64),
+            Pem = "old-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        };
+        var conflictingCertificate = new AgentCertificate
+        {
+            AgentId = agent.Id,
+            SerialNumber = "new",
+            Thumbprint = new string('b', 64),
+            Pem = "conflict-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        };
+        await repository.AddAsync(oldCertificate, CancellationToken.None);
+        await repository.AddAsync(conflictingCertificate, CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => repository.RotateAsync(
+            new AgentCertificate
+            {
+                AgentId = agent.Id,
+                SerialNumber = "new",
+                Thumbprint = new string('c', 64),
+                Pem = "new-pem",
+                NotBefore = DateTimeOffset.UtcNow,
+                NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+            },
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+
+        Assert.True(await repository.IsActiveAsync(
+            agent.Id,
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+    }
+
+    private static async Task<long?> ReadRevokedAtAsync(
+        SqliteTestDatabase db,
+        Guid agentId,
+        string serialNumber)
+    {
+        await using var connection = await db.Connections.OpenAsync(CancellationToken.None);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT revoked_at
+            FROM agent_certificates
+            WHERE agent_id = $agentId AND serial_number = $serialNumber
+            """;
+        command.Parameters.AddWithValue("$agentId", agentId);
+        command.Parameters.AddWithValue("$serialNumber", serialNumber);
+        var value = await command.ExecuteScalarAsync();
+        return value is null or DBNull ? null : Convert.ToInt64(value);
     }
 
     [Fact]

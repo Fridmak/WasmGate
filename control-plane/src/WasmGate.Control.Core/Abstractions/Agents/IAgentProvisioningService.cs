@@ -132,19 +132,26 @@ public interface IAgentProvisioningService
     /// <summary>Renews the client certificate of an already authenticated agent.</summary>
     /// <param name="agentId">Agent identifier taken from the client certificate.</param>
     /// <param name="csrPem">PEM certificate signing request with a new key.</param>
+    /// <param name="callerThumbprint">
+    /// Fingerprint of the certificate that authenticated this renewal. The
+    /// rotation transaction re-checks it, so a concurrent revoke cannot be
+    /// overtaken by a renewal that already passed its initial check.
+    /// </param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>The new certificate, the agent CA and its expiry.</returns>
     /// <remarks>
     /// Authorisation comes from the existing mTLS identity, not from a token: the
     /// gRPC layer verifies that the certificate CN names the requested agent.
-    /// The expired certificate is replaced, so renewal must happen before it
-    /// expires; a data plane does this automatically.
+    /// The old certificate is revoked immediately; a lost response therefore
+    /// requires an operator-issued enrollment token.
     /// </remarks>
     /// <exception cref="EnrollmentException">
-    /// The agent is unknown or the CSR is invalid.
+    /// The agent is unknown, the caller certificate is no longer active, or the
+    /// CSR is invalid.
     /// </exception>
     Task<EnrollmentResult> RenewAsync(
         Guid agentId,
         string csrPem,
+        string callerThumbprint,
         CancellationToken cancellationToken);
 }

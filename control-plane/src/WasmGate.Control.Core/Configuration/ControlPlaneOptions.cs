@@ -115,6 +115,15 @@ public sealed class ControlPlaneOptions
     /// </remarks>
     public TimeSpan AgentCertificateLifetime { get; init; } = TimeSpan.FromDays(30);
 
+    /// <summary>How often a live control session re-checks its certificate.</summary>
+    /// <remarks>
+    /// This is a backstop for a revoke that could not close the session through
+    /// the registry. A revoked agent that stops sending heartbeats is still
+    /// disconnected within this interval. Non-positive values fall back to one
+    /// minute.
+    /// </remarks>
+    public TimeSpan CertificateRecheckInterval { get; init; } = TimeSpan.FromSeconds(60);
+
     /// <summary>
     /// Bearer token required by the admin API when it listens on a non-loopback
     /// address.

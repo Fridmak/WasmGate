@@ -188,6 +188,7 @@ internal static class AgentEndpoints
     /// <param name="certificates">Certificate repository.</param>
     /// <param name="sessions">Live agent session registry.</param>
     /// <param name="audit">Audit log.</param>
+    /// <param name="logger">Logger for post-commit cleanup failures.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>204 on success; 404 when the certificate is unknown or already revoked.</returns>
     private static async Task<IResult> RevokeCertificate(
@@ -196,8 +197,13 @@ internal static class AgentEndpoints
         IAgentCertificateRepository certificates,
         IAgentSessionRegistry sessions,
         IAuditLog audit,
+        ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
+        // The database update must happen before the registry lookup. Together
+        // with the post-register check in AgentControlService, this guarantees
+        // that a concurrent session either sees the revoked certificate or is
+        // found in the registry and closed.
         if (!await certificates.RevokeAsync(id, serial, cancellationToken))
         {
             return Results.NotFound();
@@ -205,17 +211,39 @@ internal static class AgentEndpoints
 
         if (sessions.TryGet(id, out var session))
         {
-            await session.CloseAsync(CancellationToken.None);
+            try
+            {
+                await session.CloseAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "failed to close session after certificate revocation: agent={AgentId} serial={Serial}",
+                    id,
+                    serial);
+            }
         }
 
-        await audit.AppendAsync(
-            new AuditEvent
-            {
-                Actor = "admin-api",
-                Action = "certificate.revoke",
-                Target = $"{id:D}/{serial}",
-            },
-            cancellationToken);
+        try
+        {
+            await audit.AppendAsync(
+                new AuditEvent
+                {
+                    Actor = "admin-api",
+                    Action = "certificate.revoke",
+                    Target = $"{id:D}/{serial}",
+                },
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to append audit event after certificate revocation: agent={AgentId} serial={Serial}",
+                id,
+                serial);
+        }
 
         return Results.NoContent();
     }

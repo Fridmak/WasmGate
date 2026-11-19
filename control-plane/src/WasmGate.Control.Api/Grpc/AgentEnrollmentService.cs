@@ -118,6 +118,7 @@ public sealed class AgentEnrollmentService(
             var result = await provisioning.RenewAsync(
                 requestedAgentId,
                 request.CsrPem.ToStringUtf8(),
+                thumbprint,
                 context.CancellationToken);
 
             logger.LogInformation(
