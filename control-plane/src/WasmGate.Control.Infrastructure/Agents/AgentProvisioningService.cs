@@ -211,13 +211,10 @@ public sealed class AgentProvisioningService(
         await using var environmentLock = await environmentLocks.AcquireAsync(
             lockEnvironment,
             cancellationToken);
-        var agentLock = await agentOperations.AcquireAsync(
-            agentGuid,
-            cancellationToken);
-        var agentLockReleased = false;
-        try
+        EnrollmentResult result;
+        IAgentSession? sessionToClose;
+        await using (await agentOperations.AcquireAsync(agentGuid, cancellationToken))
         {
-
             record = await tokens.FindByHashAsync(tokenHash, cancellationToken);
             if (record is null)
             {
@@ -359,7 +356,7 @@ public sealed class AgentProvisioningService(
                 notAfter,
                 cancellationToken);
 
-            var sessionToClose = await RotateCertificateAsync(
+            sessionToClose = await RotateCertificateAsync(
                 new AgentCertificate
                 {
                     AgentId = agentGuid,
@@ -386,22 +383,17 @@ public sealed class AgentProvisioningService(
                 agentGuid.ToString("D"),
                 CancellationToken.None);
 
-            await agentLock.DisposeAsync();
-            agentLockReleased = true;
-            if (sessionToClose is not null)
-            {
-                await TryCloseSessionAsync(sessionToClose, agentGuid);
-            }
+            result = new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
+        }
 
-            return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
-        }
-        finally
+        // Close outside the agent lock: CloseAsync only cancels the transport
+        // and may wait for the session handler to finish.
+        if (sessionToClose is not null)
         {
-            if (!agentLockReleased)
-            {
-                await agentLock.DisposeAsync();
-            }
+            await TryCloseSessionAsync(sessionToClose, agentGuid);
         }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -474,7 +466,7 @@ public sealed class AgentProvisioningService(
         string actor,
         CancellationToken cancellationToken)
     {
-        IAgentSession? session;
+        IAgentSession? session = null;
         await using (await agentOperations.AcquireAsync(agentId, cancellationToken))
         {
             if (!await agents.DeleteAsync(agentId, cancellationToken))
@@ -482,9 +474,13 @@ public sealed class AgentProvisioningService(
                 throw new KeyNotFoundException($"Agent '{agentId:D}' is not registered.");
             }
 
-            // Close the session after the row is gone: the session loop's
-            // cleanup must not be able to re-insert an Offline row.
-            sessions.TryGet(agentId, out session);
+            // Remove the session under the lock before closing it. The row is
+            // already gone, and the session loop's cleanup checks for that.
+            if (sessions.TryGet(agentId, out var currentSession))
+            {
+                sessions.Unregister(agentId, currentSession);
+                session = currentSession;
+            }
         }
 
         if (session is not null)
@@ -510,6 +506,19 @@ public sealed class AgentProvisioningService(
                 throw new EnrollmentException(
                     EnrollmentFailure.InvalidRequest,
                     "Agent is not registered.");
+            }
+
+            // Cheap caller check before any CA work. The transactional check in
+            // RotateAsync remains as the second barrier, but a revoked caller
+            // must not be able to occupy the agent lock and trigger signing.
+            if (!await certificates.IsActiveAsync(
+                    agentId,
+                    callerThumbprint,
+                    cancellationToken))
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.InvalidToken,
+                    "The client certificate was revoked or has expired.");
             }
 
             var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
@@ -655,6 +664,11 @@ public sealed class AgentProvisioningService(
     /// The caller certificate was revoked or expired before the rotation
     /// transaction committed.
     /// </exception>
+    /// <remarks>
+    /// The caller must hold the per-agent lifecycle lock. The returned session
+    /// has already been removed from the registry and must be closed after the
+    /// lock is released.
+    /// </remarks>
     private async Task<IAgentSession?> RotateCertificateAsync(
         AgentCertificate certificate,
         string? callerThumbprint,
@@ -671,12 +685,15 @@ public sealed class AgentProvisioningService(
                 "The client certificate was revoked or has expired.");
         }
 
-        // The rotation is committed. The caller closes this session after the
-        // agent lifecycle lock is released; audit remains best-effort.
+        // The rotation is committed. Remove the session under the agent lock so
+        // a command cannot reach a session whose certificate was just revoked,
+        // even if CloseAsync later fails. Audit remains best-effort.
         IAgentSession? sessionToClose = null;
-        if (rotation.Retired.Count > 0)
+        if (rotation.Retired.Count > 0 &&
+            sessions.TryGet(certificate.AgentId, out var registeredSession))
         {
-            sessions.TryGet(certificate.AgentId, out sessionToClose);
+            sessions.Unregister(certificate.AgentId, registeredSession);
+            sessionToClose = registeredSession;
         }
 
         if (rotation.Retired.Count > 0)

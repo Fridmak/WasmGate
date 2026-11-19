@@ -20,9 +20,8 @@ namespace WasmGate.Control.Api.Grpc;
 ///   <item>read the first message and require a <c>Hello</c>;</item>
 ///   <item>validate the agent ID with <see cref="TryParseHello"/>;</item>
 ///   <item>when TLS with client certificates is enabled, compare the certificate identity with the Hello using <c>AgentCertificateIdentity.TryGetAgentId</c>;</item>
-///   <item>persist the Hello fields with <see cref="PersistHelloAsync"/>;</item>
-///   <item>create a <see cref="GrpcAgentSession"/> and register it;</item>
-///   <item>close the displaced session returned by the registry (takeover);</item>
+///   <item>take the per-agent lifecycle lock, then persist the Hello fields with <see cref="PersistHelloAsync"/> and register a <see cref="GrpcAgentSession"/>;</item>
+///   <item>close the displaced session returned by the registry (takeover) after releasing the lock;</item>
 ///   <item>read Heartbeat/ApplyResult/Health until the stream ends and update state via <see cref="TouchAgentAsync"/> and <see cref="UpdateDeploymentAsync"/>;</item>
 ///   <item>unregister the session and mark the agent offline in <c>finally</c>.</item>
 /// </list>
@@ -38,7 +37,7 @@ public sealed class AgentControlService(
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
     private readonly CertificateSessionMonitor _sessionMonitor =
-        new(certificates, agentOperations, options, logger);
+        new(certificates, registry, agentOperations, options, logger);
 
     /// <summary>
     /// Runs one agent control session until the stream ends.
@@ -91,12 +90,6 @@ public sealed class AgentControlService(
             await PersistHelloAsync(hello!, agentId, callCancellation);
             displaced = registry.Register(agentId, session);
 
-            logger.LogInformation(
-                "agent session registered: agent={AgentId} version={AgentVersion} takeover={Takeover}",
-                agentId,
-                hello!.Version,
-                displaced is not null);
-
             // Keep the thumbprint for the monitor after the lifecycle lock is
             // released. The local is copied into the monitor scope below.
             sessionCertificateThumbprint = certificateThumbprint;
@@ -105,6 +98,21 @@ public sealed class AgentControlService(
         {
             await session.CloseAsync(CancellationToken.None);
             throw;
+        }
+
+        // Logging is outside the registration critical section: a failing log
+        // sink must not leave a registered session behind.
+        try
+        {
+            logger.LogInformation(
+                "agent session registered: agent={AgentId} version={AgentVersion} takeover={Takeover}",
+                agentId,
+                hello!.Version,
+                displaced is not null);
+        }
+        catch (Exception)
+        {
+            // Logging is best-effort and must not break a live session.
         }
 
         using var monitorCancellation =
@@ -160,9 +168,11 @@ public sealed class AgentControlService(
             await using (await agentOperations.AcquireAsync(agentId, CancellationToken.None))
             {
                 registry.Unregister(agentId, session);
+                // Keep the offline update under the lock so it cannot overwrite
+                // a status written by a concurrent new session.
+                await MarkOfflineAsync(agentId);
             }
             await session.CloseAsync(CancellationToken.None);
-            await MarkOfflineAsync(agentId);
             logger.LogInformation("agent session closed: agent={AgentId}", agentId);
         }
     }
@@ -251,8 +261,10 @@ public sealed class AgentControlService(
     /// <param name="cancellationToken">Cancels the certificate lookup.</param>
     /// <returns>The certificate thumbprint, or null when mTLS is not required.</returns>
     /// <remarks>
-    /// This is the enforcement point for session start; the same checks are
-    /// repeated after registration to close the revoke/register race.
+    /// This is the enforcement point for session start. Revoke, rotation,
+    /// deletion and the certificate monitor remove a live session under the
+    /// same per-agent lock, so a registration cannot outlive a committed
+    /// revocation.
     /// </remarks>
     /// <exception cref="RpcException">
     /// The certificate is missing, names another agent, or was revoked or expired.

@@ -16,6 +16,7 @@ namespace WasmGate.Control.Api.Grpc;
 /// </remarks>
 internal sealed class CertificateSessionMonitor(
     IAgentCertificateRepository certificates,
+    IAgentSessionRegistry registry,
     IAgentOperationLock agentOperations,
     ControlPlaneOptions options,
     ILogger logger)
@@ -45,13 +46,23 @@ internal sealed class CertificateSessionMonitor(
                 bool active;
                 try
                 {
-                    await using var agentLease = await agentOperations.AcquireAsync(
+                    await using (var agentLease = await agentOperations.AcquireAsync(
                         agentId,
-                        cancellationToken);
-                    active = await certificates.IsActiveAsync(
+                        cancellationToken))
+                    {
+                        active = await certificates.IsActiveAsync(
                             agentId,
                             thumbprint,
                             cancellationToken);
+                        if (!active)
+                        {
+                            // Remove the session while the same lock that
+                            // serializes Session, Revoke, Renew and Delete is
+                            // held. Closing the transport is best-effort and
+                            // happens outside the lock.
+                            registry.Unregister(agentId, session);
+                        }
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -63,7 +74,7 @@ internal sealed class CertificateSessionMonitor(
                         ex,
                         "certificate re-check failed; closing session: agent={AgentId}",
                         agentId);
-                    await CloseAsync(session, agentId);
+                    await DetachAndCloseAsync(agentId, session);
                     return;
                 }
 
@@ -90,8 +101,33 @@ internal sealed class CertificateSessionMonitor(
                 ex,
                 "certificate monitor failed; closing session: agent={AgentId}",
                 agentId);
-            await CloseAsync(session, agentId);
+            await DetachAndCloseAsync(agentId, session);
         }
+    }
+
+    /// <summary>Removes the session under the agent lock, then closes its transport.</summary>
+    /// <param name="agentId">Agent identifier.</param>
+    /// <param name="session">Session to remove and close.</param>
+    private async Task DetachAndCloseAsync(Guid agentId, IAgentSession session)
+    {
+        try
+        {
+            await using (await agentOperations.AcquireAsync(
+                agentId,
+                CancellationToken.None))
+            {
+                registry.Unregister(agentId, session);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to remove session after certificate re-check: agent={AgentId}",
+                agentId);
+        }
+
+        await CloseAsync(session, agentId);
     }
 
     /// <summary>Closes the session without letting a transport error escape the monitor.</summary>

@@ -192,7 +192,7 @@ internal static class AgentEndpoints
     /// <param name="logger">Logger for post-commit cleanup failures.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
     /// <returns>204 on success; 404 when the certificate is unknown or already revoked.</returns>
-    private static async Task<IResult> RevokeCertificate(
+    internal static async Task<IResult> RevokeCertificate(
         Guid id,
         string serial,
         IAgentCertificateRepository certificates,
@@ -202,7 +202,7 @@ internal static class AgentEndpoints
         ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
-        IAgentSession? session;
+        IAgentSession? session = null;
         await using (await agentOperations.AcquireAsync(id, cancellationToken))
         {
             if (!await certificates.RevokeAsync(id, serial, cancellationToken))
@@ -210,7 +210,14 @@ internal static class AgentEndpoints
                 return Results.NotFound();
             }
 
-            sessions.TryGet(id, out session);
+            // Remove the session under the same lock that serializes Session,
+            // Renew and Delete. A command must not reach a session whose
+            // certificate is already revoked, even when CloseAsync fails.
+            if (sessions.TryGet(id, out var currentSession))
+            {
+                sessions.Unregister(id, currentSession);
+                session = currentSession;
+            }
         }
 
         if (session is not null)

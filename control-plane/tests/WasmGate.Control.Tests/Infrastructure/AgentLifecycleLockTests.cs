@@ -8,6 +8,8 @@ namespace WasmGate.Control.Tests.Infrastructure;
 /// <summary>Tests the production registry and per-agent lifecycle lock.</summary>
 public sealed class AgentLifecycleLockTests
 {
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
+
     [Fact]
     public void UnregisterDoesNotRemoveANewerSession()
     {
@@ -31,40 +33,141 @@ public sealed class AgentLifecycleLockTests
         var agentId = Guid.NewGuid();
         var entered = 0;
         var maximum = 0;
+        var firstEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var firstMayLeave = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var secondEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async Task RunAsync(bool first)
+        async Task RunFirstAsync()
         {
             await using var lease = await lifecycle.AcquireAsync(
                 agentId,
                 CancellationToken.None);
-            var now = Interlocked.Increment(ref entered);
-            InterlockedMax(ref maximum, now);
-            if (first)
-            {
-                await firstMayLeave.Task;
-            }
-            else
-            {
-                secondEntered.TrySetResult();
-            }
-
+            InterlockedMax(ref maximum, Interlocked.Increment(ref entered));
+            firstEntered.TrySetResult();
+            await firstMayLeave.Task;
             Interlocked.Decrement(ref entered);
         }
 
-        var firstTask = RunAsync(first: true);
-        await Task.Delay(20);
-        var secondTask = RunAsync(first: false);
-        await Task.Delay(50);
+        async Task RunSecondAsync()
+        {
+            secondStarted.TrySetResult();
+            await using var lease = await lifecycle.AcquireAsync(
+                agentId,
+                CancellationToken.None);
+            InterlockedMax(ref maximum, Interlocked.Increment(ref entered));
+            secondEntered.TrySetResult();
+            Interlocked.Decrement(ref entered);
+        }
+
+        var firstTask = RunFirstAsync();
+        await firstEntered.Task.WaitAsync(Timeout);
+        var secondTask = RunSecondAsync();
+        await secondStarted.Task.WaitAsync(Timeout);
         Assert.False(secondEntered.Task.IsCompleted);
 
         firstMayLeave.TrySetResult();
         await Task.WhenAll(firstTask, secondTask);
         Assert.Equal(1, maximum);
         Assert.True(secondEntered.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task EntryIsRemovedAfterTheLastLeaseIsReleased()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+
+        var lease = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+        Assert.Equal(1, lifecycle.EntryCount);
+
+        await lease.DisposeAsync();
+        Assert.Equal(0, lifecycle.EntryCount);
+    }
+
+    [Fact]
+    public async Task EntryStaysWhileAWaiterIsQueued()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+        var first = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+        var secondTask = lifecycle.AcquireAsync(agentId, CancellationToken.None);
+
+        Assert.Equal(1, lifecycle.EntryCount);
+        await first.DisposeAsync();
+
+        var second = await secondTask.WaitAsync(Timeout);
+        Assert.Equal(1, lifecycle.EntryCount);
+        await second.DisposeAsync();
+        Assert.Equal(0, lifecycle.EntryCount);
+    }
+
+    [Fact]
+    public async Task CanceledWaiterDoesNotLeaveAnEntry()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+        var first = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        var secondTask = lifecycle.AcquireAsync(agentId, cancellation.Token);
+
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => secondTask);
+        Assert.Equal(1, lifecycle.EntryCount);
+
+        await first.DisposeAsync();
+        Assert.Equal(0, lifecycle.EntryCount);
+    }
+
+    [Fact]
+    public async Task CanceledSoleWaiterRemovesItsEntry()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => lifecycle.AcquireAsync(agentId, cancellation.Token));
+        Assert.Equal(0, lifecycle.EntryCount);
+    }
+
+    [Fact]
+    public async Task DoubleDisposeReleasesTheLockOnce()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+        var lease = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+
+        await lease.DisposeAsync();
+        await lease.DisposeAsync();
+
+        Assert.Equal(0, lifecycle.EntryCount);
+        await using var next = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+        Assert.Equal(1, lifecycle.EntryCount);
+    }
+
+    [Fact]
+    public async Task ExceptionInsideLeaseReleasesTheLock()
+    {
+        var lifecycle = new AgentOperationLock();
+        var agentId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await using var lease = await lifecycle.AcquireAsync(
+                agentId,
+                CancellationToken.None);
+            throw new InvalidOperationException("operation failed");
+        });
+
+        Assert.Equal(0, lifecycle.EntryCount);
+        await using var next = await lifecycle.AcquireAsync(agentId, CancellationToken.None);
+        Assert.Equal(1, lifecycle.EntryCount);
     }
 
     [Fact]
@@ -87,7 +190,7 @@ public sealed class AgentLifecycleLockTests
                 bothEntered.TrySetResult();
             }
 
-            await bothEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await bothEntered.Task.WaitAsync(Timeout);
         }
 
         await Task.WhenAll(RunAsync(Guid.NewGuid()), RunAsync(Guid.NewGuid()));

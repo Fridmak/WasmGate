@@ -30,6 +30,11 @@ public interface IAgentSessionRegistry
     /// <summary>Removes a session that ended.</summary>
     /// <param name="agentId">Agent identifier.</param>
     /// <param name="session">Session being removed; ignored when it was already replaced.</param>
+    /// <remarks>
+    /// A close path that removes a live session because its certificate was
+    /// revoked, rotated or deleted must call this under the per-agent lifecycle
+    /// lock before closing the transport.
+    /// </remarks>
     void Unregister(Guid agentId, IAgentSession session);
 
     /// <summary>Looks up the session of an agent.</summary>

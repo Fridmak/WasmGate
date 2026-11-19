@@ -49,7 +49,9 @@ public sealed class CertificateRevocationEndpointTests
             NotAfter = DateTimeOffset.UtcNow.AddHours(1),
         }, CancellationToken.None);
 
-        var session = new TestSession(agentId);
+        var session = new TestSession(
+            agentId,
+            () => sessions.TryGet(agentId, out _));
         Assert.Null(sessions.Register(agentId, session));
 
         var path = $"/api/v1/agents/{agentId:D}/certificates/{serial}/revoke";
@@ -57,6 +59,8 @@ public sealed class CertificateRevocationEndpointTests
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         Assert.True(session.Closed);
+        Assert.False(session.RegisteredOnClose);
+        Assert.False(sessions.TryGet(agentId, out _));
         Assert.False(await certificates.IsActiveAsync(
             agentId,
             new string('a', 64),
@@ -79,11 +83,13 @@ public sealed class CertificateRevocationEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
     }
 
-    private sealed class TestSession(Guid agentId) : IAgentSession
+    private sealed class TestSession(Guid agentId, Func<bool>? isRegistered = null) : IAgentSession
     {
         public Guid AgentId { get; } = agentId;
 
         public bool Closed { get; private set; }
+
+        public bool RegisteredOnClose { get; private set; }
 
         public ValueTask SendAsync(
             WasmGate.Control.Core.Entities.Delivery.AgentCommand command,
@@ -91,6 +97,7 @@ public sealed class CertificateRevocationEndpointTests
 
         public ValueTask CloseAsync(CancellationToken cancellationToken)
         {
+            RegisteredOnClose = isRegistered?.Invoke() ?? false;
             Closed = true;
             return ValueTask.CompletedTask;
         }

@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,8 +29,11 @@ public sealed class CertificateLifecycleTests
         var oldCertificate = NewCertificate(agent.Id, "old", 'a');
         await certificates.AddAsync(oldCertificate, CancellationToken.None);
 
-        var session = new TestSession(agent.Id);
-        var sessions = new TestSessionRegistry(session);
+        var sessions = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(
+            agent.Id,
+            () => sessions.TryGet(agent.Id, out _));
+        sessions.Register(agent.Id, session);
         var audit = new TestAuditLog();
         var provisioning = NewProvisioning(
             agents,
@@ -48,6 +50,8 @@ public sealed class CertificateLifecycleTests
             CancellationToken.None);
 
         Assert.True(session.Closed);
+        Assert.False(session.RegisteredOnClose);
+        Assert.False(sessions.TryGet(agent.Id, out _));
         Assert.False(await certificates.IsActiveAsync(
             agent.Id,
             oldCertificate.Thumbprint,
@@ -71,8 +75,11 @@ public sealed class CertificateLifecycleTests
         var oldCertificate = NewCertificate(agent.Id, "old", 'b');
         await certificates.AddAsync(oldCertificate, CancellationToken.None);
 
-        var session = new TestSession(agent.Id);
-        var sessions = new TestSessionRegistry(session);
+        var sessions = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(
+            agent.Id,
+            () => sessions.TryGet(agent.Id, out _));
+        sessions.Register(agent.Id, session);
         var audit = new TestAuditLog();
         var tokens = new TestEnrollmentTokenRepository
         {
@@ -101,6 +108,8 @@ public sealed class CertificateLifecycleTests
             CancellationToken.None);
 
         Assert.True(session.Closed);
+        Assert.False(session.RegisteredOnClose);
+        Assert.False(sessions.TryGet(agent.Id, out _));
         Assert.False(await certificates.IsActiveAsync(
             agent.Id,
             oldCertificate.Thumbprint,
@@ -126,19 +135,30 @@ public sealed class CertificateLifecycleTests
             oldCertificate.SerialNumber,
             CancellationToken.None));
 
+        var session = new TestSession(agent.Id);
+        var sessions = new InMemoryAgentSessionRegistry();
+        sessions.Register(agent.Id, session);
+        var authority = new TestCertificateAuthority();
         var provisioning = NewProvisioning(
             agents,
             certificates,
-            new TestSessionRegistry(new TestSession(agent.Id)),
+            sessions,
             new TestAuditLog(),
             new TestEnrollmentTokenRepository(),
-            new TestCertificateAuthority());
+            authority);
 
         await Assert.ThrowsAsync<EnrollmentException>(() => provisioning.RenewAsync(
             agent.Id,
             "csr",
             oldCertificate.Thumbprint,
             CancellationToken.None));
+
+        // The caller check runs before signing and before the session is
+        // touched, so a revoked caller cannot burn CA work or keep the lock.
+        Assert.Equal(0, authority.IssueCalls);
+        Assert.True(sessions.TryGet(agent.Id, out var current));
+        Assert.Same(session, current);
+        Assert.False(session.Closed);
         Assert.Empty(await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
     }
 
@@ -153,10 +173,12 @@ public sealed class CertificateLifecycleTests
         var oldCertificate = NewCertificate(agent.Id, "old", 'd');
         await certificates.AddAsync(oldCertificate, CancellationToken.None);
 
+        var sessions = new InMemoryAgentSessionRegistry();
+        sessions.Register(agent.Id, new TestSession(agent.Id));
         var provisioning = NewProvisioning(
             agents,
             certificates,
-            new TestSessionRegistry(new TestSession(agent.Id)),
+            sessions,
             new TestAuditLog(),
             new TestEnrollmentTokenRepository(),
             new TestCertificateAuthority());
@@ -182,6 +204,7 @@ public sealed class CertificateLifecycleTests
 
         Assert.Single(outcomes, outcome => outcome is null);
         Assert.IsType<EnrollmentException>(outcomes.Single(outcome => outcome is not null));
+        Assert.False(sessions.TryGet(agent.Id, out _));
         var active = await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None);
         Assert.Single(active);
         Assert.True(await certificates.IsActiveAsync(
@@ -201,10 +224,12 @@ public sealed class CertificateLifecycleTests
         var oldCertificate = NewCertificate(agent.Id, "old", 'e');
         await certificates.AddAsync(oldCertificate, CancellationToken.None);
 
+        var sessions = new InMemoryAgentSessionRegistry();
+        sessions.Register(agent.Id, new TestSession(agent.Id));
         var provisioning = NewProvisioning(
             agents,
             certificates,
-            new TestSessionRegistry(new TestSession(agent.Id)),
+            sessions,
             new TestAuditLog { ThrowOnAction = "agent.renew" },
             new TestEnrollmentTokenRepository(),
             new TestCertificateAuthority());
@@ -216,11 +241,41 @@ public sealed class CertificateLifecycleTests
             CancellationToken.None);
 
         Assert.NotEmpty(result.CertificatePem);
+        Assert.False(sessions.TryGet(agent.Id, out _));
         Assert.False(await certificates.IsActiveAsync(
             agent.Id,
             oldCertificate.Thumbprint,
             CancellationToken.None));
         Assert.Single(await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task DeleteAgentClosesAndUnregistersSession()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agent = NewAgent("delete-agent");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        var sessions = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(
+            agent.Id,
+            () => sessions.TryGet(agent.Id, out _));
+        sessions.Register(agent.Id, session);
+        var provisioning = NewProvisioning(
+            agents,
+            certificates,
+            sessions,
+            new TestAuditLog(),
+            new TestEnrollmentTokenRepository(),
+            new TestCertificateAuthority());
+
+        await provisioning.DeleteAgentAsync(agent.Id, "admin", CancellationToken.None);
+
+        Assert.True(session.Closed);
+        Assert.False(session.RegisteredOnClose);
+        Assert.False(sessions.TryGet(agent.Id, out _));
+        Assert.Null(await agents.FindAsync(agent.Id, CancellationToken.None));
     }
 
     private static AgentProvisioningService NewProvisioning(
@@ -268,6 +323,9 @@ public sealed class CertificateLifecycleTests
     private sealed class TestCertificateAuthority : ICertificateAuthority
     {
         private int _serial;
+        private int _issueCalls;
+
+        public int IssueCalls => Volatile.Read(ref _issueCalls);
 
         public Task<string> GetCaCertificatePemAsync(CancellationToken cancellationToken) =>
             Task.FromResult("ca");
@@ -278,6 +336,7 @@ public sealed class CertificateLifecycleTests
             DateTimeOffset notAfter,
             CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _issueCalls);
             var serial = $"serial-{Interlocked.Increment(ref _serial)}";
             var thumbprint = Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(serial)));
@@ -334,34 +393,22 @@ public sealed class CertificateLifecycleTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class TestSessionRegistry(TestSession session) : IAgentSessionRegistry
-    {
-        public int Count => 1;
-
-        public IAgentSession? Register(Guid agentId, IAgentSession newSession) => null;
-
-        public void Unregister(Guid agentId, IAgentSession oldSession) { }
-
-        public bool TryGet(
-            Guid agentId,
-            [NotNullWhen(true)] out IAgentSession? currentSession)
-        {
-            currentSession = session.AgentId == agentId ? session : null;
-            return currentSession is not null;
-        }
-    }
-
-    private sealed class TestSession(Guid agentId) : IAgentSession
+    private sealed class TestSession(
+        Guid agentId,
+        Func<bool>? isRegistered = null) : IAgentSession
     {
         public Guid AgentId { get; } = agentId;
 
         public bool Closed { get; private set; }
+
+        public bool RegisteredOnClose { get; private set; }
 
         public ValueTask SendAsync(AgentCommand command, CancellationToken cancellationToken) =>
             ValueTask.CompletedTask;
 
         public ValueTask CloseAsync(CancellationToken cancellationToken)
         {
+            RegisteredOnClose = isRegistered?.Invoke() ?? false;
             Closed = true;
             return ValueTask.CompletedTask;
         }

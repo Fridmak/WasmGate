@@ -14,6 +14,18 @@ public sealed class AgentOperationLock : IAgentOperationLock
     private readonly object _entriesGate = new();
     private readonly Dictionary<Guid, Entry> _entries = [];
 
+    /// <summary>Number of live or waited-on entries; used by lifecycle tests.</summary>
+    internal int EntryCount
+    {
+        get
+        {
+            lock (_entriesGate)
+            {
+                return _entries.Count;
+            }
+        }
+    }
+
     /// <inheritdoc />
     public async Task<IAsyncDisposable> AcquireAsync(
         Guid agentId,

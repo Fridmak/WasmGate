@@ -5,8 +5,8 @@ using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Delivery;
-using WasmGate.Control.Infrastructure.Repositories;
 using WasmGate.Control.Infrastructure.Agents;
+using WasmGate.Control.Infrastructure.Repositories;
 using WasmGate.Control.Tests.Storage;
 
 namespace WasmGate.Control.Tests.Api;
@@ -45,12 +45,15 @@ public sealed class CertificateSessionMonitorTests
         {
             CertificateRecheckInterval = TimeSpan.FromMilliseconds(25),
         };
+        var registry = new InMemoryAgentSessionRegistry();
         var monitor = new CertificateSessionMonitor(
             certificates,
+            registry,
             new AgentOperationLock(),
             options,
             NullLogger.Instance);
         var session = new TestSession(agent.Id);
+        Assert.Null(registry.Register(agent.Id, session));
         using var cancellation = new CancellationTokenSource();
         var monitorTask = monitor.MonitorAsync(
             agent.Id,
@@ -67,17 +70,21 @@ public sealed class CertificateSessionMonitorTests
         cancellation.Cancel();
         await monitorTask;
         Assert.True(session.IsClosed);
+        Assert.False(registry.TryGet(agent.Id, out _));
     }
 
     [Fact]
-    public async Task FailedCertificateCheckClosesSession()
+    public async Task FailedCertificateCheckClosesAndUnregistersSession()
     {
+        var registry = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(Guid.NewGuid());
+        registry.Register(session.AgentId, session);
         var monitor = new CertificateSessionMonitor(
             new ThrowingCertificateRepository(),
+            registry,
             new AgentOperationLock(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
-        var session = new TestSession(Guid.NewGuid());
         using var cancellation = new CancellationTokenSource();
 
         await monitor.MonitorAsync(
@@ -87,17 +94,21 @@ public sealed class CertificateSessionMonitorTests
             cancellation.Token);
 
         Assert.True(session.IsClosed);
+        Assert.False(registry.TryGet(session.AgentId, out _));
     }
 
     [Fact]
     public async Task OperationCanceledFromRepositoryWithoutSessionCancellationClosesSession()
     {
+        var registry = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(Guid.NewGuid());
+        registry.Register(session.AgentId, session);
         var monitor = new CertificateSessionMonitor(
             new CanceledCertificateRepository(),
+            registry,
             new AgentOperationLock(),
             new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
             NullLogger.Instance);
-        var session = new TestSession(Guid.NewGuid());
         using var cancellation = new CancellationTokenSource();
 
         await monitor.MonitorAsync(
@@ -107,6 +118,7 @@ public sealed class CertificateSessionMonitorTests
             cancellation.Token);
 
         Assert.True(session.IsClosed);
+        Assert.False(registry.TryGet(session.AgentId, out _));
     }
 
     private sealed class TestSession(Guid agentId) : IAgentSession
