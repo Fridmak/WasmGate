@@ -54,10 +54,13 @@ termination, L7 body policy, circuit breaker и dial retries.
 Это актуальные результаты v4 от 2026-11-19 (stable `2ff37ac`), снятые в
 Linux-контейнере. WSL2 — настоящее ядро Linux, поэтому `splice(2)` и
 относительные числа корректны; абсолютные MB/s нельзя сравнивать с bare metal.
-В [руководстве по бенчмаркам](docs/ru/benchmarks.md) есть таблица Windows,
+Отдельный чистый reference на 2 vCPU в Yandex Cloud (`docs/ru/benchmarks.md`)
+показал 1519 MB/s для L4 и 1572 MB/s для full на 64 KiB. В
+[руководстве по бенчмаркам](docs/ru/benchmarks.md) есть таблица Windows,
 пути 4 KiB / 1 MiB, режимы ABI v4 `once`/`headers`/`stream`, масштабирование и
 микробенчмарки hot path. Сырой вывод:
-[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt)
+[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt),
+[`benchmarks/yandex-current-results.txt`](benchmarks/yandex-current-results.txt)
 и [`benchmarks/windows-current-results.txt`](benchmarks/windows-current-results.txt).
 
 ## Релизы

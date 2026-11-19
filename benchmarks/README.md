@@ -11,6 +11,7 @@ Methodology, tables and interpretation:
 |---|---|
 | [`linux-ubuntu-results.txt`](linux-ubuntu-results.txt) | Historical pre-v4 run, 2026-11-05, commit `18d4249` |
 | [`linux-current-results.txt`](linux-current-results.txt) | Current v4 run, 2026-11-19, stable `2ff37ac`, Linux container on Docker Desktop/WSL2, Go 1.27.4, 4 vCPU |
+| [`yandex-current-results.txt`](yandex-current-results.txt) | Clean v4 run, 2026-11-19, stable `2ff37ac`, Yandex Cloud preemptible 2 vCPU Intel Ice Lake, Go 1.27.4, nginx 1.24, HAProxy 2.8.30 |
 | [`windows-current-results.txt`](windows-current-results.txt) | Current v4 run, 2026-11-19, stable `2ff37ac`, Windows host, Go 1.27.1, 8 logical CPUs |
 
 The current files are the source for the tables in the documentation. Each row

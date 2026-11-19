@@ -52,11 +52,14 @@ termination, L7 body policy, circuit breaker or dial retries.
 
 These are current v4 results from 2026-11-19 (stable `2ff37ac`), measured inside
 a Linux container. WSL2 runs a real Linux kernel, so `splice(2)` and relative
-numbers are valid; absolute MB/s are not comparable with bare metal. The
+numbers are valid; absolute MB/s are not comparable with bare metal. A separate
+clean 2-vCPU Yandex Cloud reference (`docs/en/benchmarks.md`) measured L4 at
+1519 MB/s and full at 1572 MB/s for 64 KiB. The
 [benchmarks guide](docs/en/benchmarks.md) adds the Windows table, 4 KiB / 1 MiB
 paths, ABI v4 `once`/`headers`/`stream` modes, throughput scaling and hot-path
 microbenchmarks. Raw output is in
-[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt)
+[`benchmarks/linux-current-results.txt`](benchmarks/linux-current-results.txt),
+[`benchmarks/yandex-current-results.txt`](benchmarks/yandex-current-results.txt)
 and [`benchmarks/windows-current-results.txt`](benchmarks/windows-current-results.txt).
 
 ## Releases

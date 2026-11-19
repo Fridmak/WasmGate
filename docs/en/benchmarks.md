@@ -10,8 +10,12 @@
 > The historical pre-v4 raw output remains in
 > [`linux-ubuntu-results.txt`](../../benchmarks/linux-ubuntu-results.txt). The
 > current raw output is
-> [`linux-current-results.txt`](../../benchmarks/linux-current-results.txt) and
-> [`windows-current-results.txt`](../../benchmarks/windows-current-results.txt).
+> [`linux-current-results.txt`](../../benchmarks/linux-current-results.txt),
+> [`yandex-current-results.txt`](../../benchmarks/yandex-current-results.txt)
+> and [`windows-current-results.txt`](../../benchmarks/windows-current-results.txt).
+> The Yandex Cloud table is a clean 2-vCPU reference; CPU generation and core
+> count differ from the local 4-vCPU container, so compare shapes rather than
+> absolute MB/s across those two tables.
 
 All benchmarks live next to the code they cover (`X.go` → `X_test.go`) and are
 compiled only by `go test`; they are not part of the binary.
@@ -84,6 +88,23 @@ user space:
 | Throughput 64 KiB | **274.5 MB/s** | 218.4 MB/s | 168.3 MB/s |
 | Throughput 1 MiB | **274.3 MB/s** | 182.1 MB/s | 157.5 MB/s |
 | Relay latency (1B RTT) | **132.8 µs** | 229.0 µs | 204.6 µs |
+
+## Clean Yandex Cloud run
+
+A dedicated preemptible VM (2 vCPU Intel Ice Lake, 4 GiB, 15 GiB HDD,
+Ubuntu 24.04, Go 1.27.4, nginx 1.24, HAProxy 2.8.30) gives a cleaner view than
+the nested Docker/WSL2 container. Median of three runs:
+
+| Metric | direct | WasmGate L4 | WasmGate full* | nginx stream | HAProxy TCP |
+|---|---:|---:|---:|---:|---:|
+| Throughput 64 KiB | **2104.2 MB/s** | 1519.3 MB/s | 1571.9 MB/s | 726.6 MB/s | 691.2 MB/s |
+| Throughput 1 MiB | **1903.8 MB/s** | 1508.2 MB/s | 1474.0 MB/s | 808.5 MB/s | 697.3 MB/s |
+| Relay latency (1B RTT) | **10.3 µs** | 21.4 µs | 21.4 µs | 57.1 µs | 61.4 µs |
+
+The L4/full 64 KiB difference is inside the run-to-run noise: full 1.541–1.587
+GB/s, L4 1.492–1.538 GB/s. On 1 MiB L4 is slightly ahead. This run also shows
+the 2-vCPU saturation point: throughput scaling is 1563 / 1536 / 1419 MB/s at
+1 / 4 / 16 connections, then drops to 409 MB/s at 64 connections.
 
 ## ABI v4 data modes
 
