@@ -319,7 +319,9 @@ the schema and the single-process lock automatically. Use
 - Plaintext gRPC is refused on a non-loopback address: without TLS there is no
   identity, and anyone could open a session as an agent.
 - Admin API requires a bearer token outside loopback. The admin UI is static and
-  contains no data; the API is protected.
+  contains no data; the API is protected. A loopback admin listener without a
+  token accepts only loopback `Host` headers (`localhost`, `127.0.0.1`, `::1`),
+  which blocks DNS-rebinding pages from calling the API.
 - Agent certificates are issued from CSRs; private keys never leave the node.
   Revocation is enforced at session start, at renewal and before every artifact
   download.

@@ -106,6 +106,7 @@ app.Use(async (context, next) =>
     }
 });
 
+app.UseAdminHostFilter(options);
 app.UseAdminToken(options.AdminToken);
 
 app.MapGrpcService<AgentControlService>();
