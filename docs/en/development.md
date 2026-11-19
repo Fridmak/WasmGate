@@ -131,6 +131,4 @@ docker compose -f deployments/scenarios/03-control-plane/compose.yml up --build
 ## Documentation rule
 
 Every tracked document exists in both languages: `README.md` / `README.ru.md`,
-and `docs/en/...` / `docs/ru/...`. Change both in the same commit. Internal
-material used for non-product work lives in the gitignored `thesis/` directory and
-must never be linked from product docs or code.
+and `docs/en/...` / `docs/ru/...`. Change both in the same commit.
