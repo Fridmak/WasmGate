@@ -302,6 +302,9 @@ jobs:
           ./wasmgate -config configs/wasmgate.yaml
           ```
 
+          On Windows, unpack the zip and use `wasmgate.exe` with the same
+          `-config`/`-validate` arguments.
+
           ## Control plane
 
           The archive is a self-contained Native AOT build; the .NET runtime is not
@@ -368,10 +371,12 @@ jobs:
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             gh release upload "$RELEASE_VERSION" dist/* --clobber
             gh release edit "$RELEASE_VERSION" \
+              --draft=false \
               --title "WasmGate $RELEASE_VERSION" \
               --notes-file release-notes.md
           else
             gh release create "$RELEASE_VERSION" dist/* \
+              --draft=false \
               --title "WasmGate $RELEASE_VERSION" \
               --notes-file release-notes.md
           fi
