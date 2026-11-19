@@ -1,7 +1,7 @@
 goos: linux
 goarch: amd64
 pkg: wasmgate/internal/proxy
-cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx
 BenchmarkHeadersBody/once-4      	    7567	    146653 ns/op	 446.88 MB/s	       0 B/op	       0 allocs/op
 BenchmarkHeadersBody/once-4      	    9962	    164831 ns/op	 397.59 MB/s	       0 B/op	       0 allocs/op
 BenchmarkHeadersBody/once-4      	    7965	    146270 ns/op	 448.05 MB/s	       8 B/op	       0 allocs/op
@@ -112,7 +112,7 @@ ok  	wasmgate/internal/proxy	182.336s
 goos: linux
 goarch: amd64
 pkg: wasmgate/internal/plugin/abi4/engine
-cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx
 BenchmarkSplitHeaders-4       	 3726958	       271.5 ns/op	 349.89 MB/s	       0 B/op	       0 allocs/op
 BenchmarkSplitHeaders-4       	 4849404	       290.5 ns/op	 326.99 MB/s	       0 B/op	       0 allocs/op
 BenchmarkSplitHeaders-4       	 4293146	       338.9 ns/op	 280.31 MB/s	       0 B/op	       0 allocs/op
@@ -127,7 +127,7 @@ ok  	wasmgate/internal/plugin/abi4/engine	14.743s
 goos: linux
 goarch: amd64
 pkg: wasmgate/internal/ratelimit
-cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx
 BenchmarkGuardAcquireRelease-4   	 4284699	       260.7 ns/op	       0 B/op	       0 allocs/op
 BenchmarkGuardAcquireRelease-4   	 4633413	       263.6 ns/op	       0 B/op	       0 allocs/op
 BenchmarkGuardAcquireRelease-4   	 4559648	       285.8 ns/op	       0 B/op	       0 allocs/op
@@ -142,7 +142,7 @@ ok  	wasmgate/internal/ratelimit	13.847s
 goos: linux
 goarch: amd64
 pkg: wasmgate/internal/tlspeek
-cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx  
+cpu: AMD Ryzen 5 3550H with Radeon Vega Mobile Gfx
 BenchmarkParseClientHelloSNI-4   	33742556	        33.63 ns/op	       0 B/op	       0 allocs/op
 BenchmarkParseClientHelloSNI-4   	35242554	        43.04 ns/op	       0 B/op	       0 allocs/op
 BenchmarkParseClientHelloSNI-4   	37106456	        38.03 ns/op	       0 B/op	       0 allocs/op
