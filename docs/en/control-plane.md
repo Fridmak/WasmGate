@@ -212,19 +212,30 @@ Prometheus + Grafana stack.
 3. **Session**: the agent opens `AgentControl.Session`; the CN must match
    `Hello.agent_id`, and the certificate fingerprint must still be active.
 4. **Renew**: before expiry the agent calls `AgentEnrollment.Renew` over mTLS; a
-   new key and certificate replace the old one. No token is needed, and a revoked
-   certificate cannot renew.
-5. **Revoke** a certificate; the next session is rejected.
+   new key and certificate replace the old one immediately. No token is needed,
+   the old live session is closed, and a revoked certificate cannot renew. The
+   rotation transaction re-checks the caller certificate, so a revoke that
+   commits first wins.
+5. **Revoke** a certificate; any live session for that agent is closed and future
+   sessions are rejected.
 
 Certificate lifetime defaults to 30 days (`WASMGATE_CP_AGENT_CERT_TTL`), renewal
 happens 7 days before expiry (`-cp-renew-before` on the agent). The CA files are
 created on first start; losing them invalidates every agent certificate.
 
+Rotation is immediate: if the `Renew` response is lost or the agent crashes
+before saving the new certificate, the old certificate is already revoked. The
+agent cannot recover automatically; issue a new per-agent enrollment token and
+re-enroll it. This is a deliberate security trade-off: an overlap window would
+let a stolen old key mint a new long-lived certificate.
+
 Revocation is enforced after the TLS handshake: the control plane looks up the
-certificate fingerprint in SQLite before a session or artifact download. There
-is no CRL/OCSP endpoint, so a revoked certificate can still complete a TLS
-handshake; it cannot use any gRPC method. Use short lifetimes and the agent
-limits if that partial connection is a concern.
+certificate fingerprint in SQLite before a session or artifact download. An
+explicit revoke or certificate rotation also closes the agent's live session; a
+periodic re-check is the backstop for a missed close. There is no CRL/OCSP
+endpoint, so a revoked certificate can still complete a TLS handshake; it cannot
+use any gRPC method. Use short lifetimes and the agent limits if that partial
+connection is a concern.
 
 Operator labels are authoritative: labels reported in `Hello` only fill gaps, so
 an agent cannot move itself into another wave.
@@ -296,6 +307,7 @@ reconnect with exponential backoff (1→30 s).
 | `WASMGATE_CP_WASMGATE_BIN` | `wasmgate` from `PATH` |
 | `WASMGATE_CP_VALIDATE_TIMEOUT` | `00:01:00` |
 | `WASMGATE_CP_AGENT_CERT_TTL` | `30.00:00:00` |
+| `WASMGATE_CP_CERT_RECHECK_INTERVAL` | `00:01:00`; live-session revocation backstop |
 | `WASMGATE_CP_APPLY_TIMEOUT` | `00:05:00` |
 | `WASMGATE_CP_DEPLOYMENT_TIMEOUT` | `00:15:00` |
 | `WASMGATE_CP_MAX_ARTIFACT_BYTES` | 64 MiB |
@@ -324,7 +336,8 @@ the schema and the single-process lock automatically. Use
   which blocks DNS-rebinding pages from calling the API.
 - Agent certificates are issued from CSRs; private keys never leave the node.
   Revocation is enforced at session start, at renewal and before every artifact
-  download.
+  download. Revoke and rotation close any live session for the agent; a periodic
+  check handles a missed close.
 - An apply result is accepted only from an agent in the deployment environment
   whose labels match a wave selector; when present, its release id must match the
   deployment.
@@ -342,6 +355,13 @@ the schema and the single-process lock automatically. Use
 - Waves are not health-gated; the first `ApplyResult` closes the deployment.
 - No heartbeat reaper: a half-open connection keeps an agent `Online` until the
   transport fails. Deployments themselves are reaped.
+- A lost `Renew` response or a crash before the new identity is saved requires a
+  new per-agent enrollment token; there is no overlap window. Re-enrollment and
+  renewal are last-writer-wins if an operator runs them concurrently.
+- Audit writes after certificate rotation or revocation are best-effort: a
+  failure is logged but does not fail the security operation.
+- A monitor-triggered close ends the stream without an Unauthenticated status;
+  the next Session attempt is rejected with Unauthenticated.
 - No OIDC/RBAC: one static admin token.
 - No retention policy for old artifacts, configurations and audit events.
 - `Drain` and `SetLogLevel` are accepted but only logged by the data plane.

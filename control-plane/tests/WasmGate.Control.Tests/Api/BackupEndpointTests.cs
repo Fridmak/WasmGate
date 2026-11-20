@@ -13,6 +13,7 @@ namespace WasmGate.Control.Tests.Api;
 /// cleanup. The factory runs the real composition root in local mode so no
 /// certificates or enrollment are needed.
 /// </summary>
+[Collection("Control-plane host")]
 public sealed class BackupEndpointTests
 {
     [Fact]

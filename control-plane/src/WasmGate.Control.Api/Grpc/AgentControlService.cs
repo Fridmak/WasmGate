@@ -20,9 +20,8 @@ namespace WasmGate.Control.Api.Grpc;
 ///   <item>read the first message and require a <c>Hello</c>;</item>
 ///   <item>validate the agent ID with <see cref="TryParseHello"/>;</item>
 ///   <item>when TLS with client certificates is enabled, compare the certificate identity with the Hello using <c>AgentCertificateIdentity.TryGetAgentId</c>;</item>
-///   <item>persist the Hello fields with <see cref="PersistHelloAsync"/>;</item>
-///   <item>create a <see cref="GrpcAgentSession"/> and register it;</item>
-///   <item>close the displaced session returned by the registry (takeover);</item>
+///   <item>take the per-agent lifecycle lock, then persist the Hello fields with <see cref="PersistHelloAsync"/> and register a <see cref="GrpcAgentSession"/>;</item>
+///   <item>close the displaced session returned by the registry (takeover) after releasing the lock;</item>
 ///   <item>read Heartbeat/ApplyResult/Health until the stream ends and update state via <see cref="TouchAgentAsync"/> and <see cref="UpdateDeploymentAsync"/>;</item>
 ///   <item>unregister the session and mark the agent offline in <c>finally</c>.</item>
 /// </list>
@@ -33,9 +32,13 @@ public sealed class AgentControlService(
     IAgentCertificateRepository certificates,
     IDeploymentRepository deployments,
     IAuditLog audit,
+    IAgentOperationLock agentOperations,
     ControlPlaneOptions options,
     ILogger<AgentControlService> logger) : AgentControl.AgentControlBase
 {
+    private readonly CertificateSessionMonitor _sessionMonitor =
+        new(certificates, registry, agentOperations, options, logger);
+
     /// <summary>
     /// Runs one agent control session until the stream ends.
     /// </summary>
@@ -72,16 +75,55 @@ public sealed class AgentControlService(
                 "The first message must be a Hello with a valid agent_id GUID."));
         }
 
-        await EnsureCertificateMatchesAsync(context, agentId, callCancellation);
-        await PersistHelloAsync(hello!, agentId, callCancellation);
-
         var session = new GrpcAgentSession(agentId, responseStream, context);
-        var displaced = registry.Register(agentId, session);
-        logger.LogInformation(
-            "agent session opened: agent={AgentId} version={AgentVersion} takeover={Takeover}",
-            agentId,
-            hello!.Version,
-            displaced is not null);
+        IAgentSession? displaced;
+        string? sessionCertificateThumbprint = null;
+        try
+        {
+            await using var agentLease = await agentOperations.AcquireAsync(
+                agentId,
+                callCancellation);
+            var certificateThumbprint = await EnsureCertificateMatchesAsync(
+                context,
+                agentId,
+                callCancellation);
+            await PersistHelloAsync(hello!, agentId, callCancellation);
+            displaced = registry.Register(agentId, session);
+
+            // Keep the thumbprint for the monitor after the lifecycle lock is
+            // released. The local is copied into the monitor scope below.
+            sessionCertificateThumbprint = certificateThumbprint;
+        }
+        catch
+        {
+            await session.CloseAsync(CancellationToken.None);
+            throw;
+        }
+
+        // Logging is outside the registration critical section: a failing log
+        // sink must not leave a registered session behind.
+        try
+        {
+            logger.LogInformation(
+                "agent session registered: agent={AgentId} version={AgentVersion} takeover={Takeover}",
+                agentId,
+                hello!.Version,
+                displaced is not null);
+        }
+        catch (Exception)
+        {
+            // Logging is best-effort and must not break a live session.
+        }
+
+        using var monitorCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(session.Token);
+        var monitorTask = sessionCertificateThumbprint is null
+            ? Task.CompletedTask
+            : _sessionMonitor.MonitorAsync(
+                agentId,
+                sessionCertificateThumbprint,
+                session,
+                monitorCancellation.Token);
 
         try
         {
@@ -106,10 +148,39 @@ public sealed class AgentControlService(
         }
         finally
         {
-            registry.Unregister(agentId, session);
+            monitorCancellation.Cancel();
+            try
+            {
+                await monitorTask;
+            }
+            catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+            {
+                // Normal shutdown of the periodic certificate monitor.
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "certificate monitor failed: agent={AgentId}",
+                    agentId);
+            }
+
+            await using (await agentOperations.AcquireAsync(agentId, CancellationToken.None))
+            {
+                registry.Unregister(agentId, session);
+                // Keep the offline update under the lock so it cannot overwrite
+                // a status written by a concurrent new session.
+                await MarkOfflineAsync(agentId);
+            }
             await session.CloseAsync(CancellationToken.None);
-            await MarkOfflineAsync(agentId);
-            logger.LogInformation("agent session closed: agent={AgentId}", agentId);
+            try
+            {
+                logger.LogInformation("agent session closed: agent={AgentId}", agentId);
+            }
+            catch (Exception)
+            {
+                // Logging is best-effort and must not surface after cleanup.
+            }
         }
     }
 
@@ -172,22 +243,54 @@ public sealed class AgentControlService(
     /// <exception cref="RpcException">
     /// The certificate is missing, names another agent, or was revoked or expired.
     /// </exception>
-    private async Task EnsureCertificateMatchesAsync(
+    private Task<string?> EnsureCertificateMatchesAsync(
         ServerCallContext context,
         Guid agentId,
         CancellationToken cancellationToken)
     {
         if (options.GrpcTls.CertificatePath is null)
         {
-            return;
+            return Task.FromResult<string?>(null);
         }
 
-        var certificate = AgentCertificateIdentity.GetCertificate(context);
+        return ValidateCertificateAsync(
+            AgentCertificateIdentity.GetCertificate(context),
+            agentId,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Validates a presented certificate against the endpoint policy, the agent
+    /// identity and the certificate repository.
+    /// </summary>
+    /// <param name="certificate">Certificate presented by the agent, or null.</param>
+    /// <param name="agentId">Agent identifier reported in the Hello.</param>
+    /// <param name="cancellationToken">Cancels the certificate lookup.</param>
+    /// <returns>The certificate thumbprint, or null when mTLS is not required.</returns>
+    /// <remarks>
+    /// This is the enforcement point for session start. Revoke, rotation,
+    /// deletion and the certificate monitor remove a live session under the
+    /// same per-agent lock, so a registration cannot outlive a committed
+    /// revocation.
+    /// </remarks>
+    /// <exception cref="RpcException">
+    /// The certificate is missing, names another agent, or was revoked or expired.
+    /// </exception>
+    internal async Task<string?> ValidateCertificateAsync(
+        X509Certificate2? certificate,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        if (options.GrpcTls.CertificatePath is null)
+        {
+            return null;
+        }
+
         if (certificate is null)
         {
             if (!options.GrpcTls.RequireClientCertificate)
             {
-                return;
+                return null;
             }
 
             throw new RpcException(new Status(
@@ -212,6 +315,8 @@ public sealed class AgentControlService(
                 StatusCode.Unauthenticated,
                 "The client certificate was revoked or has expired."));
         }
+
+        return thumbprint;
     }
 
     /// <summary>

@@ -186,25 +186,75 @@ internal static class AgentEndpoints
     /// <param name="id">Agent identifier.</param>
     /// <param name="serial">Certificate serial number.</param>
     /// <param name="certificates">Certificate repository.</param>
+    /// <param name="sessions">Live agent session registry.</param>
+    /// <param name="agentOperations">Per-agent lifecycle lock.</param>
     /// <param name="audit">Audit log.</param>
+    /// <param name="logger">Logger for post-commit cleanup failures.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    /// <returns>204; the revocation is checked at the next session start.</returns>
-    private static async Task<IResult> RevokeCertificate(
+    /// <returns>204 on success; 404 when the certificate is unknown or already revoked.</returns>
+    internal static async Task<IResult> RevokeCertificate(
         Guid id,
         string serial,
         IAgentCertificateRepository certificates,
+        IAgentSessionRegistry sessions,
+        IAgentOperationLock agentOperations,
         IAuditLog audit,
+        ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
-        await certificates.RevokeAsync(id, serial, cancellationToken);
-        await audit.AppendAsync(
-            new AuditEvent
+        IAgentSession? session = null;
+        await using (await agentOperations.AcquireAsync(id, cancellationToken))
+        {
+            if (!await certificates.RevokeAsync(id, serial, cancellationToken))
             {
-                Actor = "admin-api",
-                Action = "certificate.revoke",
-                Target = $"{id:D}/{serial}",
-            },
-            cancellationToken);
+                return Results.NotFound();
+            }
+
+            // Remove the session under the same lock that serializes Session,
+            // Renew and Delete. A command must not reach a session whose
+            // certificate is already revoked, even when CloseAsync fails.
+            if (sessions.TryGet(id, out var currentSession))
+            {
+                sessions.Unregister(id, currentSession);
+                session = currentSession;
+            }
+        }
+
+        if (session is not null)
+        {
+            try
+            {
+                await session.CloseAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "failed to close session after certificate revocation: agent={AgentId} serial={Serial}",
+                    id,
+                    serial);
+            }
+        }
+
+        try
+        {
+            await audit.AppendAsync(
+                new AuditEvent
+                {
+                    Actor = "admin-api",
+                    Action = "certificate.revoke",
+                    Target = $"{id:D}/{serial}",
+                },
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to append audit event after certificate revocation: agent={AgentId} serial={Serial}",
+                id,
+                serial);
+        }
 
         return Results.NoContent();
     }

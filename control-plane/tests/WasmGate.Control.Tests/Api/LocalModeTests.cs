@@ -212,7 +212,6 @@ public sealed class LocalModeTests
     {
         var service = new AgentEnrollmentService(
             provisioning: null!,
-            certificates: null!,
             new ControlPlaneOptions { Local = true },
             NullLogger<AgentEnrollmentService>.Instance);
 
@@ -226,7 +225,6 @@ public sealed class LocalModeTests
     {
         var service = new AgentEnrollmentService(
             provisioning: null!,
-            certificates: null!,
             new ControlPlaneOptions { Local = true },
             NullLogger<AgentEnrollmentService>.Instance);
 

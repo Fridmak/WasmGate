@@ -1,11 +1,14 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using WasmGate.Control.Core.Abstractions.Agents;
 using WasmGate.Control.Core.Abstractions.Repositories;
 using WasmGate.Control.Core.Configuration;
 using WasmGate.Control.Core.Entities;
 using WasmGate.Control.Core.Entities.Agents;
 using WasmGate.Control.Core.Entities.Agents.Enrollment;
+using WasmGate.Control.Infrastructure.Repositories.Serialization;
 
 namespace WasmGate.Control.Infrastructure.Agents;
 
@@ -28,7 +31,9 @@ public sealed class AgentProvisioningService(
     IEnvironmentOperationLock environmentLocks,
     ICertificateAuthority authority,
     IAgentSessionRegistry sessions,
+    IAgentOperationLock agentOperations,
     IAuditLog audit,
+    ILogger<AgentProvisioningService> logger,
     ControlPlaneOptions options) : IAgentProvisioningService
 {
     /// <summary>Maximum length of a label key accepted from the admin API.</summary>
@@ -206,174 +211,189 @@ public sealed class AgentProvisioningService(
         await using var environmentLock = await environmentLocks.AcquireAsync(
             lockEnvironment,
             cancellationToken);
-
-        record = await tokens.FindByHashAsync(tokenHash, cancellationToken);
-        if (record is null)
+        EnrollmentResult result;
+        IAgentSession? sessionToClose;
+        await using (await agentOperations.AcquireAsync(agentGuid, cancellationToken))
         {
-            throw new EnrollmentException(EnrollmentFailure.InvalidToken, "Enrollment token is invalid.");
-        }
+            record = await tokens.FindByHashAsync(tokenHash, cancellationToken);
+            if (record is null)
+            {
+                throw new EnrollmentException(EnrollmentFailure.InvalidToken, "Enrollment token is invalid.");
+            }
 
-        var now = DateTimeOffset.UtcNow;
-        if (record.ExpiresAt <= now)
-        {
-            throw new EnrollmentException(EnrollmentFailure.Expired, "Enrollment token has expired.");
-        }
+            var now = DateTimeOffset.UtcNow;
+            if (record.ExpiresAt <= now)
+            {
+                throw new EnrollmentException(EnrollmentFailure.Expired, "Enrollment token has expired.");
+            }
 
-        if (record.UsedCount >= record.MaxUses)
-        {
-            throw new EnrollmentException(EnrollmentFailure.Exhausted, "Enrollment token is exhausted.");
-        }
+            if (record.UsedCount >= record.MaxUses)
+            {
+                throw new EnrollmentException(EnrollmentFailure.Exhausted, "Enrollment token is exhausted.");
+            }
 
-        if (record.AgentId is { } boundId && boundId != agentGuid)
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.AgentMismatch,
-                "Enrollment token is bound to a different agent.");
-        }
+            if (record.AgentId is { } boundId && boundId != agentGuid)
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.AgentMismatch,
+                    "Enrollment token is bound to a different agent.");
+            }
 
-        var tokenEnvironment = EnvironmentNaming.Normalize(record.Environment);
-        if (tokenEnvironment.Length > 0 && !EnvironmentNaming.IsValid(tokenEnvironment))
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.InvalidRequest,
-                "Enrollment token carries an invalid environment.");
-        }
-
-        var existing = await agents.FindAsync(agentGuid, cancellationToken);
-        var requestedName = name?.Trim();
-        var isNewAgent = existing is null;
-
-        // A shared registration token is not proof of ownership over an existing
-        // agent. Letting it enroll an existing GUID would issue a second
-        // certificate for that agent and let the token holder impersonate it.
-        // Existing agents must use a per-agent token (record.AgentId is set) or
-        // the normal renewal path.
-        if (record.AgentId is null && existing is not null)
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.AgentMismatch,
-                "A registration token cannot enroll an existing agent; use a per-agent token.");
-        }
-
-        if (existing is not null &&
-            tokenEnvironment.Length > 0 &&
-            !string.Equals(existing.Environment, tokenEnvironment, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.AgentMismatch,
-                $"Enrollment token belongs to environment '{tokenEnvironment}', " +
-                $"but agent '{existing.Name}' is in '{existing.Environment}'.");
-        }
-
-        if (existing is null)
-        {
-            var effectiveName = string.IsNullOrEmpty(requestedName)
-                ? agentGuid.ToString("D")
-                : requestedName;
-
-            if (!AgentNaming.IsValid(effectiveName))
+            var tokenEnvironment = EnvironmentNaming.Normalize(record.Environment);
+            if (tokenEnvironment.Length > 0 && !EnvironmentNaming.IsValid(tokenEnvironment))
             {
                 throw new EnrollmentException(
                     EnrollmentFailure.InvalidRequest,
-                    $"Agent name must match {AgentNamingValidNameHint}.");
+                    "Enrollment token carries an invalid environment.");
             }
 
-            if (await agents.FindByNameAsync(effectiveName, cancellationToken) is not null)
+            var existing = await agents.FindAsync(agentGuid, cancellationToken);
+            var requestedName = name?.Trim();
+            var isNewAgent = existing is null;
+
+            // A shared registration token is not proof of ownership over an existing
+            // agent. Letting it enroll an existing GUID would issue a second
+            // certificate for that agent and let the token holder impersonate it.
+            // Existing agents must use a per-agent token (record.AgentId is set) or
+            // the normal renewal path.
+            if (record.AgentId is null && existing is not null)
             {
                 throw new EnrollmentException(
-                    EnrollmentFailure.AlreadyExists,
-                    $"Agent '{effectiveName}' already exists.");
+                    EnrollmentFailure.AgentMismatch,
+                    "A registration token cannot enroll an existing agent; use a per-agent token.");
             }
 
-            var environment = tokenEnvironment.Length > 0
-                ? tokenEnvironment
-                : EnvironmentNaming.Default;
-
-            existing = new Agent
-            {
-                Id = agentGuid,
-                Name = effectiveName,
-                Environment = environment,
-                Version = "0",
-                AbiVersions = [],
-                Labels = new Dictionary<string, string>(StringComparer.Ordinal),
-                Status = AgentStatus.Pending,
-            };
-        }
-        else if (!string.IsNullOrEmpty(requestedName) &&
-                 !string.Equals(requestedName, existing.Name, StringComparison.Ordinal))
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.AgentMismatch,
-                "Agent name does not match the registered name.");
-        }
-
-        if (record.NamePrefix is { Length: > 0 } prefix &&
-            !existing.Name.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            throw new EnrollmentException(
-                EnrollmentFailure.AgentMismatch,
-                "Agent name does not match the registration token scope.");
-        }
-
-        // Reserve the use before issuing anything. A malformed CSR burns one
-        // use, but a read-then-write check would let concurrent enrollments
-        // exceed max_uses.
-        if (!await tokens.ConsumeAsync(record.Id, cancellationToken))
-        {
-            throw new EnrollmentException(EnrollmentFailure.Exhausted, "Enrollment token is exhausted.");
-        }
-
-        if (isNewAgent)
-        {
-            if (!await agents.UpsertAsync(existing, cancellationToken))
+            if (existing is not null &&
+                tokenEnvironment.Length > 0 &&
+                !string.Equals(existing.Environment, tokenEnvironment, StringComparison.OrdinalIgnoreCase))
             {
                 throw new EnrollmentException(
-                    EnrollmentFailure.InvalidRequest,
-                    "Agent was deleted and cannot be re-enrolled; create a new agent record.");
+                    EnrollmentFailure.AgentMismatch,
+                    $"Enrollment token belongs to environment '{tokenEnvironment}', " +
+                    $"but agent '{existing.Name}' is in '{existing.Environment}'.");
             }
 
-            await AuditAsync(
+            if (existing is null)
+            {
+                var effectiveName = string.IsNullOrEmpty(requestedName)
+                    ? agentGuid.ToString("D")
+                    : requestedName;
+
+                if (!AgentNaming.IsValid(effectiveName))
+                {
+                    throw new EnrollmentException(
+                        EnrollmentFailure.InvalidRequest,
+                        $"Agent name must match {AgentNamingValidNameHint}.");
+                }
+
+                if (await agents.FindByNameAsync(effectiveName, cancellationToken) is not null)
+                {
+                    throw new EnrollmentException(
+                        EnrollmentFailure.AlreadyExists,
+                        $"Agent '{effectiveName}' already exists.");
+                }
+
+                var environment = tokenEnvironment.Length > 0
+                    ? tokenEnvironment
+                    : EnvironmentNaming.Default;
+
+                existing = new Agent
+                {
+                    Id = agentGuid,
+                    Name = effectiveName,
+                    Environment = environment,
+                    Version = "0",
+                    AbiVersions = [],
+                    Labels = new Dictionary<string, string>(StringComparer.Ordinal),
+                    Status = AgentStatus.Pending,
+                };
+            }
+            else if (!string.IsNullOrEmpty(requestedName) &&
+                     !string.Equals(requestedName, existing.Name, StringComparison.Ordinal))
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.AgentMismatch,
+                    "Agent name does not match the registered name.");
+            }
+
+            if (record.NamePrefix is { Length: > 0 } prefix &&
+                !existing.Name.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.AgentMismatch,
+                    "Agent name does not match the registration token scope.");
+            }
+
+            // Reserve the use before issuing anything. A malformed CSR burns one
+            // use, but a read-then-write check would let concurrent enrollments
+            // exceed max_uses.
+            if (!await tokens.ConsumeAsync(record.Id, cancellationToken))
+            {
+                throw new EnrollmentException(EnrollmentFailure.Exhausted, "Enrollment token is exhausted.");
+            }
+
+            if (isNewAgent)
+            {
+                if (!await agents.UpsertAsync(existing, cancellationToken))
+                {
+                    throw new EnrollmentException(
+                        EnrollmentFailure.InvalidRequest,
+                        "Agent was deleted and cannot be re-enrolled; create a new agent record.");
+                }
+
+                await AuditAsync(
+                    AgentNaming.CertificateCommonName(agentGuid),
+                    "agent.create",
+                    agentGuid.ToString("D"),
+                    cancellationToken);
+            }
+
+            var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
+            var notAfter = now + options.AgentCertificateLifetime;
+            var issued = await authority.IssueAsync(
+                csrPem,
                 AgentNaming.CertificateCommonName(agentGuid),
-                "agent.create",
-                agentGuid.ToString("D"),
+                notAfter,
                 cancellationToken);
-        }
-        else
-        {
-            // Enrollment proves the identity, not that a control session is open:
-            // record only the contact and leave status and release to the session
-            // handler. A single-column update cannot overwrite concurrent state.
-            await agents.RecordEnrollmentAsync(agentGuid, now, cancellationToken);
-        }
 
-        var notAfter = now + options.AgentCertificateLifetime;
-        var issued = await authority.IssueAsync(
-            csrPem,
-            AgentNaming.CertificateCommonName(agentGuid),
-            notAfter,
-            cancellationToken);
+            sessionToClose = await RotateCertificateAsync(
+                new AgentCertificate
+                {
+                    AgentId = agentGuid,
+                    SerialNumber = issued.SerialNumber,
+                    Thumbprint = issued.Thumbprint,
+                    Pem = issued.CertificatePem,
+                    NotBefore = issued.NotBefore,
+                    NotAfter = issued.NotAfter,
+                },
+                callerThumbprint: null,
+                cancellationToken);
 
-        await certificates.AddAsync(
-            new AgentCertificate
+            if (!isNewAgent)
             {
-                AgentId = agentGuid,
-                SerialNumber = issued.SerialNumber,
-                Thumbprint = issued.Thumbprint,
-                Pem = issued.CertificatePem,
-                NotBefore = issued.NotBefore,
-                NotAfter = issued.NotAfter,
-            },
-            cancellationToken);
+                // Enrollment proves the identity, not that a control session is open.
+                // This is best-effort after the rotation commit so a failed contact
+                // update cannot turn a successful re-enrollment into an error.
+                await TryRecordEnrollmentAsync(agentGuid, now);
+            }
 
-        await AuditAsync(
-            AgentNaming.CertificateCommonName(agentGuid),
-            "agent.enroll",
-            agentGuid.ToString("D"),
-            cancellationToken);
+            await TryAuditAsync(
+                AgentNaming.CertificateCommonName(agentGuid),
+                "agent.enroll",
+                agentGuid.ToString("D"),
+                CancellationToken.None);
 
-        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
-        return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
+            result = new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
+        }
+
+        // Close outside the agent lock: CloseAsync only cancels the transport
+        // and may wait for the session handler to finish.
+        if (sessionToClose is not null)
+        {
+            await TryCloseSessionAsync(sessionToClose, agentGuid);
+        }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -446,18 +466,27 @@ public sealed class AgentProvisioningService(
         string actor,
         CancellationToken cancellationToken)
     {
-        if (!await agents.DeleteAsync(agentId, cancellationToken))
+        IAgentSession? session = null;
+        await using (await agentOperations.AcquireAsync(agentId, cancellationToken))
         {
-            throw new KeyNotFoundException($"Agent '{agentId:D}' is not registered.");
+            if (!await agents.DeleteAsync(agentId, cancellationToken))
+            {
+                throw new KeyNotFoundException($"Agent '{agentId:D}' is not registered.");
+            }
+
+            // Remove the session under the lock before closing it. The row is
+            // already gone, and the session loop's cleanup checks for that.
+            if (sessions.TryGet(agentId, out var currentSession))
+            {
+                sessions.Unregister(agentId, currentSession);
+                session = currentSession;
+            }
         }
 
-        // Close the session after the row is gone: the session loop's cleanup
-        // must not be able to re-insert an Offline row for a deleted agent.
-        if (sessions.TryGet(agentId, out var session))
+        if (session is not null)
         {
-            await session.CloseAsync(CancellationToken.None);
+            await TryCloseSessionAsync(session, agentId);
         }
-
         await AuditAsync(actor, "agent.delete", agentId.ToString("D"), cancellationToken);
     }
 
@@ -465,43 +494,73 @@ public sealed class AgentProvisioningService(
     public async Task<EnrollmentResult> RenewAsync(
         Guid agentId,
         string csrPem,
+        string callerThumbprint,
         CancellationToken cancellationToken)
     {
-        if (await agents.FindAsync(agentId, cancellationToken) is null)
+        IAgentSession? sessionToClose;
+        EnrollmentResult result;
+        await using (await agentOperations.AcquireAsync(agentId, cancellationToken))
         {
-            throw new EnrollmentException(
-                EnrollmentFailure.InvalidRequest,
-                "Agent is not registered.");
+            if (await agents.FindAsync(agentId, cancellationToken) is null)
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.InvalidRequest,
+                    "Agent is not registered.");
+            }
+
+            // Cheap caller check before any CA work. The transactional check in
+            // RotateAsync remains as the second barrier, but a revoked caller
+            // must not be able to occupy the agent lock and trigger signing.
+            if (!await certificates.IsActiveAsync(
+                    agentId,
+                    callerThumbprint,
+                    cancellationToken))
+            {
+                throw new EnrollmentException(
+                    EnrollmentFailure.InvalidToken,
+                    "The client certificate was revoked or has expired.");
+            }
+
+            var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
+            var notAfter = DateTimeOffset.UtcNow + options.AgentCertificateLifetime;
+            var issued = await authority.IssueAsync(
+                csrPem,
+                AgentNaming.CertificateCommonName(agentId),
+                notAfter,
+                cancellationToken);
+
+            sessionToClose = await RotateCertificateAsync(
+                new AgentCertificate
+                {
+                    AgentId = agentId,
+                    SerialNumber = issued.SerialNumber,
+                    Thumbprint = issued.Thumbprint,
+                    Pem = issued.CertificatePem,
+                    NotBefore = issued.NotBefore,
+                    NotAfter = issued.NotAfter,
+                },
+                callerThumbprint,
+                cancellationToken);
+
+            // These updates happen after the irreversible rotation commit. They must
+            // not turn a successful renewal into an error: the agent already has a
+            // new certificate and the old one is revoked.
+            await TryRecordEnrollmentAsync(agentId, DateTimeOffset.UtcNow);
+            await TryAuditAsync(
+                AgentNaming.CertificateCommonName(agentId),
+                "agent.renew",
+                agentId.ToString("D"),
+                CancellationToken.None);
+
+            result = new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
         }
 
-        var notAfter = DateTimeOffset.UtcNow + options.AgentCertificateLifetime;
-        var issued = await authority.IssueAsync(
-            csrPem,
-            AgentNaming.CertificateCommonName(agentId),
-            notAfter,
-            cancellationToken);
+        if (sessionToClose is not null)
+        {
+            await TryCloseSessionAsync(sessionToClose, agentId);
+        }
 
-        await certificates.AddAsync(
-            new AgentCertificate
-            {
-                AgentId = agentId,
-                SerialNumber = issued.SerialNumber,
-                Thumbprint = issued.Thumbprint,
-                Pem = issued.CertificatePem,
-                NotBefore = issued.NotBefore,
-                NotAfter = issued.NotAfter,
-            },
-            cancellationToken);
-
-        await agents.RecordEnrollmentAsync(agentId, DateTimeOffset.UtcNow, cancellationToken);
-        await AuditAsync(
-            AgentNaming.CertificateCommonName(agentId),
-            "agent.renew",
-            agentId.ToString("D"),
-            cancellationToken);
-
-        var caPem = await authority.GetCaCertificatePemAsync(cancellationToken);
-        return new EnrollmentResult(issued.CertificatePem, caPem, issued.NotAfter);
+        return result;
     }
 
     /// <summary>Human-readable description of the agent-name rules used in errors.</summary>
@@ -592,18 +651,169 @@ public sealed class AgentProvisioningService(
         return copy;
     }
 
+    /// <summary>
+    /// Stores a replacement certificate, retires the previous active identity
+    /// atomically and closes any session that still uses that identity.
+    /// </summary>
+    /// <param name="certificate">New certificate issued by the agent CA.</param>
+    /// <param name="callerThumbprint">
+    /// Certificate that requested the rotation, or null for enrollment/recovery.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <exception cref="EnrollmentException">
+    /// The caller certificate was revoked or expired before the rotation
+    /// transaction committed.
+    /// </exception>
+    /// <remarks>
+    /// The caller must hold the per-agent lifecycle lock. The returned session
+    /// has already been removed from the registry and must be closed after the
+    /// lock is released.
+    /// </remarks>
+    private async Task<IAgentSession?> RotateCertificateAsync(
+        AgentCertificate certificate,
+        string? callerThumbprint,
+        CancellationToken cancellationToken)
+    {
+        var rotation = await certificates.RotateAsync(
+            certificate,
+            callerThumbprint,
+            cancellationToken);
+        if (!rotation.CallerActive)
+        {
+            throw new EnrollmentException(
+                EnrollmentFailure.InvalidToken,
+                "The client certificate was revoked or has expired.");
+        }
+
+        // The rotation is committed. Remove the session under the agent lock so
+        // a command cannot reach a session whose certificate was just revoked,
+        // even if CloseAsync later fails. Audit remains best-effort.
+        IAgentSession? sessionToClose = null;
+        if (rotation.Retired.Count > 0 &&
+            sessions.TryGet(certificate.AgentId, out var registeredSession))
+        {
+            sessions.Unregister(certificate.AgentId, registeredSession);
+            sessionToClose = registeredSession;
+        }
+
+        if (rotation.Retired.Count > 0)
+        {
+            string? details = null;
+            try
+            {
+                details = JsonSerializer.Serialize(
+                    new CertificateRotationAudit
+                    {
+                        Reason = "rotation",
+                        ReplacedBy = certificate.SerialNumber,
+                    },
+                    StorageJsonContext.Default.CertificateRotationAudit);
+            }
+            catch (Exception ex)
+            {
+                // The rotation is already committed; audit details are optional.
+                logger.LogWarning(
+                    ex,
+                    "failed to serialize certificate rotation audit: agent={AgentId}",
+                    certificate.AgentId);
+            }
+
+            foreach (var oldCertificate in rotation.Retired)
+            {
+                await TryAuditAsync(
+                    AgentNaming.CertificateCommonName(certificate.AgentId),
+                    "certificate.revoke",
+                    $"{certificate.AgentId:D}/{oldCertificate.SerialNumber}",
+                    CancellationToken.None,
+                    details);
+            }
+        }
+
+        return sessionToClose;
+    }
+
+    /// <summary>Records contact after a certificate operation, best-effort.</summary>
+    /// <param name="agentId">Agent identifier.</param>
+    /// <param name="seenAt">Contact time.</param>
+    private async Task TryRecordEnrollmentAsync(Guid agentId, DateTimeOffset seenAt)
+    {
+        try
+        {
+            await agents.RecordEnrollmentAsync(agentId, seenAt, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to record enrollment after certificate operation: agent={AgentId}",
+                agentId);
+        }
+    }
+
+    /// <summary>Closes a lifecycle session after its agent lock is released.</summary>
+    /// <param name="session">Session to close.</param>
+    /// <param name="agentId">Agent identifier for the log entry.</param>
+    private async Task TryCloseSessionAsync(IAgentSession session, Guid agentId)
+    {
+        try
+        {
+            await session.CloseAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to close session after certificate operation: agent={AgentId}",
+                agentId);
+        }
+    }
+
+    /// <summary>Appends one audit event, logging but not failing on error.</summary>
+    /// <param name="actor">Principal that performed the operation.</param>
+    /// <param name="action">Stable action name.</param>
+    /// <param name="target">Entity the action applies to.</param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <param name="detailsJson">Optional JSON details for the audit event.</param>
+    private async Task TryAuditAsync(
+        string actor,
+        string action,
+        string target,
+        CancellationToken cancellationToken,
+        string? detailsJson = null)
+    {
+        try
+        {
+            await AuditAsync(actor, action, target, cancellationToken, detailsJson);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "failed to append audit event after certificate operation: action={Action} target={Target}",
+                action,
+                target);
+        }
+    }
+
     /// <summary>Appends one audit event for a provisioning operation.</summary>
     /// <param name="actor">Principal that performed the operation.</param>
     /// <param name="action">Stable action name.</param>
     /// <param name="target">Entity the action applies to.</param>
     /// <param name="cancellationToken">Cancels the operation.</param>
-    private Task AuditAsync(string actor, string action, string target, CancellationToken cancellationToken) =>
+    /// <param name="detailsJson">Optional JSON details for the audit event.</param>
+    private Task AuditAsync(
+        string actor,
+        string action,
+        string target,
+        CancellationToken cancellationToken,
+        string? detailsJson = null) =>
         audit.AppendAsync(
             new AuditEvent
             {
                 Actor = actor,
                 Action = action,
                 Target = target,
+                DetailsJson = detailsJson,
             },
             cancellationToken);
 

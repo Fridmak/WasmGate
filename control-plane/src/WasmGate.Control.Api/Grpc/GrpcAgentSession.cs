@@ -84,7 +84,7 @@ public sealed class GrpcAgentSession : IAgentSession
     public ValueTask CloseAsync(CancellationToken cancellationToken)
     {
         // Cancel the linked token so the session's read loop and any in-flight
-        // writes stop. The gRPC handler owns cleanup and will unregister itself.
+        // writes stop.
         if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
             _lifetime.Cancel();

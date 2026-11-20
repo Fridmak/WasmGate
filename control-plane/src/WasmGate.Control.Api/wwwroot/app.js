@@ -1025,7 +1025,7 @@ const ACTIONS = {
 
   async 'certificate-revoke'(id, element) {
     const serial = element.dataset.serial;
-    if (!confirm(`Revoke certificate ${serial}? The agent will be rejected at its next session.`)) return;
+    if (!confirm(`Revoke certificate ${serial}? Any active session for this agent will be closed immediately, and the certificate cannot be used for new sessions.`)) return;
     await api(`/api/v1/agents/${encodeURIComponent(id)}/certificates/${encodeURIComponent(serial)}/revoke`, {
       method: 'POST',
     });

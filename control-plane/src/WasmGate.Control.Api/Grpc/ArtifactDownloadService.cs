@@ -43,7 +43,9 @@ public sealed class ArtifactDownloadService(
         IServerStreamWriter<ArtifactChunk> responseStream,
         ServerCallContext context)
     {
-        await EnsureAuthorizedAsync(context, context.CancellationToken);
+        await EnsureAuthorizedAsync(
+            AgentCertificateIdentity.GetCertificate(context),
+            context.CancellationToken);
 
         var artifactId = request.Id?.Trim() ?? string.Empty;
         if (!IsSha256(artifactId))
@@ -83,17 +85,18 @@ public sealed class ArtifactDownloadService(
     /// control session, so a revoked certificate must not keep downloading
     /// releases until its natural expiry.
     /// </summary>
-    /// <param name="context">Current gRPC call context.</param>
+    /// <param name="certificate">Client certificate presented by the caller, or null.</param>
     /// <param name="cancellationToken">Cancels the certificate lookup.</param>
     /// <exception cref="RpcException">The caller has no active agent certificate.</exception>
-    private async Task EnsureAuthorizedAsync(ServerCallContext context, CancellationToken cancellationToken)
+    internal async Task EnsureAuthorizedAsync(
+        X509Certificate2? certificate,
+        CancellationToken cancellationToken)
     {
         if (options.GrpcTls.CertificatePath is null || !options.GrpcTls.RequireClientCertificate)
         {
             return;
         }
 
-        var certificate = AgentCertificateIdentity.GetCertificate(context);
         if (certificate is null ||
             !AgentNaming.TryParseCertificateCommonName(
                 certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false),
