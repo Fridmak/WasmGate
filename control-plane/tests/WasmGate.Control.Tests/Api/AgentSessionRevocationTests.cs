@@ -98,6 +98,62 @@ public sealed class AgentSessionRevocationTests
     }
 
     [Fact]
+    public async Task NewSessionWaitsForOldCleanupAndStaysOnline()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var registry = new TrackingSessionRegistry();
+        var agents = new BlockingAgentRepository(
+            new SqliteAgentRepository(db.Connections));
+        var operations = new SignalingOperationLock(new AgentOperationLock());
+        var service = new AgentControlService(
+            registry,
+            agents,
+            new SqliteAgentCertificateRepository(db.Connections),
+            new EmptyDeploymentRepository(),
+            new SqliteAuditLog(db.Connections),
+            operations,
+            new ControlPlaneOptions(),
+            NullLogger<AgentControlService>.Instance);
+        var agentId = Guid.NewGuid();
+
+        var firstTask = service.Session(
+            new BlockingAgentStream(agentId),
+            new TestResponseStream(),
+            new TestServerCallContext());
+        var first = await registry.WaitForSessionAsync(agentId);
+
+        // Hold the old session's MarkOffline lookup under the agent lock, then
+        // start a new Session. The new registration must wait, not be marked
+        // Offline by the old cleanup.
+        agents.BlockNextFind();
+        await first.CloseAsync(CancellationToken.None);
+        await agents.FindEntered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var secondTask = service.Session(
+            new BlockingAgentStream(agentId),
+            new TestResponseStream(),
+            new TestServerCallContext());
+        await operations.ThirdAcquireStarted.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(secondTask.IsCompleted);
+        Assert.False(registry.TryGet(agentId, out _));
+
+        agents.ReleaseFind();
+        var second = await registry.WaitForSecondSessionAsync(agentId);
+        var stored = await agents.FindAsync(agentId, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(AgentStatus.Online, stored.Status);
+        Assert.True(registry.TryGet(agentId, out var current));
+        Assert.Same(second, current);
+
+        await firstTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await second.CloseAsync(CancellationToken.None);
+        await secondTask.WaitAsync(TimeSpan.FromSeconds(5));
+        stored = await agents.FindAsync(agentId, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(AgentStatus.Offline, stored.Status);
+    }
+
+    [Fact]
     public async Task PersistFailureOccursBeforeRegistrationAndLeavesExistingSessionUntouched()
     {
         await using var db = await SqliteTestDatabase.CreateAsync();
@@ -225,6 +281,85 @@ public sealed class AgentSessionRevocationTests
             Assert.Equal(agentId, session.AgentId);
             return session;
         }
+    }
+
+    private sealed class SignalingOperationLock(IAgentOperationLock inner) : IAgentOperationLock
+    {
+        private readonly TaskCompletionSource _thirdAcquireStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _acquireCalls;
+
+        public Task ThirdAcquireStarted => _thirdAcquireStarted.Task;
+
+        public async Task<IAsyncDisposable> AcquireAsync(
+            Guid agentId,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _acquireCalls) == 3)
+            {
+                _thirdAcquireStarted.TrySetResult();
+            }
+
+            return await inner.AcquireAsync(agentId, cancellationToken);
+        }
+    }
+
+    private sealed class BlockingAgentRepository(IAgentRepository inner) : IAgentRepository
+    {
+        private readonly TaskCompletionSource _findEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFind =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _blockFind;
+
+        public Task FindEntered => _findEntered.Task;
+
+        public void BlockNextFind() => Interlocked.Exchange(ref _blockFind, 1);
+
+        public void ReleaseFind() => _releaseFind.TrySetResult();
+
+        public async Task<Agent?> FindAsync(Guid id, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _blockFind, 0) == 1)
+            {
+                _findEntered.TrySetResult();
+                await _releaseFind.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+
+            return await inner.FindAsync(id, cancellationToken);
+        }
+
+        public Task<IReadOnlyList<Agent>> ListAsync(CancellationToken cancellationToken) =>
+            inner.ListAsync(cancellationToken);
+
+        public Task<Agent?> FindByNameAsync(string name, CancellationToken cancellationToken) =>
+            inner.FindByNameAsync(name, cancellationToken);
+
+        public Task<bool> UpsertAsync(Agent agent, CancellationToken cancellationToken) =>
+            inner.UpsertAsync(agent, cancellationToken);
+
+        public Task SetEnvironmentAsync(
+            Guid id,
+            string environment,
+            CancellationToken cancellationToken) =>
+            inner.SetEnvironmentAsync(id, environment, cancellationToken);
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(id, cancellationToken);
+
+        public Task TouchAsync(
+            Guid id,
+            DateTimeOffset seenAt,
+            string? activeReleaseId,
+            string? activeConfigSha256,
+            CancellationToken cancellationToken) =>
+            inner.TouchAsync(id, seenAt, activeReleaseId, activeConfigSha256, cancellationToken);
+
+        public Task RecordEnrollmentAsync(
+            Guid id,
+            DateTimeOffset seenAt,
+            CancellationToken cancellationToken) =>
+            inner.RecordEnrollmentAsync(id, seenAt, cancellationToken);
     }
 
     private sealed class FailingAgentRepository : IAgentRepository
