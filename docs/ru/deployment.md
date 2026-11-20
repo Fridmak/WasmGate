@@ -107,14 +107,19 @@ docker run -d --name wasmgate --restart unless-stopped --network host \
 ```
 
 `--network host` сохраняет `splice(2)` и реальные IP клиентов; user-space NAT
-перед контейнером скрывает часть выигрыша zero-copy.
+перед контейнером скрывает часть выигрыша zero-copy. Admin endpoint data plane
+отдельный от traffic listener: держите его в приватной сети и передавайте bearer
+токен, если он настроен. Compose-сценарии по умолчанию не публикуют этот порт;
+для диагностики добавляйте только ограниченный временный mapping.
 
 ## Control plane (SQLite)
 
 [`deployments/scenarios/03-control-plane/compose.yml`](../../deployments/scenarios/03-control-plane/compose.yml)
 поднимает control plane с SQLite-базой в томе `cpdata`, публикует оба порта
 только на loopback, требует `WASMGATE_CP_ADMIN_TOKEN` и отдаёт gRPC агентов по
-TLS.
+TLS. Имя хоста в `-cp` должно совпадать с SAN сертификата: сертификат из
+`dev-certs.sh` содержит `control-plane`, `localhost` и `127.0.0.1`, но не
+произвольные имена Compose-контейнеров.
 
 ```bash
 ./deployments/scripts/dev-certs.sh         # один раз, локальный самоподписанный сертификат
@@ -127,8 +132,10 @@ curl -fsS http://127.0.0.1:9097/readyz
 # админ-панель: http://127.0.0.1:9097/  (вставьте токен)
 ```
 
-Полный локальный стенд (control plane + один data plane + nginx-бэкенд) —
-в [`01-local-demo`](../../deployments/scenarios/01-local-demo/).
+Полный локальный стенд (control plane + один data plane + детерминированный
+тестовый upstream) — в [`01-local-demo`](../../deployments/scenarios/01-local-demo/).
+Upstream нужен только как цель для проверки L4-маршрута: WasmGate не генерирует
+HTTP-ответы и не выполняет HTTP-маршрутизацию.
 
 Согласованная копия базы на работающем CP:
 

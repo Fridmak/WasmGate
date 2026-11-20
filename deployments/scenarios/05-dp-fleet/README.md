@@ -76,7 +76,9 @@ chmod +x deployments/scenarios/05-dp-fleet/run-fleet.sh
 
 The script creates one named volume per DP, seeds the writable configuration,
 and starts containers named `edge-01` … `edge-20`. No host ports are published:
-traffic goes through the load balancer.
+traffic goes through the load balancer. The script publishes no data-plane admin
+ports either; scrape `<admin_addr>/metrics` from the private container network or
+add an explicit, restricted port mapping for local diagnostics.
 
 Check in the UI: **Agents** should show 20 agents in the selected environment.
 Each has its own GUID, certificate and active release.

@@ -73,20 +73,25 @@ Native AOT архив control plane для Linux amd64, Docker-образы, `SH
 
 ## Быстрый старт
 
+Файл `configs/wasmgate.yaml` является справочной конфигурацией: указанные в нём
+upstream на портах `9001`/`9002` не запускаются этим репозиторием. Для
+самодостаточной проверки используйте Docker-сценарий, который запускает NGINX
+и направляет к нему трафик:
+
 ```bash
-# Статический бинарник
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wasmgate ./cmd/wasmgate
-
-# Проверить конфигурацию (заодно компилируются все указанные плагины)
-./wasmgate -config configs/wasmgate.yaml -validate
-
-# Запустить
-./wasmgate -config configs/wasmgate.yaml
-
-# Пример слушает 127.0.0.1:8080, метрики — на 127.0.0.1:9099
+docker compose -f deployments/scenarios/02-standalone-data-plane/compose.yml up --build
 curl http://127.0.0.1:8080/
-curl http://127.0.0.1:9099/metrics
 ```
+
+Чтобы проверить справочную конфигурацию без запуска:
+
+```bash
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wasmgate ./cmd/wasmgate
+./wasmgate -config configs/wasmgate.yaml -validate
+```
+
+Проверка компилирует только плагины, указанные в выбранной конфигурации; в
+`configs/wasmgate.yaml` плагины намеренно закомментированы.
 
 Минимальная конфигурация:
 

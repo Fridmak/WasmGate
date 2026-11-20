@@ -58,7 +58,7 @@ func Run(
 
 	outgoing := make(chan *wasmgatepb.AgentMessage, 8)
 	sendErr := make(chan error, 1)
-	go writeLoop(sessionCtx, stream, outgoing, sendErr)
+	go writeLoopWithCancel(sessionCtx, cancel, stream, outgoing, sendErr)
 	go heartbeatLoop(sessionCtx, id.AgentID, opts.Heartbeat, state, outgoing)
 
 	for {
@@ -81,13 +81,24 @@ func Run(
 }
 
 func writeLoop(ctx context.Context, stream Sender, outgoing <-chan *wasmgatepb.AgentMessage, errCh chan<- error) {
+	writeLoopWithCancel(ctx, func() {}, stream, outgoing, errCh)
+}
+
+func writeLoopWithCancel(ctx context.Context, cancel context.CancelFunc, stream Sender, outgoing <-chan *wasmgatepb.AgentMessage, errCh chan<- error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case message := <-outgoing:
+		case message, ok := <-outgoing:
+			if !ok {
+				return
+			}
 			if err := stream.Send(message); err != nil {
-				errCh <- err
+				select {
+				case errCh <- err:
+				default:
+				}
+				cancel()
 				return
 			}
 		}

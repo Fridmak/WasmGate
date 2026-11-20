@@ -72,20 +72,25 @@ full deployment guide is in [docs/en/deployment.md](docs/en/deployment.md).
 
 ## Quick start
 
+The annotated `configs/wasmgate.yaml` is a reference configuration: its example
+upstreams on ports `9001`/`9002` are not started by this repository. For a
+self-contained smoke test, use the standalone Docker scenario, which starts an
+NGINX backend and routes traffic to it:
+
 ```bash
-# Build a static binary
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wasmgate ./cmd/wasmgate
-
-# Validate the example configuration (also compiles every referenced plugin)
-./wasmgate -config configs/wasmgate.yaml -validate
-
-# Run it
-./wasmgate -config configs/wasmgate.yaml
-
-# The example listens on 127.0.0.1:8080 and exposes metrics on 127.0.0.1:9099
+docker compose -f deployments/scenarios/02-standalone-data-plane/compose.yml up --build
 curl http://127.0.0.1:8080/
-curl http://127.0.0.1:9099/metrics
 ```
+
+To validate the reference configuration without starting it:
+
+```bash
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wasmgate ./cmd/wasmgate
+./wasmgate -config configs/wasmgate.yaml -validate
+```
+
+Validation compiles only plugins referenced by the selected configuration; the
+plugins in `configs/wasmgate.yaml` are intentionally commented out.
 
 Minimal configuration:
 

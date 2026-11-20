@@ -5,7 +5,7 @@ Everything on one machine:
 - SQLite storage (built in, no database service);
 - control plane and admin UI;
 - one data plane;
-- nginx demo backend.
+- a simple demo TCP backend.
 
 ## Start the control plane and backend
 
@@ -65,7 +65,7 @@ exercised through the control plane:
    artifacts (or add plugins if you want).
 3. **Deployments → New deployment**, choose the release and selector `*`.
 4. Refresh the deployments page; the status should become `Succeeded`.
-5. `curl http://127.0.0.1:8080/` still returns the nginx page.
+5. `curl http://127.0.0.1:8080/` still reaches the configured `demo-backend:80` through the L4 proxy path. The backend image is only a deterministic demo target; WasmGate does not generate or route HTTP responses itself.
 
 The agent downloads the release, rewrites `/data/wasmgate.yaml` and reloads. From
 now on, change the configuration in the UI instead of editing the seed file.
@@ -105,8 +105,14 @@ version reported by `wasmgate_build_info` (the default is `dev`).
 - The data plane is under the `dp` profile because it needs a token created
   after the control plane starts.
 - The control plane data volume `cpdata` holds the SQLite database, CA, signing
-  key and artifacts. Back it up as one unit. The data plane mounts it read-only
-  to read `release-signing.key.pub`.
+  key and artifacts. Back it up as one unit. The `release-key` helper copies only
+  `release-signing.key.pub` into a separate read-only volume for the data plane;
+  the data plane must not receive the private signing key.
+- The data-plane admin port is intentionally not published by this scenario.
+  The host-published `8080` port is the listener; `/healthz`, `/metrics` and
+  `/reload` are available on the container's admin address (`9099`) from the
+  Compose network. For host-side checks, add a temporary `127.0.0.1:19099:9099`
+  mapping to the data-plane service and send `Authorization: Bearer <WASMGATE_ADMIN_TOKEN>`.
 - `dpdata` is a writable volume; the control plane rewrites the configuration
   there.
 - For a CP-only deployment see [`../03-control-plane`](../03-control-plane). For

@@ -41,6 +41,10 @@ wasmgate \
 ```
 
 `cp-server.crt` is `deployments/certs/server.crt` for the compose demo. The
+hostname in `-cp` must be present in the certificate's `subjectAltName`; for the
+provided certificate use `control-plane` (inside the Compose network), `localhost`
+or `127.0.0.1` as appropriate. Do not use an arbitrary Compose container name
+unless you regenerate the certificate with that name in its SAN. The
 release-signing public key is inside the `cpdata` volume at
 `/data/keys/release-signing.key.pub`:
 

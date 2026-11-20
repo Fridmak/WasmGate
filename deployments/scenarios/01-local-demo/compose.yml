@@ -67,6 +67,23 @@ services:
       - -c
       - test -f /data/wasmgate.yaml || cp /seed/wasmgate.yaml /data/wasmgate.yaml; chown -R 10001:10001 /data
 
+  release-key:
+    image: alpine:3.22
+    profiles: ["dp"]
+    depends_on:
+      control-plane:
+        condition: service_started
+    volumes:
+      - cpdata:/cpdata:ro
+      - dpkey:/out
+    command:
+      - sh
+      - -c
+      - >-
+        until test -f /cpdata/keys/release-signing.key.pub; do sleep 1; done;
+        cp /cpdata/keys/release-signing.key.pub /out/release-signing.key.pub;
+        chmod 0444 /out/release-signing.key.pub
+
   data-plane:
     build:
       context: ../../..
@@ -80,6 +97,8 @@ services:
         condition: service_completed_successfully
       dp-init:
         condition: service_completed_successfully
+      release-key:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -87,7 +106,7 @@ services:
     volumes:
       - dpdata:/data
       - ../../certs/server.crt:/certs/server.crt:ro
-      - cpdata:/cpdata:ro
+      - dpkey:/keys:ro
     command:
       - -config
       - /data/wasmgate.yaml
@@ -96,7 +115,7 @@ services:
       - -cp-server-ca
       - /certs/server.crt
       - -cp-release-key
-      - /cpdata/keys/release-signing.key.pub
+      - /keys/release-signing.key.pub
       - -cp-token
       - ${WASMGATE_ENROLL_TOKEN:-}
       - -cp-agent-id
@@ -113,3 +132,4 @@ services:
 volumes:
   cpdata:
   dpdata:
+  dpkey:
