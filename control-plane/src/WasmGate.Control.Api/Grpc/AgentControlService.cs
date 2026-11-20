@@ -173,7 +173,14 @@ public sealed class AgentControlService(
                 await MarkOfflineAsync(agentId);
             }
             await session.CloseAsync(CancellationToken.None);
-            logger.LogInformation("agent session closed: agent={AgentId}", agentId);
+            try
+            {
+                logger.LogInformation("agent session closed: agent={AgentId}", agentId);
+            }
+            catch (Exception)
+            {
+                // Logging is best-effort and must not surface after cleanup.
+            }
         }
     }
 

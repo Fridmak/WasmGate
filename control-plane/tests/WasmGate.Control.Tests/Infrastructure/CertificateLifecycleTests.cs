@@ -64,6 +64,43 @@ public sealed class CertificateLifecycleTests
     }
 
     [Fact]
+    public async Task RenewalKeepsSessionRemovedWhenCloseThrows()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agent = NewAgent("close-failure-renew-agent");
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        var oldCertificate = NewCertificate(agent.Id, "old", 'f');
+        await certificates.AddAsync(oldCertificate, CancellationToken.None);
+
+        var sessions = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(agent.Id, throwOnClose: true);
+        sessions.Register(agent.Id, session);
+        var provisioning = NewProvisioning(
+            agents,
+            certificates,
+            sessions,
+            new TestAuditLog(),
+            new TestEnrollmentTokenRepository(),
+            new TestCertificateAuthority());
+
+        await provisioning.RenewAsync(
+            agent.Id,
+            "csr",
+            oldCertificate.Thumbprint,
+            CancellationToken.None);
+
+        Assert.False(session.Closed);
+        Assert.False(sessions.TryGet(agent.Id, out _));
+        Assert.False(await certificates.IsActiveAsync(
+            agent.Id,
+            oldCertificate.Thumbprint,
+            CancellationToken.None));
+        Assert.Single(await certificates.ListActiveByAgentAsync(agent.Id, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ReEnrollmentWithPerAgentTokenRotatesCertificateAndClosesSession()
     {
         await using var db = await SqliteTestDatabase.CreateAsync();
@@ -395,7 +432,8 @@ public sealed class CertificateLifecycleTests
 
     private sealed class TestSession(
         Guid agentId,
-        Func<bool>? isRegistered = null) : IAgentSession
+        Func<bool>? isRegistered = null,
+        bool throwOnClose = false) : IAgentSession
     {
         public Guid AgentId { get; } = agentId;
 
@@ -409,6 +447,11 @@ public sealed class CertificateLifecycleTests
         public ValueTask CloseAsync(CancellationToken cancellationToken)
         {
             RegisteredOnClose = isRegistered?.Invoke() ?? false;
+            if (throwOnClose)
+            {
+                throw new InvalidOperationException("transport close failed");
+            }
+
             Closed = true;
             return ValueTask.CompletedTask;
         }

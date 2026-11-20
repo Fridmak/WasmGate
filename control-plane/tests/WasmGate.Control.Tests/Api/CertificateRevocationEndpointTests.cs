@@ -83,11 +83,59 @@ public sealed class CertificateRevocationEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
     }
 
-    private sealed class TestSession(Guid agentId, Func<bool>? isRegistered = null) : IAgentSession
+    [Fact]
+    public async Task RevokeRemovesSessionEvenWhenCloseThrows()
+    {
+        using var factory = new CertificateApplicationFactory();
+        using var client = factory.CreateAuthenticatedClient();
+        var agentId = Guid.NewGuid();
+        const string serial = "close-failure-cert";
+        var agent = new Agent
+        {
+            Id = agentId,
+            Name = "close-failure-agent",
+            Environment = "prod",
+            Version = "test",
+            RegisteredAt = DateTimeOffset.UtcNow,
+            LastSeenAt = DateTimeOffset.UtcNow,
+        };
+
+        var agents = factory.Services.GetRequiredService<IAgentRepository>();
+        var certificates = factory.Services.GetRequiredService<IAgentCertificateRepository>();
+        var sessions = factory.Services.GetRequiredService<IAgentSessionRegistry>();
+        await agents.UpsertAsync(agent, CancellationToken.None);
+        await certificates.AddAsync(new AgentCertificate
+        {
+            AgentId = agentId,
+            SerialNumber = serial,
+            Thumbprint = new string('b', 64),
+            Pem = "test-pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        }, CancellationToken.None);
+
+        var session = new TestSession(agentId, throwOnClose: true);
+        Assert.Null(sessions.Register(agentId, session));
+
+        var path = $"/api/v1/agents/{agentId:D}/certificates/{serial}/revoke";
+        using var response = await client.PostAsync(path, content: null);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.True(session.CloseAttempted);
+        Assert.False(session.Closed);
+        Assert.False(sessions.TryGet(agentId, out _));
+    }
+
+    private sealed class TestSession(
+        Guid agentId,
+        Func<bool>? isRegistered = null,
+        bool throwOnClose = false) : IAgentSession
     {
         public Guid AgentId { get; } = agentId;
 
         public bool Closed { get; private set; }
+
+        public bool CloseAttempted { get; private set; }
 
         public bool RegisteredOnClose { get; private set; }
 
@@ -97,7 +145,13 @@ public sealed class CertificateRevocationEndpointTests
 
         public ValueTask CloseAsync(CancellationToken cancellationToken)
         {
+            CloseAttempted = true;
             RegisteredOnClose = isRegistered?.Invoke() ?? false;
+            if (throwOnClose)
+            {
+                throw new InvalidOperationException("transport close failed");
+            }
+
             Closed = true;
             return ValueTask.CompletedTask;
         }

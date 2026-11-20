@@ -53,6 +53,51 @@ public sealed class AgentSessionRevocationTests
     }
 
     [Fact]
+    public async Task OldSessionCleanupDoesNotMarkTheNewSessionOffline()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var registry = new TrackingSessionRegistry();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var service = new AgentControlService(
+            registry,
+            agents,
+            new SqliteAgentCertificateRepository(db.Connections),
+            new EmptyDeploymentRepository(),
+            new SqliteAuditLog(db.Connections),
+            new AgentOperationLock(),
+            new ControlPlaneOptions(),
+            NullLogger<AgentControlService>.Instance);
+        var agentId = Guid.NewGuid();
+
+        var firstTask = service.Session(
+            new BlockingAgentStream(agentId),
+            new TestResponseStream(),
+            new TestServerCallContext());
+        await registry.WaitForSessionAsync(agentId);
+
+        var secondTask = service.Session(
+            new BlockingAgentStream(agentId),
+            new TestResponseStream(),
+            new TestServerCallContext());
+        var second = await registry.WaitForSecondSessionAsync(agentId);
+
+        // The takeover closes the first session; its cleanup must not overwrite
+        // the Online status persisted by the new session.
+        await firstTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var stored = await agents.FindAsync(agentId, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(AgentStatus.Online, stored.Status);
+        Assert.True(registry.TryGet(agentId, out var current));
+        Assert.Same(second, current);
+
+        await second.CloseAsync(CancellationToken.None);
+        await secondTask.WaitAsync(TimeSpan.FromSeconds(5));
+        stored = await agents.FindAsync(agentId, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(AgentStatus.Offline, stored.Status);
+    }
+
+    [Fact]
     public async Task PersistFailureOccursBeforeRegistrationAndLeavesExistingSessionUntouched()
     {
         await using var db = await SqliteTestDatabase.CreateAsync();
@@ -135,6 +180,9 @@ public sealed class AgentSessionRevocationTests
         private readonly ConcurrentDictionary<Guid, IAgentSession> _sessions = new();
         private readonly TaskCompletionSource<IAgentSession> _registered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<IAgentSession> _secondRegistered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _registrationCount;
 
         public int Count => _sessions.Count;
 
@@ -143,6 +191,11 @@ public sealed class AgentSessionRevocationTests
             _sessions.TryGetValue(agentId, out var displaced);
             _sessions[agentId] = session;
             _registered.TrySetResult(session);
+            if (Interlocked.Increment(ref _registrationCount) == 2)
+            {
+                _secondRegistered.TrySetResult(session);
+            }
+
             return displaced;
         }
 
@@ -162,6 +215,13 @@ public sealed class AgentSessionRevocationTests
         public async Task<IAgentSession> WaitForSessionAsync(Guid agentId)
         {
             var session = await _registered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(agentId, session.AgentId);
+            return session;
+        }
+
+        public async Task<IAgentSession> WaitForSecondSessionAsync(Guid agentId)
+        {
+            var session = await _secondRegistered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(agentId, session.AgentId);
             return session;
         }

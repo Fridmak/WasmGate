@@ -61,6 +61,43 @@ public sealed class AgentLifecycleSerializationTests
     }
 
     [Fact]
+    public async Task SessionWaitsForEnrollAndEnrollClosesRegisteredSession()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var sessionTask = environment.StartSession();
+        await environment.OperationLock.FirstLeaseHeld.WaitAsync(Timeout);
+        try
+        {
+            Assert.False(environment.Sessions.TryGet(environment.Agent.Id, out _));
+
+            var enrollTask = environment.Provisioning.EnrollAsync(
+                environment.Agent.Id.ToString("D"),
+                name: null,
+                token: "token",
+                csrPem: "csr",
+                CancellationToken.None);
+            await environment.OperationLock.SecondAcquireStarted.WaitAsync(Timeout);
+            Assert.Equal(0, environment.Authority.IssueCalls);
+            Assert.False(environment.Sessions.TryGet(environment.Agent.Id, out _));
+
+            environment.OperationLock.ReleaseFirstLease();
+            await enrollTask.WaitAsync(Timeout);
+            await sessionTask.WaitAsync(Timeout);
+
+            Assert.Equal(1, environment.Authority.IssueCalls);
+            Assert.False(environment.Sessions.TryGet(environment.Agent.Id, out _));
+            Assert.False(await environment.Certificates.IsActiveAsync(
+                environment.Agent.Id,
+                environment.Certificate.Thumbprint,
+                CancellationToken.None));
+        }
+        finally
+        {
+            environment.OperationLock.ReleaseFirstLease();
+        }
+    }
+
+    [Fact]
     public async Task SessionWaitsForRevokeAndRevokeRemovesItFromTheRegistry()
     {
         await using var environment = await TestEnvironment.CreateAsync();
@@ -217,9 +254,20 @@ public sealed class AgentLifecycleSerializationTests
             var sessions = new InMemoryAgentSessionRegistry();
             var operationLock = new HoldFirstOperationLock(new AgentOperationLock());
             var authority = new TestCertificateAuthority();
+            var tokens = new TestEnrollmentTokenRepository
+            {
+                Record = new EnrollmentToken
+                {
+                    AgentId = agent.Id,
+                    TokenHash = new string('a', 64),
+                    Environment = "prod",
+                    MaxUses = 1,
+                    ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
+                },
+            };
             var provisioning = new AgentProvisioningService(
                 agents,
-                new TestEnrollmentTokenRepository(),
+                tokens,
                 certificates,
                 new TestEnvironmentRepository(),
                 new TestEnvironmentOperationLock(),
@@ -398,16 +446,23 @@ public sealed class AgentLifecycleSerializationTests
 
     private sealed class TestEnrollmentTokenRepository : IEnrollmentTokenRepository
     {
+        private int _consumed;
+
+        public EnrollmentToken? Record { get; init; }
+
         public Task AddAsync(EnrollmentToken token, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task<EnrollmentToken?> FindByHashAsync(
             string tokenHash,
             CancellationToken cancellationToken) =>
-            Task.FromResult<EnrollmentToken?>(null);
+            Task.FromResult(Record);
 
         public Task<bool> ConsumeAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(false);
+            Task.FromResult(
+                Record is not null &&
+                Record.Id == id &&
+                Interlocked.Exchange(ref _consumed, 1) == 0);
     }
 
     private sealed class TestEnvironmentRepository : IEnvironmentRepository

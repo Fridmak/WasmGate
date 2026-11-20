@@ -74,6 +74,68 @@ public sealed class CertificateSessionMonitorTests
     }
 
     [Fact]
+    public async Task MonitorWaitsForTheAgentLockBeforeClosing()
+    {
+        await using var db = await SqliteTestDatabase.CreateAsync();
+        var agents = new SqliteAgentRepository(db.Connections);
+        var certificates = new SqliteAgentCertificateRepository(db.Connections);
+        var agentId = Guid.NewGuid();
+        await agents.UpsertAsync(new Agent
+        {
+            Id = agentId,
+            Name = "contended-agent",
+            Environment = "prod",
+            Version = "test",
+            RegisteredAt = DateTimeOffset.UtcNow,
+            LastSeenAt = DateTimeOffset.UtcNow,
+        }, CancellationToken.None);
+        var certificate = new AgentCertificate
+        {
+            AgentId = agentId,
+            SerialNumber = "contended-cert",
+            Thumbprint = new string('d', 64),
+            Pem = "pem",
+            NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
+            NotAfter = DateTimeOffset.UtcNow.AddHours(1),
+        };
+        await certificates.AddAsync(certificate, CancellationToken.None);
+
+        var registry = new InMemoryAgentSessionRegistry();
+        var session = new TestSession(agentId);
+        registry.Register(agentId, session);
+        var innerLock = new AgentOperationLock();
+        var signalingLock = new SignalingOperationLock(innerLock);
+        var monitor = new CertificateSessionMonitor(
+            certificates,
+            registry,
+            signalingLock,
+            new ControlPlaneOptions { CertificateRecheckInterval = TimeSpan.FromMilliseconds(25) },
+            NullLogger.Instance);
+        var heldLease = await innerLock.AcquireAsync(agentId, CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+
+        var monitorTask = monitor.MonitorAsync(
+            agentId,
+            certificate.Thumbprint,
+            session,
+            cancellation.Token);
+        await signalingLock.AcquireAttempted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await certificates.RevokeAsync(
+            agentId,
+            certificate.SerialNumber,
+            CancellationToken.None);
+        Assert.False(session.IsClosed);
+        Assert.True(registry.TryGet(agentId, out _));
+
+        await heldLease.DisposeAsync();
+        await session.Closed.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        await monitorTask;
+        Assert.False(registry.TryGet(agentId, out _));
+    }
+
+    [Fact]
     public async Task FailedCertificateCheckClosesAndUnregistersSession()
     {
         var registry = new InMemoryAgentSessionRegistry();
@@ -119,6 +181,22 @@ public sealed class CertificateSessionMonitorTests
 
         Assert.True(session.IsClosed);
         Assert.False(registry.TryGet(session.AgentId, out _));
+    }
+
+    private sealed class SignalingOperationLock(IAgentOperationLock inner) : IAgentOperationLock
+    {
+        private readonly TaskCompletionSource _acquireAttempted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task AcquireAttempted => _acquireAttempted.Task;
+
+        public async Task<IAsyncDisposable> AcquireAsync(
+            Guid agentId,
+            CancellationToken cancellationToken)
+        {
+            _acquireAttempted.TrySetResult();
+            return await inner.AcquireAsync(agentId, cancellationToken);
+        }
     }
 
     private sealed class TestSession(Guid agentId) : IAgentSession
