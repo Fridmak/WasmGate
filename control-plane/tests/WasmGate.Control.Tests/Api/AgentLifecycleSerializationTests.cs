@@ -1,4 +1,5 @@
 using Grpc.Core;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using WasmGate.Control.Api.Endpoints.Agents;
 using WasmGate.Control.Api.Grpc;
@@ -167,6 +168,92 @@ public sealed class AgentLifecycleSerializationTests
                 environment.Agent.Id,
                 CancellationToken.None));
             Assert.False(environment.Sessions.TryGet(environment.Agent.Id, out _));
+        }
+        finally
+        {
+            environment.OperationLock.ReleaseFirstLease();
+        }
+    }
+
+    [Fact]
+    public async Task DeleteWinsOverWaitingEnroll()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var deleteTask = environment.Provisioning.DeleteAgentAsync(
+            environment.Agent.Id,
+            "admin",
+            CancellationToken.None);
+        await environment.OperationLock.FirstLeaseHeld.WaitAsync(Timeout);
+        try
+        {
+            var enrollTask = environment.Provisioning.EnrollAsync(
+                environment.Agent.Id.ToString("D"),
+                name: null,
+                token: "token",
+                csrPem: "csr",
+                CancellationToken.None);
+            await environment.OperationLock.SecondAcquireStarted.WaitAsync(Timeout);
+            Assert.NotNull(await environment.Agents.FindAsync(
+                environment.Agent.Id,
+                CancellationToken.None));
+            Assert.Equal(0, environment.Authority.IssueCalls);
+
+            environment.OperationLock.ReleaseFirstLease();
+            await deleteTask.WaitAsync(Timeout);
+
+            await Assert.ThrowsAsync<EnrollmentException>(() => enrollTask.WaitAsync(Timeout));
+            Assert.Equal(0, environment.Authority.IssueCalls);
+            Assert.Null(await environment.Agents.FindAsync(
+                environment.Agent.Id,
+                CancellationToken.None));
+            Assert.False(environment.Sessions.TryGet(environment.Agent.Id, out _));
+        }
+        finally
+        {
+            environment.OperationLock.ReleaseFirstLease();
+        }
+    }
+
+    [Fact]
+    public async Task RenewWinsOverWaitingRevoke()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var renewTask = environment.Provisioning.RenewAsync(
+            environment.Agent.Id,
+            "csr",
+            environment.Certificate.Thumbprint,
+            CancellationToken.None);
+        await environment.OperationLock.FirstLeaseHeld.WaitAsync(Timeout);
+        try
+        {
+            var revokeTask = AgentEndpoints.RevokeCertificate(
+                environment.Agent.Id,
+                environment.Certificate.SerialNumber,
+                environment.Certificates,
+                environment.Sessions,
+                environment.OperationLock,
+                environment.Audit,
+                NullLogger<Program>.Instance,
+                CancellationToken.None);
+            await environment.OperationLock.SecondAcquireStarted.WaitAsync(Timeout);
+            Assert.True(await environment.Certificates.IsActiveAsync(
+                environment.Agent.Id,
+                environment.Certificate.Thumbprint,
+                CancellationToken.None));
+
+            environment.OperationLock.ReleaseFirstLease();
+            await renewTask.WaitAsync(Timeout);
+            var revokeResult = await revokeTask.WaitAsync(Timeout);
+
+            Assert.Equal(404, ((IStatusCodeHttpResult)revokeResult).StatusCode);
+            Assert.Equal(1, environment.Authority.IssueCalls);
+            Assert.False(await environment.Certificates.IsActiveAsync(
+                environment.Agent.Id,
+                environment.Certificate.Thumbprint,
+                CancellationToken.None));
+            Assert.Single(await environment.Certificates.ListActiveByAgentAsync(
+                environment.Agent.Id,
+                CancellationToken.None));
         }
         finally
         {
